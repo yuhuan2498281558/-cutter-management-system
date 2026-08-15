@@ -108,3 +108,24 @@ backend/static/drf-yasg/
 backend/static/rest_framework/
 backend/templates/rest_framework/
 web/src/theme/fa/fonts/fontawesome-webfont.svg
+
+# Local migration/analysis scripts and generated research outputs.
+/deploy/
+/tools/
+/论文审查/
+backend/*.py
+!backend/main.py
+!backend/manage.py
+backend/*.md
+backend/*.jsonl
+backend/*.csv
+backend/*.db
+backend/*.sql
+backend/*.log
+backend/.env*
+backend/logs/
+backend/e1_recovery_*/
+backend/geology_profile_output/
+backend/dvadmin3_celery/
+backend/plugins/
+backend/util/
