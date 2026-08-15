@@ -1,0 +1,22 @@
+{
+  "name": "cutter-management-system",
+  "version": "0.1.0",
+  "description": "Shield-machine cutter lifecycle management system",
+  "private": false,
+  "scripts": {
+    "test": "npm --prefix web run build",
+    "build": "npm --prefix web run build"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuhuan2498281558/-cutter-management-system.git"
+  },
+  "keywords": [
+    "shield-machine",
+    "tunneling",
+    "cutter-management",
+    "django",
+    "vue3"
+  ]
+}

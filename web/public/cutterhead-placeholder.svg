@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Illustrative shield cutterhead</title>
+  <desc id="desc">A generic, non-project-specific cutterhead diagram for local demonstrations.</desc>
+  <defs>
+    <radialGradient id="plate" cx="50%" cy="45%" r="65%">
+      <stop offset="0" stop-color="#34465a"/>
+      <stop offset="1" stop-color="#131c28"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="1200" fill="#0b111a"/>
+  <circle cx="600" cy="600" r="535" fill="url(#plate)" stroke="#70869b" stroke-width="10"/>
+  <circle cx="600" cy="600" r="410" fill="none" stroke="#526b80" stroke-width="5"/>
+  <circle cx="600" cy="600" r="170" fill="#202d3c" stroke="#89a0b3" stroke-width="8"/>
+  <g stroke="#6f8599" stroke-width="8" opacity=".85">
+    <path d="M600 70V1130M70 600H1130M225 225L975 975M975 225L225 975"/>
+  </g>
+  <g fill="#d3a457" stroke="#f3d18a" stroke-width="4">
+    <circle cx="600" cy="155" r="18"/><circle cx="600" cy="1045" r="18"/>
+    <circle cx="155" cy="600" r="18"/><circle cx="1045" cy="600" r="18"/>
+    <circle cx="285" cy="285" r="18"/><circle cx="915" cy="285" r="18"/>
+    <circle cx="285" cy="915" r="18"/><circle cx="915" cy="915" r="18"/>
+    <circle cx="600" cy="300" r="18"/><circle cx="600" cy="900" r="18"/>
+    <circle cx="300" cy="600" r="18"/><circle cx="900" cy="600" r="18"/>
+    <circle cx="410" cy="250" r="18"/><circle cx="790" cy="250" r="18"/>
+    <circle cx="410" cy="950" r="18"/><circle cx="790" cy="950" r="18"/>
+    <circle cx="250" cy="410" r="18"/><circle cx="950" cy="410" r="18"/>
+    <circle cx="250" cy="790" r="18"/><circle cx="950" cy="790" r="18"/>
+  </g>
+  <g fill="none" stroke="#9cb2c3" stroke-width="3" opacity=".75">
+    <circle cx="600" cy="600" r="275"/><circle cx="600" cy="600" r="350"/>
+  </g>
+</svg>

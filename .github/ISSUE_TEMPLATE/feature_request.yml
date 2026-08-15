@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an improvement to the cutter management workflow.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the engineering workflow or user need.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the expected behavior and any data or permission impact.
+    validations:
+      required: true

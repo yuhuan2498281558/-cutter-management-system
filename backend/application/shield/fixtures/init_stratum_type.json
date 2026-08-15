@@ -1,0 +1,68 @@
+[
+  {
+    "model": "shield.stratumtypedict",
+    "pk": 1,
+    "fields": {
+      "stratum_name": "黏土夹砂地层",
+      "stratum_code": "CLAY_SAND",
+      "description": "黏土与砂土混合的地层，具有一定的粘性和透水性",
+      "create_datetime": "2026-01-11T00:00:00Z",
+      "update_datetime": "2026-01-11T00:00:00Z"
+    }
+  },
+  {
+    "model": "shield.stratumtypedict",
+    "pk": 2,
+    "fields": {
+      "stratum_name": "上软下硬地层",
+      "stratum_code": "SOFT_HARD",
+      "description": "上部为软土，下部为硬岩的复合地层",
+      "create_datetime": "2026-01-11T00:00:00Z",
+      "update_datetime": "2026-01-11T00:00:00Z"
+    }
+  },
+  {
+    "model": "shield.stratumtypedict",
+    "pk": 3,
+    "fields": {
+      "stratum_name": "全断面弱风化花岗岩",
+      "stratum_code": "WEAK_GRANITE",
+      "description": "全断面为弱风化花岗岩，硬度较高",
+      "create_datetime": "2026-01-11T00:00:00Z",
+      "update_datetime": "2026-01-11T00:00:00Z"
+    }
+  },
+  {
+    "model": "shield.stratumtypedict",
+    "pk": 4,
+    "fields": {
+      "stratum_name": "基岩凸起地层",
+      "stratum_code": "BEDROCK_PROTRUSION",
+      "description": "基岩局部凸起形成的不均匀地层",
+      "create_datetime": "2026-01-11T00:00:00Z",
+      "update_datetime": "2026-01-11T00:00:00Z"
+    }
+  },
+  {
+    "model": "shield.stratumtypedict",
+    "pk": 5,
+    "fields": {
+      "stratum_name": "软土地基",
+      "stratum_code": "SOFT_SOIL",
+      "description": "软土地基，承载力较低，易变形",
+      "create_datetime": "2026-01-11T00:00:00Z",
+      "update_datetime": "2026-01-11T00:00:00Z"
+    }
+  },
+  {
+    "model": "shield.stratumtypedict",
+    "pk": 6,
+    "fields": {
+      "stratum_name": "孤石",
+      "stratum_code": "BOULDER",
+      "description": "地层中存在的孤立大石块",
+      "create_datetime": "2026-01-11T00:00:00Z",
+      "update_datetime": "2026-01-11T00:00:00Z"
+    }
+  }
+]
