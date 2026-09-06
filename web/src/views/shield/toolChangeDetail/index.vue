@@ -47,6 +47,7 @@
         <div class="card-header">
           <span class="card-title">换刀明细记录</span>
           <div class="header-actions">
+            <span class="export-scope">导出全部刀位及完整字段，不受筛选影响</span>
             <ExportDropdown title="换刀明细记录" :filename="exportFilename" :rows="tableData" :columns="exportColumns" :meta="exportMeta" />
           </div>
         </div>
@@ -68,10 +69,14 @@
         </el-select>
         <el-button @click="resetFilters">重置筛选</el-button>
       </div>
-      <div class="table-scope">显示 {{ filteredTableData.length }} / 全部 {{ tableData.length }} 个刀位；导出包含全部刀位及完整字段。点击行首箭头查看详情。</div>
+      <div class="table-scope">
+        <span>显示 <strong>{{ filteredTableData.length }}</strong> / 全部 {{ tableData.length }} 个刀位</span>
+        <span class="detail-hint">点击行首箭头查看详情</span>
+      </div>
 
       <el-table
         :data="filteredTableData"
+        class="detail-table"
         border
         stripe
         height="calc(100vh - 280px)"
@@ -80,64 +85,80 @@
         table-layout="fixed"
         empty-text="没有符合筛选条件的刀位"
       >
-        <el-table-column type="expand" width="48">
+        <el-table-column type="expand" width="42">
           <template #default="{ row }">
             <div class="expanded-detail">
-              <el-descriptions :column="2" border size="small">
-                <el-descriptions-item label="新刀信息" :span="2"><div class="new-tool-summary">{{ newToolSummary(row) }}</div></el-descriptions-item>
-                <el-descriptions-item label="刀刃磨损量">{{ row.blade_wear_amount ?? '-' }}</el-descriptions-item>
-                <el-descriptions-item label="刀位轨迹">
-                  <el-tooltip :content="row.trajectory?.source || '图纸依据'" placement="top">
-                    <span>{{ row.trajectory?.display || '待按最终图纸核对' }}</span>
-                  </el-tooltip>
-                </el-descriptions-item>
-                <el-descriptions-item label="累计更换次数">{{ row.replacement_count }}</el-descriptions-item>
-                <el-descriptions-item label="是否更换">{{ row.is_replaced ? '是' : '否' }}</el-descriptions-item>
-                <el-descriptions-item label="厂家">{{ row.manufacturer || '-' }}</el-descriptions-item>
-                <el-descriptions-item label="品牌">{{ row.brand || '-' }}</el-descriptions-item>
-                <el-descriptions-item label="更换类型">{{ row.replacement_type === 'COMPLETE' ? '整刀更换' : row.replacement_type === 'REPAIR' ? '维修' : '-' }}</el-descriptions-item>
-                <el-descriptions-item label="维修部位">{{ Array.isArray(row.repair_parts) && row.repair_parts.length ? row.repair_parts.join('、') : '-' }}</el-descriptions-item>
-                <el-descriptions-item label="价格">{{ row.price ?? '-' }}</el-descriptions-item>
-                <el-descriptions-item label="刀具磨损更换图">
-                  <el-image v-if="row.wear_image" :src="row.wear_image" :preview-src-list="[row.wear_image]" preview-teleported style="width: 50px; height: 50px;" fit="cover" />
-                  <span v-else>-</span>
-                </el-descriptions-item>
-                <el-descriptions-item label="旧刀照片" :span="2">
-                  <div v-if="row.old_photo_links?.length" class="photo-link-list">
-                    <el-link v-for="(photo, index) in row.old_photo_links" :key="photo.id" type="primary" @click="previewPhoto(photo.url, photo.name || `照片${index + 1}`)">{{ photo.name || `照片${index + 1}` }}</el-link>
-                  </div>
-                  <span v-else>-</span>
-                </el-descriptions-item>
-                <el-descriptions-item label="备注" :span="2">{{ row.remark || '-' }}</el-descriptions-item>
-              </el-descriptions>
+              <div class="detail-groups">
+                <section class="detail-group" aria-label="新刀信息">
+                  <h3>新刀信息</h3>
+                  <div class="new-tool-summary">{{ newToolSummary(row) }}</div>
+                </section>
+                <section class="detail-group" aria-label="磨损与更换">
+                  <h3>磨损与更换</h3>
+                  <dl class="detail-fields">
+                    <div><dt>刀刃磨损量</dt><dd>{{ row.blade_wear_amount ?? '-' }}</dd></div>
+                    <div><dt>刀位轨迹</dt><dd><el-tooltip :content="row.trajectory?.source || '图纸依据'" placement="top"><span>{{ row.trajectory?.display || '待按最终图纸核对' }}</span></el-tooltip></dd></div>
+                    <div><dt>累计更换次数</dt><dd>{{ row.replacement_count }}</dd></div>
+                    <div><dt>更换类型</dt><dd>{{ row.replacement_type === 'COMPLETE' ? '整刀更换' : row.replacement_type === 'REPAIR' ? '维修' : '-' }}</dd></div>
+                    <div><dt>维修部位</dt><dd>{{ Array.isArray(row.repair_parts) && row.repair_parts.length ? row.repair_parts.join('、') : '-' }}</dd></div>
+                  </dl>
+                </section>
+                <section class="detail-group" aria-label="采购信息">
+                  <h3>采购信息</h3>
+                  <dl class="detail-fields">
+                    <div><dt>厂家</dt><dd>{{ row.manufacturer || '-' }}</dd></div>
+                    <div><dt>品牌</dt><dd>{{ row.brand || '-' }}</dd></div>
+                    <div><dt>价格</dt><dd>{{ row.price ?? '-' }}</dd></div>
+                  </dl>
+                </section>
+              </div>
+              <dl class="detail-attachments">
+                <div class="attachment-field">
+                  <dt>刀具磨损更换图</dt>
+                  <dd>
+                    <el-image v-if="row.wear_image" :src="row.wear_image" :preview-src-list="[row.wear_image]" preview-teleported class="wear-thumbnail" fit="cover" />
+                    <span v-else>-</span>
+                  </dd>
+                </div>
+                <div class="attachment-field">
+                  <dt>旧刀照片</dt>
+                  <dd>
+                    <div v-if="row.old_photo_links?.length" class="photo-link-list">
+                      <el-link v-for="(photo, index) in row.old_photo_links" :key="photo.id" type="primary" @click="previewPhoto(photo.url, photo.name || `照片${index + 1}`)">{{ photo.name || `照片${index + 1}` }}</el-link>
+                    </div>
+                    <span v-else>-</span>
+                  </dd>
+                </div>
+                <div class="attachment-field detail-remark"><dt>备注</dt><dd>{{ row.remark || '-' }}</dd></div>
+              </dl>
             </div>
           </template>
         </el-table-column>
-        <el-table-column type="index" label="序号" width="58" align="center" />
-        <el-table-column prop="cutter_position_no" label="刀位号" width="90" />
-        <el-table-column label="刀具类型" min-width="160">
+        <el-table-column type="index" label="序号" width="54" align="center" />
+        <el-table-column prop="cutter_position_no" label="刀位号" width="78" />
+        <el-table-column label="刀具类型" min-width="240">
           <template #default="{ row }">
             <span>{{ row.tool_type_name }}</span>
             <div class="secondary-text">{{ row.tool_parent_type_display }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="刀具编号" min-width="150">
-          <template #default="{ row }">{{ row.tool_number || '-' }}</template>
+        <el-table-column label="刀具编号" width="190">
+          <template #default="{ row }"><span class="tool-number">{{ row.tool_number || '-' }}</span></template>
         </el-table-column>
-        <el-table-column label="检查状态" width="116" align="center">
+        <el-table-column label="检查状态" width="106" align="center">
           <template #default="{ row }">
             <el-tag :type="!row.is_checked ? 'info' : row.is_replaced ? 'danger' : 'success'" size="small">{{ checkStatus(row) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="wear_condition" label="磨损情况" min-width="140">
+        <el-table-column prop="wear_condition" label="磨损情况" width="116">
           <template #default="{ row }">{{ row.wear_condition || '-' }}</template>
         </el-table-column>
-        <el-table-column label="返修状态" width="160">
+        <el-table-column label="返修状态" width="150">
           <template #default="{ row }">
             <el-tag :type="repairStatus(row) === 'CLOSED' ? 'success' : ['UNRECORDED', 'PENDING_VENDOR_FEEDBACK'].includes(repairStatus(row)) ? 'warning' : 'info'" size="small">{{ repairLabels[repairStatus(row)] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="旧刀返修" width="120" fixed="right">
+        <el-table-column label="旧刀返修" width="110" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.is_replaced && (isEditable || row.old_tool_record_data)"
@@ -476,8 +497,32 @@ onMounted(() => {
 .detail-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .detail-search { width: 240px; }
 .detail-filters :deep(.el-select) { width: 180px; }
-.table-scope { margin: 10px 0; font-size: 12px; color: #606266; }
-.expanded-detail { padding: 12px 20px; max-width: 1100px; }
+.table-scope { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 12px 0; font-size: 13px; color: var(--el-text-color-regular); }
+.table-scope strong { font-weight: 600; color: var(--el-text-color-primary); }
+.detail-hint, .export-scope { font-size: 12px; color: var(--el-text-color-secondary); }
+.tool-number { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.detail-table :deep(.el-table__expanded-cell) { padding: 0; }
+.expanded-detail { padding: 20px 24px; background: var(--el-fill-color-lighter); }
+.detail-groups { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
+.detail-group { min-width: 0; }
+.detail-group + .detail-group { border-left: 1px solid var(--el-border-color-lighter); padding-left: 24px; }
+.detail-group h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--el-text-color-primary); }
+.detail-fields, .detail-attachments { margin: 0; font-size: 13px; line-height: 1.65; }
+.detail-fields > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; margin-top: 6px; }
+.expanded-detail dt { color: var(--el-text-color-secondary); font-weight: 400; }
+.expanded-detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--el-text-color-regular); }
+.detail-attachments { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px 24px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--el-border-color-lighter); }
+.attachment-field { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; align-items: start; }
+.detail-remark { grid-column: 1 / -1; }
+.detail-remark dd { white-space: pre-wrap; }
+.wear-thumbnail { width: 56px; height: 56px; border-radius: 4px; }
+.photo-link-list :deep(.el-link) { max-width: 100%; text-align: left; overflow-wrap: anywhere; }
+@media (max-width: 1200px) {
+  .expanded-detail { padding: 16px; }
+  .detail-groups { gap: 16px; }
+  .detail-group + .detail-group { padding-left: 16px; }
+  .detail-fields > div { grid-template-columns: 84px minmax(0, 1fr); gap: 8px; }
+}
 .secondary-text { font-size: 12px; color: #606266; }
 .warehouse-summary { font-size: 14px; color: #606266; }
 
@@ -489,6 +534,7 @@ onMounted(() => {
 
 .header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -523,6 +569,8 @@ onMounted(() => {
 
 .new-tool-summary {
   white-space: pre-line;
+  overflow-wrap: anywhere;
+  font-size: 13px;
   line-height: 1.6;
 }
 
