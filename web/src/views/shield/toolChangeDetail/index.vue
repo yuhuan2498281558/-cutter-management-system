@@ -61,21 +61,36 @@
       <el-alert v-if="isEditable" title="现场检查和新刀信息仅供查看。请通过“旧刀返修”补录厂家检测结果；现场记录有误时，先撤回开仓汇总，再由移动端更正。" type="info" :closable="false" show-icon class="supplement-notice" />
 
       <div class="detail-filters">
-        <el-input v-model="searchText" placeholder="搜索刀位 / 刀具编号" aria-label="搜索刀位或刀具编号" clearable class="detail-search" />
+        <div class="filter-field detail-search">
+          <span class="filter-label">刀位 / 刀具编号</span>
+          <el-input v-model="searchText" placeholder="输入刀位或编号" aria-label="搜索刀位或刀具编号" clearable />
+        </div>
+        <div class="filter-field">
+          <span class="filter-label">检查状态</span>
         <el-select v-model="checkFilter" aria-label="检查状态筛选">
           <el-option label="全部检查状态" value="ALL" />
           <el-option label="尚未检查" value="UNCHECKED" />
           <el-option label="已检查未换" value="CHECKED_ONLY" />
           <el-option label="已更换" value="REPLACED" />
         </el-select>
+        </div>
+        <div class="filter-field">
+          <span class="filter-label">返修状态</span>
         <el-select v-model="repairFilter" aria-label="返修状态筛选">
           <el-option label="全部返修状态" value="ALL" />
           <el-option v-for="(label, value) in repairLabels" :key="value" :label="label" :value="value" />
         </el-select>
-        <el-button @click="resetFilters">重置筛选</el-button>
+        </div>
+        <el-button @click="resetFilters" :disabled="!hasActiveFilters">重置筛选</el-button>
+      </div>
+      <div v-if="hasActiveFilters" class="active-filters" aria-label="当前筛选条件">
+        <span class="filter-label">当前条件</span>
+        <el-button v-if="searchText.trim()" size="small" class="filter-chip" aria-label="清除刀位和编号搜索" @click="searchText = ''">搜索：{{ searchText.trim() }} <span aria-hidden="true">×</span></el-button>
+        <el-button v-if="checkFilter !== 'ALL'" size="small" class="filter-chip" aria-label="清除检查状态条件" @click="checkFilter = 'ALL'">{{ checkFilterLabel }} <span aria-hidden="true">×</span></el-button>
+        <el-button v-if="repairFilter !== 'ALL'" size="small" class="filter-chip" aria-label="清除返修状态条件" @click="repairFilter = 'ALL'">{{ repairLabels[repairFilter] }} <span aria-hidden="true">×</span></el-button>
       </div>
       <div class="table-scope">
-        <span>显示 <strong>{{ filteredTableData.length }}</strong> / 全部 {{ tableData.length }} 个刀位</span>
+        <span role="status" aria-live="polite">显示 <strong>{{ filteredTableData.length }}</strong> / 全部 {{ tableData.length }} 个刀位</span>
         <span class="detail-hint">点击行首箭头查看详情</span>
       </div>
 
@@ -90,6 +105,12 @@
         table-layout="fixed"
         empty-text="没有符合筛选条件的刀位"
       >
+        <template #empty>
+          <el-empty :image-size="64" :description="tableData.length ? '没有符合筛选条件的刀位' : '暂无刀位数据'">
+            <el-button v-if="tableData.length && hasActiveFilters" type="primary" plain @click="resetFilters">清除筛选，显示全部</el-button>
+            <span v-else class="detail-hint">请核对该开仓关联的盾构机及刀位配置</span>
+          </el-empty>
+        </template>
         <el-table-column type="expand" width="42">
           <template #default="{ row }">
             <div class="expanded-detail">
@@ -213,6 +234,8 @@ const warehouseCollapsed = ref(false);
 const searchText = ref('');
 const checkFilter = ref<CheckFilter>('ALL');
 const repairFilter = ref<RepairFilter>('ALL');
+const hasActiveFilters = computed(() => Boolean(searchText.value.trim()) || checkFilter.value !== 'ALL' || repairFilter.value !== 'ALL');
+const checkFilterLabel = computed(() => ({ UNCHECKED: '尚未检查', CHECKED_ONLY: '已检查未换', REPLACED: '已更换', ALL: '全部检查状态' })[checkFilter.value]);
 const filteredTableData = computed(() => tableData.value.filter(row => matchesDetailFilters(row, checkFilter.value, repairFilter.value, searchText.value)));
 const resetFilters = () => {
   searchText.value = '';
@@ -547,9 +570,17 @@ onUnmounted(invalidateLoads);
   gap: 10px;
 }
 
-.detail-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.detail-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.filter-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.filter-label { font-size: 12px; color: var(--el-text-color-secondary); }
+.active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.active-filters .filter-chip { margin-left: 0; max-width: 100%; height: auto; min-height: 24px; }
+.filter-chip :deep(span) { white-space: normal; overflow-wrap: anywhere; }
 .detail-search { width: 240px; }
 .detail-filters :deep(.el-select) { width: 180px; }
+@media (max-width: 640px) {
+  .detail-filters .filter-field, .detail-filters :deep(.el-select) { width: 100%; }
+}
 .table-scope { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 12px 0; font-size: 13px; color: var(--el-text-color-regular); }
 .table-scope strong { font-weight: 600; color: var(--el-text-color-primary); }
 .detail-hint, .export-scope { font-size: 12px; color: var(--el-text-color-secondary); }

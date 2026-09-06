@@ -110,6 +110,34 @@ test('full export keeps all 18 original fields, including fields now inside expa
   ]));
   assert.equal(s.exportMeta.value.length, 16);
 });
+
+test('active filter feedback tracks independent conditions without changing export data', t => {
+  const s = setup(t);
+  assert.equal(s.hasActiveFilters.value, false);
+  s.searchText.value = '   ';
+  assert.equal(s.hasActiveFilters.value, false);
+  s.searchText.value = ' NEW-5 ';
+  s.checkFilter.value = 'REPLACED';
+  s.repairFilter.value = 'CONFIRMED';
+  assert.equal(s.hasActiveFilters.value, true);
+  assert.equal(s.checkFilterLabel.value, '已更换');
+  assert.equal(s.filteredTableData.value.length, 1);
+  s.searchText.value = '';
+  assert.equal(s.checkFilter.value, 'REPLACED');
+  assert.equal(s.repairFilter.value, 'CONFIRMED');
+  s.checkFilter.value = 'ALL';
+  assert.equal(s.hasActiveFilters.value, true);
+  assert.equal(s.tableData.value.length, 7);
+  s.resetFilters();
+  assert.equal(s.hasActiveFilters.value, false);
+});
+
+test('empty state differentiates no records and filtered-out records with a reset action', () => {
+  assert.match(source, /tableData.length \? '没有符合筛选条件的刀位' : '暂无刀位数据'/);
+  assert.match(source, /@click="resetFilters">清除筛选，显示全部/);
+  for (const name of ['清除刀位和编号搜索', '清除检查状态条件', '清除返修状态条件']) assert.ok(source.includes(`aria-label="${name}"`));
+  assert.match(source, /role="status" aria-live="polite"/);
+});
 test('edit eligibility still requires supplement mode and ready warehouse', t => {
   const s = setup(t);
   assert.equal(s.isEditable.value, false);
