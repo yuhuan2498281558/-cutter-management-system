@@ -136,13 +136,13 @@
         </el-table-column>
         <el-table-column type="index" label="序号" width="54" align="center" />
         <el-table-column prop="cutter_position_no" label="刀位号" width="78" />
-        <el-table-column label="刀具类型" min-width="240">
+        <el-table-column label="刀具类型" min-width="300">
           <template #default="{ row }">
             <span>{{ row.tool_type_name }}</span>
             <div class="secondary-text">{{ row.tool_parent_type_display }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="刀具编号" width="190">
+        <el-table-column label="刀具编号" min-width="180">
           <template #default="{ row }"><span class="tool-number">{{ row.tool_number || '-' }}</span></template>
         </el-table-column>
         <el-table-column label="检查状态" width="106" align="center">

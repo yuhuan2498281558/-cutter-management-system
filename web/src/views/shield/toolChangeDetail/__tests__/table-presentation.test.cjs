@@ -119,3 +119,40 @@ test('edit eligibility still requires supplement mode and ready warehouse', t =>
   readonly.warehouseInfo.value = { supplement_ready: true };
   assert.equal(readonly.isEditable.value, false);
 });
+
+test('expanded details use full-width semantic groups with attachments below', () => {
+  const expansion = descriptor.template.content.split('<div class="expanded-detail">')[1].split('</template>')[0];
+  for (const label of ['新刀信息', '磨损与更换', '采购信息']) assert.ok(expansion.includes(`aria-label="${label}"`));
+  assert.ok(expansion.includes('class="detail-attachments"'));
+  assert.ok(expansion.includes('class="attachment-field detail-remark"'));
+  assert.ok(!expansion.includes('el-descriptions'));
+  assert.ok(!source.includes('max-width: 1100px'));
+  assert.match(source, /class="export-scope">导出全部刀位及完整字段，不受筛选影响/);
+});
+
+test('expanded content renders zero values, long remarks and escaped text without altering data', async t => {
+  const { renderToString } = require('@vue/server-renderer');
+  const s = setup(t);
+  const expansion = '<div class="expanded-detail">' + descriptor.template.content.split('<div class="expanded-detail">')[1].split('</template>')[0];
+  const compiled = compileTemplate({ source: expansion, filename: 'expanded-detail.vue', id: 'expanded-render-test' });
+  assert.deepEqual(compiled.errors, []);
+  const { render } = run(compiled.code);
+  const row = {
+    blade_wear_amount: 0, replacement_count: 0, price: 0, manufacturer: '<script>bad</script>',
+    brand: '测试品牌', replacement_type: 'REPAIR', repair_parts: ['刀圈', '轴承'],
+    trajectory: { display: 'R1955 mm', source: '图纸依据' }, tool_parent_type: 'DISC',
+    new_tool_record_data: { ring_type_display: '光面', ring_manufacturer: '测试厂家' },
+    remark: '长备注\n第二行', old_photo_links: [{ id: 1, name: 'old-photo.png', url: '/test-photo.png' }],
+  };
+  const snapshot = JSON.stringify(row);
+  const app = vue.createSSRApp({ setup: () => ({ row, newToolSummary: s.newToolSummary }), render });
+  app.component('ElTooltip', { props: ['content', 'placement'], setup: (_, { slots }) => () => slots.default?.() });
+  app.component('ElLink', { setup: (_, { slots }) => () => vue.h('a', {}, slots.default?.()) });
+  app.component('ElImage', { render: () => vue.h('img') });
+  const html = await renderToString(app);
+  assert.equal((html.match(/<dd>0<\/dd>/g) || []).length, 3);
+  for (const text of ['光面', 'R1955 mm', '刀圈、轴承', '测试品牌', 'old-photo.png', '长备注\n第二行']) assert.ok(html.includes(text));
+  assert.ok(html.includes('&lt;script&gt;bad&lt;/script&gt;'));
+  assert.ok(!html.includes('<table'));
+  assert.equal(JSON.stringify(row), snapshot);
+});
