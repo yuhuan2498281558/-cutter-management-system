@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" :title="readOnly ? '查看旧刀厂家返修信息' : '旧刀厂家返修补录'" width="820px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="!saving">
+  <el-dialog v-model="visible" :title="readOnly ? '查看旧刀厂家返修信息' : '旧刀厂家返修补录'" width="min(820px, calc(100vw - 32px))" top="5vh" class="old-tool-repair-dialog" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="!saving">
     <div v-if="row" class="record-context">
       <span>刀位：{{ row.cutter_position_no || '-' }}</span>
       <span>刀具类型：{{ row.tool_type_name || row.tool_parent_type || '-' }}</span>
@@ -11,6 +11,8 @@
       <el-button link type="primary" @click="retryLoad">重新加载</el-button>
     </el-alert>
     <el-form v-loading="loading" :model="form" :disabled="!canSave" label-width="132px" class="repair-form">
+      <fieldset class="repair-section">
+        <legend>照片资料</legend>
       <el-form-item label="旧刀磨损照片">
         <div class="photo-links">
           <el-link
@@ -34,8 +36,12 @@
           <el-button :disabled="remainingPhotoSlots <= 0">补充照片</el-button>
         </el-upload>
       </el-form-item>
+      </fieldset>
 
       <template v-if="toolParentType === 'DISC'">
+        <fieldset class="repair-section">
+          <legend>刀圈与磨损</legend>
+          <div class="repair-grid">
         <el-form-item label="刀圈磨损量">
           <el-input-number v-model="form.ring_wear_amount" :min="0" :precision="2" controls-position="right" />
         </el-form-item>
@@ -45,17 +51,22 @@
         <el-form-item label="刀具轨迹">
           <el-input v-model="form.tool_track" placeholder="请输入刀具轨迹" />
         </el-form-item>
-        <el-form-item label="刀圈损坏情况">
+        <el-form-item label="刀圈掉齿数量">
+          <el-input-number v-model="form.ring_tooth_loss_count" :min="0" :precision="0" controls-position="right" />
+        </el-form-item>
+        <el-form-item label="刀圈损坏情况" class="wide-field">
           <el-select v-model="form.ring_damage" multiple clearable filterable placeholder="请选择" class="full-width">
             <el-option v-for="item in options.ring_damage" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="刀圈掉齿数量">
-          <el-input-number v-model="form.ring_tooth_loss_count" :min="0" :precision="0" controls-position="right" />
-        </el-form-item>
-        <el-form-item label="刀圈其他情况">
+        <el-form-item label="刀圈其他情况" class="wide-field">
           <el-input v-model="form.ring_other_condition" type="textarea" :rows="2" />
         </el-form-item>
+          </div>
+        </fieldset>
+        <fieldset class="repair-section">
+          <legend>轴承检测</legend>
+          <div class="repair-grid">
         <el-form-item label="轴承是否失效">
           <el-select v-model="form.bearing_failed" clearable placeholder="请选择">
             <el-option label="是" :value="true" />
@@ -67,9 +78,14 @@
             <el-option v-for="item in options.bearing_failure_reasons" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="轴承其他情况">
+        <el-form-item label="轴承其他情况" class="wide-field">
           <el-input v-model="form.bearing_other_condition" type="textarea" :rows="2" />
         </el-form-item>
+          </div>
+        </fieldset>
+        <fieldset class="repair-section">
+          <legend>刀毂检测</legend>
+          <div class="repair-grid">
         <el-form-item label="刀毂是否损坏">
           <el-select v-model="form.hub_damaged" clearable placeholder="请选择">
             <el-option label="是" :value="true" />
@@ -81,12 +97,17 @@
             <el-option v-for="item in options.hub_failure_reasons" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="刀毂其他情况">
+        <el-form-item label="刀毂其他情况" class="wide-field">
           <el-input v-model="form.hub_other_condition" type="textarea" :rows="2" />
         </el-form-item>
+          </div>
+        </fieldset>
       </template>
 
       <template v-if="toolParentType === 'SCRAPER'">
+        <fieldset class="repair-section">
+          <legend>刮刀检测</legend>
+          <div class="repair-grid">
         <el-form-item label="换下刀具磨损量">
           <el-input-number v-model="form.scraper_wear_amount" :min="0" :precision="2" controls-position="right" />
         </el-form-item>
@@ -111,22 +132,29 @@
             <el-option label="否" :value="false" />
           </el-select>
         </el-form-item>
+          </div>
+        </fieldset>
       </template>
 
+      <fieldset class="repair-section">
+        <legend>处置与返修</legend>
+        <div class="repair-grid">
       <el-form-item label="报废 / 可维修">
         <el-select v-model="form.disposition" clearable placeholder="请选择">
           <el-option v-for="item in options.old_tool_dispositions" :key="item.value" :label="item.label" :value="item.value" />
         </el-select>
       </el-form-item>
-      <el-form-item label="厂家返修结果">
-        <el-input v-model="form.repair_result" type="textarea" :rows="2" placeholder="请输入厂家返修结果" />
-      </el-form-item>
       <el-form-item label="维修价格">
         <el-input-number v-model="form.repair_price" :min="0" :precision="2" controls-position="right" />
       </el-form-item>
-      <el-form-item label="补充说明">
+      <el-form-item label="厂家返修结果" class="wide-field">
+        <el-input v-model="form.repair_result" type="textarea" :rows="2" placeholder="请输入厂家返修结果" />
+      </el-form-item>
+      <el-form-item label="补充说明" class="wide-field">
         <el-input v-model="form.remark" type="textarea" :rows="2" />
       </el-form-item>
+        </div>
+      </fieldset>
     </el-form>
 
     <template #footer>
@@ -152,7 +180,7 @@
     </template>
   </el-dialog>
 
-  <el-dialog v-model="photoPreviewVisible" title="旧刀磨损照片" width="760px" append-to-body destroy-on-close>
+  <el-dialog v-model="photoPreviewVisible" title="旧刀磨损照片" width="min(760px, calc(100vw - 32px))" top="5vh" append-to-body destroy-on-close>
     <div class="photo-preview">
       <img v-if="photoPreviewUrl" :src="photoPreviewUrl" :alt="photoPreviewName" />
     </div>
@@ -363,12 +391,34 @@ function previewPhoto(url: string, name = '旧刀磨损照片') {
 defineExpose({ open });
 </script>
 
+<style>
+/* Dialog content is teleported; keep these rules namespaced to this dialog. */
+.old-tool-repair-dialog { display: flex; flex-direction: column; max-height: 90vh; max-height: 90dvh; margin-bottom: 0; }
+.old-tool-repair-dialog .el-dialog__body { min-height: 0; overflow-y: auto; padding-top: 12px; padding-bottom: 4px; }
+.old-tool-repair-dialog .el-dialog__header,
+.old-tool-repair-dialog .el-dialog__footer { flex-shrink: 0; }
+.old-tool-repair-dialog .el-dialog__footer { border-top: 1px solid var(--el-border-color-lighter); padding-top: 14px; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.old-tool-repair-dialog .el-dialog__footer .el-button + .el-button { margin-left: 0; }
+@media (max-width: 480px) {
+  .old-tool-repair-dialog .el-form-item { display: block; }
+  .old-tool-repair-dialog .el-form-item__label { width: auto !important; height: auto; line-height: 22px; padding-bottom: 6px; }
+}
+</style>
+
 <style scoped>
-.record-context { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 16px; color: #606266; }
+.record-context { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; margin-bottom: 16px; padding: 12px; background: var(--el-fill-color-light); border-radius: 4px; color: var(--el-text-color-regular); overflow-wrap: anywhere; }
 .load-error { margin-bottom: 12px; }
-.repair-form { max-height: 62vh; overflow-y: auto; padding-right: 10px; }
+.repair-section { min-width: 0; border: 0; padding: 0; margin: 0 0 6px; }
+.repair-section legend { width: 100%; padding: 0 0 10px; margin-bottom: 14px; border-bottom: 1px solid var(--el-border-color-lighter); font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
+.repair-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
+.wide-field { grid-column: 1 / -1; }
+.repair-form :deep(.el-input-number), .repair-form :deep(.el-select) { width: 100%; }
+.repair-form :deep(.el-form-item__content) { min-width: 0; }
+@media (max-width: 640px) {
+  .repair-grid, .record-context { grid-template-columns: minmax(0, 1fr); }
+}
 .full-width { width: 100%; }
-.photo-links { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+.photo-links { display: flex; flex-wrap: wrap; gap: 12px; margin-right: 8px; margin-bottom: 8px; }
 .photo-upload { display: block; }
 .empty-text { color: #909399; }
 .photo-preview { display: flex; justify-content: center; align-items: center; min-height: 240px; background: #f4f6f8; }
