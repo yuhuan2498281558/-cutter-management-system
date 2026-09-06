@@ -187,13 +187,12 @@ const parseMarkdown = (content: string): MarkdownBlock[] => {
   return blocks;
 };
 
-const hasMarkdown = computed(() => (
-  /(^|\n)\s{0,3}#{1,6}\s+/.test(props.content)
-  || /\*\*[^*]+\*\*/.test(props.content)
-  || /(^|\n)\s*\|.+\|\s*\n\s*\|?\s*:?-{3}/.test(props.content)
-));
-
 const markdownBlocks = computed(() => parseMarkdown(props.content));
+
+const hasMarkdown = computed(() => (
+  markdownBlocks.value.some((block) => block.type !== 'paragraph')
+  || /\*\*[^*]+\*\*|`[^`]+`/.test(props.content)
+));
 
 const normalizeTitle = (title: string) => title.replace(/[：:]\s*$/, '').trim();
 

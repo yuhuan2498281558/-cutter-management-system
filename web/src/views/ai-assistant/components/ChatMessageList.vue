@@ -2,6 +2,11 @@
   <div class="chat-message-list-wrapper">
     <div class="messages-container" ref="containerRef" @scroll="handleScroll">
       <div class="messages-inner">
+      <div v-if="hasMoreHistory" class="history-actions">
+        <el-button size="small" :loading="historyLoading" :disabled="isGenerating || actionsDisabled" @click="$emit('load-earlier')">
+          加载更早消息
+        </el-button>
+      </div>
       <div v-if="messages.length === 0" class="welcome-message">
         <div class="welcome-icon">
           <el-icon :size="30"><ChatDotRound /></el-icon>
@@ -24,7 +29,7 @@
 
       <div
         v-for="(msg, index) in messages"
-        :key="index"
+        :key="msg.id"
         :class="['message-item', msg.role]"
       >
         <div class="message-avatar">
@@ -62,11 +67,11 @@
               v-if="canRetry(msg, index)"
               type="button"
               class="meta-btn"
-              :title="msg.rawError ? '重新发送上一个问题' : '重新生成本条回答'"
+              title="用上一个问题开始新一轮，保留原有回答"
               @click="$emit('retry')"
             >
               <el-icon :size="12"><RefreshRight /></el-icon>
-              {{ msg.rawError ? '重试' : '重新生成' }}
+              再问一次
             </button>
           </div>
         </div>
@@ -100,11 +105,15 @@ import AnalysisMessage from './AnalysisMessage.vue';
 const props = defineProps<{
   messages: Message[];
   isGenerating?: boolean;
+  hasMoreHistory?: boolean;
+  historyLoading?: boolean;
+  actionsDisabled?: boolean;
 }>();
 
 defineEmits<{
   (e: 'retry'): void;
   (e: 'quick-send', query: string): void;
+  (e: 'load-earlier'): void;
 }>();
 
 // 欢迎区快捷问题：直接复用快捷问题库中已验证的原句，不新增问法
@@ -161,6 +170,7 @@ const canRetry = (msg: Message, index: number) => {
     msg.role === 'assistant'
     && !msg.streaming
     && !props.isGenerating
+    && !props.actionsDisabled
     && !!msg.content
     && index === props.messages.length - 1
   );
@@ -190,6 +200,17 @@ const handleSmartScroll = () => {
   }
 };
 
+const captureScrollPosition = () => {
+  if (!containerRef.value) return undefined;
+  return { top: containerRef.value.scrollTop, height: containerRef.value.scrollHeight };
+};
+
+const restoreScrollPosition = (position: { top: number; height: number }) => {
+  if (!containerRef.value) return;
+  containerRef.value.scrollTop = position.top + containerRef.value.scrollHeight - position.height;
+  handleScroll();
+};
+
 const handleCopy = async (text: string) => {
   try {
     if (navigator.clipboard) {
@@ -213,10 +234,17 @@ const handleCopy = async (text: string) => {
 defineExpose({
   scrollToBottom,
   handleSmartScroll,
+  captureScrollPosition,
+  restoreScrollPosition,
 });
 </script>
 
 <style scoped lang="scss">
+.history-actions {
+  padding: 0 0 12px;
+  text-align: center;
+}
+
 .chat-message-list-wrapper {
   position: relative;
   flex: 1;

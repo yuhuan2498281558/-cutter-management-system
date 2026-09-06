@@ -4,18 +4,17 @@ Django视图 - 提供HTTP接口
 
 import json
 import logging
-import asyncio
 import time
+from contextlib import aclosing
 
-from django.http import StreamingHttpResponse
+from asgiref.sync import sync_to_async
+from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 from .llm_service import get_assistant
-from .llm_provider import LLMProviderError, get_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +56,18 @@ def _build_project_snapshot(project_id: str) -> dict:
     try:
         from application.shield.models import (
             WarehouseOpeningBasicInfo,
-            ToolChangeDetail,
             CutterPositionInfo,
         )
-        from django.db.models import Count, IntegerField, Max
+        from application.shield.cutter_position_scope import is_active_cutter_position
+        from .tools import _active_detail_query
+        from django.db.models import Count, IntegerField, Max, Q
         from django.db.models.functions import Cast
 
         # 开仓记录统计
         warehouse_qs = WarehouseOpeningBasicInfo.objects.filter(
             project__project_id=project_id
         )
-        warehouse_stats = warehouse_qs.annotate(
+        warehouse_stats = warehouse_qs.filter(ring_no__regex=r'^\d+$').annotate(
             ring_int=Cast('ring_no', output_field=IntegerField())
         ).aggregate(
             total=Count('id'),
@@ -76,19 +76,14 @@ def _build_project_snapshot(project_id: str) -> dict:
         total_openings = warehouse_stats['total'] or 0
         latest_ring = warehouse_stats['latest_ring'] or '未知'
 
-        # 换刀记录总数
-        total_changes = ToolChangeDetail.objects.filter(
-            warehouse__project__project_id=project_id
-        ).count()
-
-        # 已更换次数
-        total_replaced = ToolChangeDetail.objects.filter(
-            warehouse__project__project_id=project_id,
-            is_replaced=True,
-        ).count()
-
-        # 刀位总数
-        total_positions = CutterPositionInfo.objects.count()
+        changes = _active_detail_query({'project_id': project_id}).aggregate(
+            total=Count('id'), replaced=Count('id', filter=Q(is_replaced=True)),
+        )
+        total_changes, total_replaced = changes['total'], changes['replaced']
+        positions = CutterPositionInfo.objects.filter(
+            shield_machine_id__in=warehouse_qs.values('shield_model_id'),
+        ).values_list('cutter_position_no', 'tool_type')
+        total_positions = sum(is_active_cutter_position(code, kind) for code, kind in positions)
 
         return {
             'snapshot_total_openings': total_openings,
@@ -102,12 +97,12 @@ def _build_project_snapshot(project_id: str) -> dict:
         return {}
 
 
-def _build_context(request) -> dict:
+def _context_for_user(user, body) -> dict:
     ctx = {
-        "user_id": request.user.id,
-        "username": request.user.username,
+        "user_id": user.id,
+        "username": user.username,
+        "require_project": True,
     }
-    body = request.data
     project_id = _resolve_request_project_id(body.get("project_id"))
     if project_id:
         ctx["project_id"] = project_id
@@ -116,14 +111,39 @@ def _build_context(request) -> dict:
         ctx["project_name"] = body["project_name"]
     if body.get("ring_range") and isinstance(body["ring_range"], list) and len(body["ring_range"]) == 2:
         ctx["ring_range"] = body["ring_range"]
+    if body.get("route_mode"):
+        ctx["route_mode"] = body["route_mode"]
     return ctx
+
+
+def _build_context(request) -> dict:
+    return _context_for_user(request.user, request.data)
+
+
+def _validate_body(body):
+    if not isinstance(body, dict):
+        return "请求内容必须为 JSON 对象"
+    query = body.get('query')
+    if not isinstance(query, str) or not query.strip():
+        return "查询内容不能为空"
+    if len(query) > 10000:
+        return "查询内容不能超过 10000 个字符"
+    if body.get('project_id') is not None and not isinstance(body['project_id'], (str, int)):
+        return "项目编号格式错误"
+    if body.get('route_mode') is not None and body['route_mode'] not in ('rule', 'agent', 'hybrid'):
+        return "查询模式格式错误"
+    rings = body.get('ring_range')
+    if rings:
+        if not isinstance(rings, list) or len(rings) != 2 or any(type(value) is not int or value < 1 for value in rings) or rings[0] > rings[1]:
+            return "环号范围必须为两个递增的正整数"
+    return None
 
 
 def _auth_user(request):
     """从 Authorization: JWT <token> 头手动验证，返回 user 或 None"""
     auth_header = request.META.get("HTTP_AUTHORIZATION", "")
     if not auth_header.startswith("JWT "):
-        logger.warning(f"stream auth: 无 JWT 头，收到：{auth_header[:30]!r}")
+        logger.warning("stream auth: JWT authorization header missing")
         return None
     try:
         raw_token = auth_header.split(" ", 1)[1]
@@ -142,9 +162,10 @@ def chat(request):
     POST /api/ai/chat/
     Body: { "query": "...", "project_id": "P001", "project_name": "...", "ring_range": [100, 300] }
     """
-    user_query = request.data.get('query', '').strip()
-    if not user_query:
-        return error("查询内容不能为空")
+    validation_error = _validate_body(request.data)
+    if validation_error:
+        return error(validation_error)
+    user_query = request.data['query'].strip()
 
     started_at = time.perf_counter()
     context = _build_context(request)
@@ -172,23 +193,7 @@ def chat(request):
         return error(f"服务异常：{str(e)}")
 
 
-def _iterate_async(async_iterable):
-    loop = asyncio.new_event_loop()
-    iterator = async_iterable.__aiter__()
-    try:
-        while True:
-            try:
-                yield loop.run_until_complete(iterator.__anext__())
-            except StopAsyncIteration:
-                break
-    finally:
-        try:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-        finally:
-            loop.close()
-
-
-def chat_stream(request):
+async def chat_stream(request):
     """
     真正的 token 级流式接口（SSE）
     POST /api/ai/chat/stream/
@@ -203,58 +208,48 @@ def chat_stream(request):
         return HttpResponseNotAllowed(["POST"])
 
     # 手动鉴权（async 视图不能用 @permission_classes）
-    user = _auth_user(request)
+    user = await sync_to_async(_auth_user)(request)
     if user is None:
-        from django.http import JsonResponse
         return JsonResponse({"code": 4010, "msg": "未授权"}, status=401)
 
-    import json as _json
     try:
-        body = _json.loads(request.body)
+        body = json.loads(request.body)
     except Exception:
         body = {}
 
-    user_query = body.get("query", "").strip()
-    if not user_query:
-        from django.http import JsonResponse
-        return JsonResponse({"code": 4000, "msg": "查询内容不能为空"}, status=400)
+    validation_error = _validate_body(body)
+    if validation_error:
+        return JsonResponse({"code": 4000, "msg": validation_error}, status=400)
+    user_query = body['query'].strip()
 
     started_at = time.perf_counter()
-    context = {"user_id": user.id, "username": user.username}
-    project_id = _resolve_request_project_id(body.get("project_id"))
-    if project_id:
-        context["project_id"] = project_id
-        context.update(_build_project_snapshot(project_id))
-    if body.get("project_name"):
-        context["project_name"] = body["project_name"]
-    if body.get("ring_range") and isinstance(body["ring_range"], list) and len(body["ring_range"]) == 2:
-        context["ring_range"] = body["ring_range"]
-    if body.get("route_mode"):
-        context["route_mode"] = body.get("route_mode")
+    context = await sync_to_async(_context_for_user)(user, body)
 
     context_ready_ms = (time.perf_counter() - started_at) * 1000
-    assistant = get_assistant()
+    assistant = await sync_to_async(get_assistant)()
     assistant_ready_ms = (time.perf_counter() - started_at) * 1000
 
-    def event_generator():
+    async def event_generator():
         route_stage = ""
         rule_branch = ""
         first_chunk_ms = None
         completed = False
         try:
             yield ": connected\n\n"
-            for event in _iterate_async(assistant.chat_stream(user_query, context)):
-                if event.get("type") == "meta":
-                    route_stage = event.get("route_stage", "")
-                    rule_branch = event.get("rule_branch", "")
-                elif event.get("type") == "chunk" and first_chunk_ms is None:
-                    first_chunk_ms = (time.perf_counter() - started_at) * 1000
-                elif event.get("type") == "done":
-                    completed = True
-                data = json.dumps(event, ensure_ascii=False)
-                yield f"data: {data}\n\n"
+            async with aclosing(assistant.chat_stream(user_query, context)) as events:
+                async for event in events:
+                    if event.get("type") == "meta":
+                        route_stage = event.get("route_stage", "")
+                        rule_branch = event.get("rule_branch", "")
+                    elif event.get("type") in ("chunk", "answer") and first_chunk_ms is None:
+                        first_chunk_ms = (time.perf_counter() - started_at) * 1000
+                    elif event.get("type") == "done":
+                        completed = True
+                    data = json.dumps(event, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
         except Exception as e:
-            data = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
+            logger.exception("AI stream response failed")
+            data = json.dumps({"type": "error", "content": "对话服务暂时不可用，请稍后重试"}, ensure_ascii=False)
             yield f"data: {data}\n\n"
         finally:
             logger.info(
@@ -285,24 +280,8 @@ def chat_stream(request):
 @api_view(['GET'])
 @permission_classes([])
 def health_check(request):
-    try:
-        assistant = get_assistant()
-        test_result = assistant.llm.invoke("你好")
-        text = test_result.content if hasattr(test_result, 'content') else str(test_result)
-        config = get_llm_config()
-        return success({
-            "status": "LLM服务正常",
-            "provider": config.provider,
-            "model": config.model,
-            "base_url": config.base_url,
-            "test_response": text[:50] + "..." if len(text) > 50 else text
-        })
-    except LLMProviderError as e:
-        logger.error(f"LLM provider 配置失败：{e}")
-        return error(f"LLM provider 配置失败：{str(e)}")
-    except Exception as e:
-        logger.error(f"健康检查失败：{e}")
-        return error(f"LLM服务异常：{str(e)}")
+    """Liveness only; public monitoring must never spend model quota."""
+    return success({"status": "服务在线", "model_checked": False})
 
 
 @api_view(['GET'])
@@ -314,7 +293,15 @@ def conversation_history(request):
     """
     try:
         assistant = get_assistant()
-        return success(assistant.get_history(str(request.user.id)))
+        try:
+            before = request.query_params.get('before_sequence')
+            before = int(before) if before is not None else None
+            limit = int(request.query_params.get('limit', 50))
+            if before is not None and before < 1 or not 1 <= limit <= 100:
+                raise ValueError
+        except (TypeError, ValueError):
+            return error('历史分页参数格式错误')
+        return success(assistant.get_history(str(request.user.id), before_sequence=before, limit=limit))
     except Exception as e:
         logger.error(f"获取对话历史失败：{e}")
         return error(f"获取历史失败：{str(e)}")

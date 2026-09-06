@@ -21,7 +21,7 @@ class MemoryPathTests(SimpleTestCase):
         cleared = self.assistant._resolve_memory_slots("取消范围的换刀情况", snapshot)
         self.assertNotIn("ring_range", cleared)
 
-    def test_intent_policy_does_not_leak_position_to_opening(self):
+    def test_intent_policy_does_not_leak_detail_filters_to_opening(self):
         context = {
             "memory_slots": {
                 "ring_range": [100, 300],
@@ -31,7 +31,7 @@ class MemoryPathTests(SimpleTestCase):
         }
         params = self.assistant._context_params("同样范围，开仓情况呢", context)
         self.assertEqual(params["ring_range"], [100, 300])
-        self.assertEqual(params["tool_type"], "DISC")
+        self.assertIsNone(params["tool_type"])
         self.assertNotIn("cutter_position_no", params)
 
     def test_memory_messages_use_summary_and_bounded_recent_history(self):

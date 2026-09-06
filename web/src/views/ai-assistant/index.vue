@@ -25,6 +25,10 @@
           ref="chatListRef"
           :messages="messages"
           :is-generating="loading"
+          :has-more-history="hasMoreHistory"
+          :history-loading="historyLoading"
+          :actions-disabled="resetting"
+          @load-earlier="loadHistory(true)"
           @retry="handleRegenerate"
           @quick-send="sendQuery"
         />
@@ -32,7 +36,7 @@
         <!-- 底部输入与路径控制区 -->
         <ChatInputArea
           v-model:route-mode="routeMode"
-          :loading="loading"
+          :loading="loading || resetting"
           @send="sendQuery"
           @abort="handleAbort"
         />
@@ -42,7 +46,7 @@
 </template>
 
 <script lang="ts" setup name="AiAssistant">
-import { onMounted, onUnmounted, ref } from 'vue';
+import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound, RefreshRight } from '@element-plus/icons-vue';
 import { useAiAssistantApi } from '/@/api/ai-assistant';
@@ -56,12 +60,19 @@ const api = useAiAssistantApi();
 const messages = ref<Message[]>([]);
 const loading = ref(false);
 const resetting = ref(false);
+const historyLoading = ref(false);
+const hasMoreHistory = ref(false);
+const nextHistoryCursor = ref<number>();
 const routeMode = ref<RouteMode>('rule');
 const memoryInfo = ref<MemoryMetadata>();
 const chatListRef = ref<InstanceType<typeof ChatMessageList>>();
 
 let abortController: AbortController | null = null;
 let activePresentationCleanup: (() => void) | null = null;
+let operationVersion = 0;
+let messageSequence = 0;
+let disposed = false;
+const nextMessageId = () => `message-${++messageSequence}`;
 
 // 单次规则回答由后端整段返回；限制展示速率可保留流式观感，
 // 但首批字符立即落屏，避免旧实现固定等待造成首问卡顿。
@@ -86,6 +97,7 @@ const getCurrentTime = () => {
 
 const handleAbort = () => {
   if (abortController) {
+    operationVersion += 1;
     abortController.abort();
     abortController = null;
     activePresentationCleanup?.();
@@ -99,19 +111,37 @@ const handleAbort = () => {
 };
 
 // 页面刷新后从后端记忆回填历史对话；只读接口，失败时静默降级为空对话
-const loadHistory = async () => {
+const loadHistory = async (older = false) => {
+  if (disposed || historyLoading.value || loading.value || resetting.value) return;
+  if (older && (!hasMoreHistory.value || nextHistoryCursor.value === undefined)) return;
+  const version = operationVersion;
+  historyLoading.value = true;
   try {
-    const response = await api.history();
+    const response = await api.history({ limit: 50, ...(older ? { before_sequence: nextHistoryCursor.value } : {}) });
+    if (disposed || version !== operationVersion) return;
     const data = response.data || {};
-    if (Array.isArray(data.messages) && data.messages.length) {
-      messages.value = data.messages.map((item: { role: 'user' | 'assistant'; content: string }) => ({
+    nextHistoryCursor.value = typeof data.next_before_sequence === 'number' ? data.next_before_sequence : undefined;
+    hasMoreHistory.value = Boolean(data.has_more && nextHistoryCursor.value !== undefined);
+    if (Array.isArray(data.messages)) {
+      const page = data.messages.map((item: { role: 'user' | 'assistant'; content: string; sequence?: number }) => ({
+        id: item.sequence === undefined ? nextMessageId() : `history-${item.sequence}`,
         role: item.role,
         content: item.content,
         time: '',
       }));
-      chatListRef.value?.scrollToBottom(false);
+      if (older) {
+        const scrollPosition = chatListRef.value?.captureScrollPosition();
+        const existingIds = new Set(messages.value.map((message) => message.id));
+        messages.value = [...page.filter((message: Message) => !existingIds.has(message.id)), ...messages.value];
+        await nextTick();
+        if (!disposed && version === operationVersion && scrollPosition) chatListRef.value?.restoreScrollPosition(scrollPosition);
+      } else {
+        messages.value = page;
+        chatListRef.value?.scrollToBottom(false);
+      }
     }
-    if (data.memory) {
+    if (disposed || version !== operationVersion) return;
+    if (!older && data.memory) {
       memoryInfo.value = {
         backend: data.memory.backend,
         message_count: data.memory.message_count,
@@ -119,37 +149,39 @@ const loadHistory = async () => {
         slots: data.memory.slot_names,
       };
     }
-  } catch {
+  } catch (error: any) {
     // 历史回填失败不影响正常对话
+    if (older && !disposed && version === operationVersion) ElMessage.error('加载历史失败：' + (error.message || '未知错误'));
+  } finally {
+    if (!disposed) historyLoading.value = false;
   }
 };
 
-onMounted(loadHistory);
+onMounted(() => loadHistory());
 
 const sendQuery = (query: string) => {
-  if (!query.trim() || loading.value) return;
-  messages.value.push({ role: 'user', content: query, time: getCurrentTime() });
+  if (!query.trim() || loading.value || resetting.value || disposed) return;
+  messages.value.push({ id: nextMessageId(), role: 'user', content: query, time: getCurrentTime() });
   runStream(query);
 };
 
-// 重新生成：复用最后一个用户问题，替换最后一条助手回答，不重复追加用户消息
+// 再问一次会创建新轮次，保留旧回答，与后端追加历史的语义一致。
 const handleRegenerate = () => {
-  if (loading.value) return;
+  if (loading.value || resetting.value || disposed) return;
   const lastUserMsg = [...messages.value].reverse().find((msg) => msg.role === 'user');
   if (!lastUserMsg) return;
-  const last = messages.value[messages.value.length - 1];
-  if (last && last.role === 'assistant') {
-    messages.value.pop();
-  }
-  runStream(lastUserMsg.content);
+  sendQuery(lastUserMsg.content);
 };
 
 const runStream = async (query: string) => {
+  const version = ++operationVersion;
   loading.value = true;
 
-  const assistantMsg: Message = { role: 'assistant', content: '', time: getCurrentTime(), streaming: true };
+  const assistantMsg: Message = { id: nextMessageId(), role: 'assistant', content: '', time: getCurrentTime(), streaming: true };
   messages.value.push(assistantMsg);
-  const msgIndex = messages.value.length - 1;
+  const currentMessage = () => messages.value.find((message) => message.id === assistantMsg.id);
+  let closed = false;
+  const isCurrent = () => !disposed && !closed && operationVersion === version;
 
   chatListRef.value?.scrollToBottom();
 
@@ -159,33 +191,36 @@ const runStream = async (query: string) => {
   let flushFrame: number | null = null;
   let hasVisibleContent = false;
   let lastFlushTime = 0;
+  let hasFinalAnswer = false;
 
   const finishIfReady = () => {
-    if (!streamFinished || pendingText || flushFrame !== null) return;
-    if (messages.value[msgIndex]) messages.value[msgIndex].streaming = false;
+    if (!isCurrent() || !streamFinished || pendingText || flushFrame !== null) return;
+    const message = currentMessage();
+    if (message) message.streaming = false;
+    closed = true;
     loading.value = false;
     abortController = null;
     activePresentationCleanup = null;
   };
 
   const appendVisibleText = (text: string) => {
-    if (!text || !messages.value[msgIndex]) return;
-    messages.value[msgIndex].content += text;
+    const message = currentMessage();
+    if (!isCurrent() || !text || !message) return;
+    message.content += text;
     hasVisibleContent = true;
     chatListRef.value?.handleSmartScroll();
   };
 
   const scheduleFlush = () => {
-    if (flushFrame === null && pendingText) {
+    if (isCurrent() && flushFrame === null && pendingText) {
       flushFrame = window.requestAnimationFrame(flushPending);
     }
   };
 
   const flushPending = (timestamp: number) => {
     flushFrame = null;
-    if (!messages.value[msgIndex]) {
+    if (!isCurrent() || !currentMessage()) {
       pendingText = '';
-      loading.value = false;
       return;
     }
     if (pendingText) {
@@ -202,7 +237,7 @@ const runStream = async (query: string) => {
   };
 
   const enqueueText = (text: string) => {
-    if (!text) return;
+    if (!isCurrent() || !text) return;
     pendingText += text;
     if (!hasVisibleContent) {
       const firstText = pendingText.slice(0, INITIAL_VISIBLE_CHARS);
@@ -219,7 +254,9 @@ const runStream = async (query: string) => {
       window.cancelAnimationFrame(flushFrame);
       flushFrame = null;
     }
-    if (messages.value[msgIndex]) messages.value[msgIndex].streaming = false;
+    const message = currentMessage();
+    if (message) message.streaming = false;
+    closed = true;
     activePresentationCleanup = null;
   };
 
@@ -227,27 +264,49 @@ const runStream = async (query: string) => {
     { query, route_mode: routeMode.value },
     {
       onChunk: (text) => {
-        enqueueText(text);
+        if (!hasFinalAnswer) enqueueText(text);
+      },
+      onAnswer: (text) => {
+        if (!isCurrent()) return;
+        const message = currentMessage();
+        if (!message) return;
+        hasFinalAnswer = true;
+        if (flushFrame !== null) window.cancelAnimationFrame(flushFrame);
+        flushFrame = null;
+        pendingText = '';
+        // 工具执行过程中的临时文本不进入最终回答；仅保留仍匹配的可见前缀。
+        let prefixLength = 0;
+        while (prefixLength < message.content.length && prefixLength < text.length && message.content[prefixLength] === text[prefixLength]) {
+          prefixLength += 1;
+        }
+        message.content = message.content.slice(0, prefixLength);
+        hasVisibleContent = prefixLength > 0;
+        enqueueText(text.slice(message.content.length));
       },
       onMemory: (info) => {
+        if (!isCurrent()) return;
         memoryInfo.value = { ...memoryInfo.value, ...info };
       },
       onDone: () => {
+        if (!isCurrent()) return;
         streamFinished = true;
         finishIfReady();
       },
       onError: (msg) => {
+        if (!isCurrent()) return;
+        const message = currentMessage();
+        if (!message) return;
         if (flushFrame !== null) {
           window.cancelAnimationFrame(flushFrame);
           flushFrame = null;
         }
         if (pendingText) {
-          messages.value[msgIndex].content += pendingText;
+          message.content += pendingText;
           pendingText = '';
         }
-        const prefix = messages.value[msgIndex].content ? '\n\n' : '';
-        messages.value[msgIndex].content += `${prefix}抱歉，出错了：${msg}`;
-        messages.value[msgIndex].rawError = true;
+        const prefix = message.content ? '\n\n' : '';
+        message.content += `${prefix}抱歉，出错了：${msg}`;
+        message.rawError = true;
         streamFinished = true;
         finishIfReady();
       },
@@ -257,24 +316,33 @@ const runStream = async (query: string) => {
 };
 
 const handleReset = async () => {
+  if (resetting.value || disposed) return;
+  const version = ++operationVersion;
   try {
     resetting.value = true;
+    const last = messages.value[messages.value.length - 1];
+    if (last?.streaming) last.aborted = true;
     abortController?.abort();
     abortController = null;
     activePresentationCleanup?.();
     loading.value = false;
     const response = await api.reset();
+    if (disposed || version !== operationVersion) return;
     messages.value = [];
     memoryInfo.value = undefined;
+    hasMoreHistory.value = false;
+    nextHistoryCursor.value = undefined;
     ElMessage.success(response.data?.message || '对话已重置');
   } catch (error: any) {
-    ElMessage.error('重置失败：' + (error.message || '未知错误'));
+    if (!disposed && version === operationVersion) ElMessage.error('重置失败：' + (error.message || '未知错误'));
   } finally {
-    resetting.value = false;
+    if (!disposed && version === operationVersion) resetting.value = false;
   }
 };
 
 onUnmounted(() => {
+  disposed = true;
+  operationVersion += 1;
   abortController?.abort();
   activePresentationCleanup?.();
 });

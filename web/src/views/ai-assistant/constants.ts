@@ -116,7 +116,7 @@ export const quickQuestionGroups: QuickQuestionGroup[] = [
       { label: '高频刀位', query: '分析高频更换刀位，列出更换次数和主要磨损类型' },
       { label: '异常刀位', query: '找出异常磨损集中的刀位，并列出异常类型' },
       { label: '刀盘分布', query: '分析刀盘不同刀位的磨损分布情况' },
-      { label: '指定刀位', query: '分析G3R刀位的换刀和磨损情况' },
+      { label: '指定刀位', query: '分析S1L刀位的换刀和磨损情况' },
     ],
   },
   {
