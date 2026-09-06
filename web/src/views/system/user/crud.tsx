@@ -40,7 +40,6 @@ export const createCrudOptions = function ({crudExpose}: CreateCrudOptionsProps)
     const systemConfigStore = SystemConfigStore()
     const {systemConfig} = storeToRefs(systemConfigStore)
     const getSystemConfig = computed(() => {
-        console.log(systemConfig.value)
         return systemConfig.value
     })
 

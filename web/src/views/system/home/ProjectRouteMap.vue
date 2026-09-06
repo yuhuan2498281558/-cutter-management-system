@@ -76,8 +76,14 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { request } from '/@/utils/service';
 import { GetHomeProjectInfo } from './api';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const GEOLOGY_PROFILE_PDF_URL = '/static/home/changle-geology-profile.pdf';
 
 type RingPoint = {
   id: string;
@@ -333,8 +339,19 @@ async function loadPdf() {
   pdfLoading.value = true;
   pdfError.value = '';
   pdfRingMap.value = {};
-  await renderPdf();
-  pdfLoading.value = false;
+  try {
+    pdfDoc = await pdfjsLib.getDocument(GEOLOGY_PROFILE_PDF_URL).promise;
+    pdfPage = await pdfDoc.getPage(1);
+    await renderPdf();
+    await extractRingPositions();
+  } catch {
+    pdfPage = null;
+    pdfDoc?.destroy?.();
+    pdfDoc = null;
+    pdfError.value = 'PDF 加载失败，请刷新重试';
+  } finally {
+    pdfLoading.value = false;
+  }
 }
 
 async function loadProject() {
@@ -425,7 +442,7 @@ function scrollToCurrentRing() {
 onMounted(async () => {
   await loadProject();
   await loadStratum();
-  await loadPdf();  // 使用脱敏示意剖面；项目资料由部署者自行导入
+  await loadPdf();
   await loadOpenings();  // 再加载开仓数据，使用映射
 
   if (stageRef.value) {

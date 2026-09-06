@@ -10,7 +10,7 @@ export function parse(jsonString = '{}', defaultValue = {}) {
 	try {
 		result = JSON.parse(jsonString);
 	} catch (error) {
-		console.log(error);
+		// 解析异常时返回默认值
 	}
 	return result;
 }

@@ -53,6 +53,18 @@ jobs:
           DATABASE_HOST: 127.0.0.1
           DATABASE_PORT: 5432
         run: python manage.py test application.shield.tests
+      - name: AI memory tests
+        working-directory: backend
+        env:
+          DJANGO_SECRET_KEY: ci-only-secret
+          DJANGO_DEBUG: 'true'
+          DATABASE_NAME: daoju
+          DATABASE_USER: daoju
+          DATABASE_PASSWORD: daoju
+          DATABASE_HOST: 127.0.0.1
+          DATABASE_PORT: 5432
+          AI_MEMORY_BACKEND: django
+        run: python manage.py test application.ai_assistant
 
   frontend:
     runs-on: ubuntu-latest

@@ -1,12 +1,13 @@
 <template>
-  <el-dialog v-model="visible" title="旧刀厂家返修补录" width="820px" :close-on-click-modal="false">
+  <el-dialog v-model="visible" :title="readOnly ? '查看旧刀厂家返修信息' : '旧刀厂家返修补录'" width="820px" :close-on-click-modal="false">
     <div v-if="row" class="record-context">
       <span>刀位：{{ row.cutter_position_no || '-' }}</span>
       <span>刀具类型：{{ row.tool_type_name || row.tool_parent_type || '-' }}</span>
-      <span>旧刀编号：{{ form.old_tool_number || row.tool_number || '-' }}</span>
+      <span>旧刀编号：{{ form.old_tool_number || resolvedOldToolNumber || '待确认' }}</span>
+      <span>返修状态：<el-tag size="small" :type="inspectionStatusType">{{ inspectionStatusText }}</el-tag></span>
     </div>
 
-    <el-form v-loading="loading" :model="form" label-width="132px" class="repair-form">
+    <el-form v-loading="loading" :model="form" :disabled="readOnly || isClosed" label-width="132px" class="repair-form">
       <el-form-item label="旧刀磨损照片">
         <div class="photo-links">
           <el-link
@@ -18,6 +19,7 @@
           <span v-if="existingPhotos.length === 0" class="empty-text">暂无</span>
         </div>
         <el-upload
+          v-if="!readOnly"
           v-model:file-list="fileList"
           action="#"
           :auto-upload="false"
@@ -126,7 +128,22 @@
 
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      <template v-if="!readOnly && !isClosed">
+        <el-button :loading="saving" @click="save('SAVE_DRAFT')">保存草稿</el-button>
+        <el-button
+          v-if="inspectionStatus === 'PENDING_VENDOR_FEEDBACK'"
+          type="primary"
+          :loading="saving"
+          @click="save('CONFIRM')"
+        >确认厂家反馈</el-button>
+        <el-button
+          v-else-if="inspectionStatus === 'CONFIRMED'"
+          type="warning"
+          :loading="saving"
+          @click="save('CLOSE')"
+        >完成归档</el-button>
+      </template>
+      <el-button v-else type="primary" @click="visible = false">关闭</el-button>
     </template>
   </el-dialog>
 
@@ -139,7 +156,7 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { GetOldToolRecord, GetToolChangeOptions, UpdateOldToolRecord } from './api';
 
 const emit = defineEmits<{ (event: 'saved'): void }>();
@@ -147,8 +164,11 @@ const emit = defineEmits<{ (event: 'saved'): void }>();
 const visible = ref(false);
 const loading = ref(false);
 const saving = ref(false);
+const readOnly = ref(false);
 const row = ref<any>(null);
 const existingPhotos = ref<any[]>([]);
+const resolvedOldToolNumber = ref('');
+const inspectionStatus = ref('PENDING_VENDOR_FEEDBACK');
 const fileList = ref<any[]>([]);
 const photoPreviewVisible = ref(false);
 const photoPreviewUrl = ref('');
@@ -181,6 +201,17 @@ const form = reactive<any>({
 
 const toolParentType = computed(() => row.value?.tool_parent_type || '');
 const remainingPhotoSlots = computed(() => Math.max(0, 5 - existingPhotos.value.length));
+const isClosed = computed(() => inspectionStatus.value === 'CLOSED');
+const inspectionStatusText = computed(() => ({
+  PENDING_VENDOR_FEEDBACK: '待厂家反馈',
+  CONFIRMED: '厂家反馈已确认',
+  CLOSED: '已归档',
+} as Record<string, string>)[inspectionStatus.value] || inspectionStatus.value);
+const inspectionStatusType = computed(() => ({
+  PENDING_VENDOR_FEEDBACK: 'warning',
+  CONFIRMED: 'success',
+  CLOSED: 'info',
+} as Record<string, string>)[inspectionStatus.value] || 'info');
 
 function resetForm() {
   Object.assign(form, {
@@ -191,11 +222,15 @@ function resetForm() {
     repair_result: '', repair_price: null, remark: '',
   });
   existingPhotos.value = [];
+  resolvedOldToolNumber.value = '';
+  inspectionStatus.value = 'PENDING_VENDOR_FEEDBACK';
   fileList.value = [];
 }
 
 function applyRecord(record: any) {
   if (!record) return;
+  resolvedOldToolNumber.value = record.old_tool_number_display || record.confirmed_tool_number || record.suggested_tool_number || '';
+  inspectionStatus.value = record.inspection_status || 'PENDING_VENDOR_FEEDBACK';
   Object.keys(form).forEach((key) => {
     if (record[key] !== undefined && record[key] !== null) form[key] = record[key];
   });
@@ -205,8 +240,9 @@ function applyRecord(record: any) {
   existingPhotos.value = record.photos || [];
 }
 
-async function open(input: any) {
+async function open(input: any, options: { readOnly?: boolean } = {}) {
   row.value = input;
+  readOnly.value = options.readOnly === true;
   resetForm();
   visible.value = true;
   loading.value = true;
@@ -230,17 +266,37 @@ function appendValue(data: FormData, key: string, value: any) {
   }
 }
 
-async function save() {
+async function save(workflowAction: 'SAVE_DRAFT' | 'CONFIRM' | 'CLOSE') {
   if (!row.value) return;
+  if (workflowAction !== 'SAVE_DRAFT' && !form.disposition) {
+    ElMessage.warning('请先选择旧刀处置结果');
+    return;
+  }
+  if (workflowAction === 'CLOSE' && form.disposition === 'REPAIRABLE' && !String(form.repair_result || '').trim()) {
+    ElMessage.warning('可维修旧刀归档前必须填写厂家返修结果');
+    return;
+  }
+  if (workflowAction === 'CLOSE') {
+    try {
+      await ElMessageBox.confirm('归档后将不能继续修改该旧刀返修信息，是否继续？', '完成归档', {
+        confirmButtonText: '确认归档',
+        cancelButtonText: '取消',
+        type: 'warning',
+      });
+    } catch {
+      return;
+    }
+  }
   saving.value = true;
   try {
     const data = new FormData();
+    data.append('workflow_action', workflowAction);
     Object.entries(form).forEach(([key, value]) => appendValue(data, key, value));
     fileList.value.forEach((item) => {
       if (item.raw) data.append('photos', item.raw);
     });
-    await UpdateOldToolRecord(row.value.id, data);
-    ElMessage.success('旧刀返修信息已保存');
+    const response: any = await UpdateOldToolRecord(row.value.id, data);
+    ElMessage.success(response.msg || (workflowAction === 'SAVE_DRAFT' ? '草稿已保存' : workflowAction === 'CONFIRM' ? '厂家反馈已确认' : '旧刀返修记录已归档'));
     visible.value = false;
     emit('saved');
   } finally {

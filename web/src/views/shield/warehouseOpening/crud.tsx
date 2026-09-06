@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router';
 import AutoStratumDisplay from './AutoStratumDisplay.vue';
 import { createIndexFormatter } from '../crudUtils';
 
-export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptionsRet {
+export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdraw }: any): CreateCrudOptionsRet {
 	const router = useRouter();
 
 	const pageRequest = async (query: UserPageQuery) => {
@@ -26,6 +26,7 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 	const clearAutoStratum = (form: any) => {
 		form.last_ring_no = undefined;
 		form.rings_between_openings = undefined;
+		form.usage_distance = undefined;
 		form.stratum_info_between_list = [];
 		form.geological_conditions = '';
 	};
@@ -51,6 +52,7 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 				const data = response.data as api.OpeningStratumPreview;
 				form.last_ring_no = data.last_ring_no || undefined;
 				form.rings_between_openings = data.rings_between_openings;
+				form.usage_distance = data.usage_distance;
 				form.stratum_info_between_list = data.stratum_info_between_list || [];
 				form.geological_conditions = data.geological_conditions || '';
 			} catch {
@@ -60,12 +62,13 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 	};
 
 	// 跳转到换刀明细页面
-	const goToToolChangeDetail = (row: any) => {
+	const goToToolChangeDetail = (row: any, mode: 'view' | 'supplement') => {
 		router.push({
 			path: '/shield/toolChangeDetail',
 			query: {
 				warehouse_id: row.id,
 				warehouse_code: row.warehouse_id,
+				mode,
 			},
 		});
 	};
@@ -89,7 +92,7 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 			},
 			rowHandle: {
 				fixed: 'right',
-				width: 360,
+				width: 510,
 				buttons: {
 					view: { show: false },
 					edit: {
@@ -106,14 +109,32 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 						type: 'danger',
 						link: true,
 					},
-					toolChangeDetail: {
-						text: '换刀明细',
+					viewToolChangeDetail: {
+						text: '查看明细',
 						type: 'success',
 						link: true,
 						iconRight: 'List',
 						click: ({ row }: any) => {
-							goToToolChangeDetail(row);
+							goToToolChangeDetail(row, 'view');
 						},
+					},
+					supplementToolChangeDetail: {
+						text: '补录明细',
+						type: 'warning',
+						link: true,
+						iconRight: 'EditPen',
+						click: ({ row }: any) => {
+							if (row.supplement_ready) goToToolChangeDetail(row, 'supplement');
+							else onSupplement(row);
+						},
+					},
+					withdrawSummary: {
+						text: '撤回汇总',
+						type: 'danger',
+						link: true,
+						iconRight: 'RefreshLeft',
+						show: ({ row }: any) => row.summary_status === 'CONFIRMED',
+						click: ({ row }: any) => onWithdraw(row),
 					},
 				},
 			},
@@ -236,30 +257,32 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 					title: '持续开仓时间（小时）',
 					type: 'number',
 					column: { minWidth: 140 },
-					form: {
-						component: {
-							placeholder: '请输入持续开仓时间（小时）',
-							min: 0,
-							precision: 2,
-						},
-						order: 6,
-					},
+					form: { show: false },
 				},
 				tool_change_duration: {
 					title: '换刀总时长（小时）',
 					type: 'number',
 					column: { minWidth: 140 },
-					form: {
-						component: { placeholder: '请输入换刀总时长（小时）', min: 0, precision: 2 },
-						order: 7,
-					},
+					form: { show: false },
+				},
+				summary_status: {
+					title: '汇总状态',
+					type: 'dict-select',
+					dict: dict({
+						data: [
+							{ value: 'DRAFT', label: '待确认', color: 'warning' },
+							{ value: 'CONFIRMED', label: '已确认', color: 'success' },
+						],
+					}),
+					column: { minWidth: 100 },
+					form: { show: false },
 				},
 				usage_distance: {
 					title: '本次使用距离（m）',
 					type: 'number',
 					column: { minWidth: 130 },
 					form: {
-						component: { placeholder: '请输入本次使用距离（m）', min: 0, precision: 2 },
+						component: { placeholder: '按掘进环数自动计算', disabled: true, precision: 2 },
 						order: 8,
 					},
 				},
@@ -267,27 +290,13 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 					title: '检查刀具数量（把）',
 					type: 'number',
 					column: { minWidth: 130 },
-					form: {
-						component: {
-							placeholder: '请输入检查刀具数量（把）',
-							min: 0,
-							precision: 0,
-						},
-						order: 9,
-					},
+					form: { show: false },
 				},
 				replaced_tool_count: {
 					title: '更换刀具数量（把）',
 					type: 'number',
 					column: { minWidth: 130 },
-					form: {
-						component: {
-							placeholder: '请输入更换刀具数量（把）',
-							min: 0,
-							precision: 0,
-						},
-						order: 10,
-					},
+					form: { show: false },
 				},
 				last_ring_no: {
 					title: '上次换刀环号',

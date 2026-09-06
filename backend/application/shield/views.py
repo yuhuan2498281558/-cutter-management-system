@@ -31,6 +31,7 @@ from .models import (
     ToolCost,
     ToolInfo,
     WarehouseOpeningBasicInfo,
+    MobileToolChangeTask,
     ToolChangeDetail,
     NewToolRecord,
     OldToolRecord,
@@ -55,6 +56,7 @@ from .models import (
 )
 from .cutter_position_scope import is_active_cutter_position, sort_cutter_position_items
 from .trajectory import get_tool_trajectory
+from .tool_identity import resolve_removed_tool_identity
 from .wear import wear_display
 
 
@@ -991,6 +993,7 @@ def _build_opening_stratum_context(project_id, ring_no, shield_model_id=None, op
     empty_result = {
         'last_ring_no': None,
         'rings_between_openings': None,
+        'usage_distance': None,
         'stratum_info_between': {},
         'stratum_info_between_list': [],
         'geological_conditions': '',
@@ -1052,13 +1055,41 @@ def _build_opening_stratum_context(project_id, ring_no, shield_model_id=None, op
         if current_stratum['burial_depth'] is not None:
             geological_parts.append(f"埋深 {current_stratum['burial_depth']:g} m")
 
+    rings_between_openings = current_ring - last_ring if last_ring is not None else current_ring
     return {
         'last_ring_no': previous['ring_no'] if previous else None,
-        'rings_between_openings': current_ring - last_ring if last_ring is not None else current_ring,
+        'rings_between_openings': rings_between_openings,
+        'usage_distance': float(rings_between_openings) * 2,
         'stratum_info_between': stratum_counts,
         'stratum_info_between_list': between_list,
         'geological_conditions': '；'.join(geological_parts),
     }
+
+
+OPENING_COMPLETION_FIELD_LABELS = {
+    'opening_duration': '开仓持续时间',
+    'tool_change_duration': '换刀总时长',
+    'checked_tool_count': '检查刀具数量',
+    'replaced_tool_count': '更换刀具数量',
+}
+
+
+def opening_completion_missing_fields(opening):
+    return [
+        field
+        for field in OPENING_COMPLETION_FIELD_LABELS
+        if getattr(opening, field, None) is None
+    ]
+
+
+def opening_completion_error(opening):
+    missing = opening_completion_missing_fields(opening)
+    if missing:
+        labels = '、'.join(OPENING_COMPLETION_FIELD_LABELS[field] for field in missing)
+        return f'请先补全开仓汇总信息：{labels}'
+    if opening.summary_status != WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+        return '请先确认开仓汇总信息'
+    return None
 
 
 class WarehouseOpeningBasicInfoSerializer(CustomModelSerializer):
@@ -1068,6 +1099,8 @@ class WarehouseOpeningBasicInfoSerializer(CustomModelSerializer):
     project_name = serializers.CharField(read_only=True, source='project.project_name')
     shield_model_name = serializers.CharField(read_only=True, source='shield_model.shield_model')
     stratum_info_between_list = serializers.SerializerMethodField(read_only=True)
+    supplement_ready = serializers.SerializerMethodField(read_only=True)
+    supplement_missing_fields = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = WarehouseOpeningBasicInfo
@@ -1089,6 +1122,12 @@ class WarehouseOpeningBasicInfoSerializer(CustomModelSerializer):
             for code, ring_count in obj.stratum_info_between.items()
         ]
 
+    def get_supplement_ready(self, obj):
+        return opening_completion_error(obj) is None
+
+    def get_supplement_missing_fields(self, obj):
+        return opening_completion_missing_fields(obj)
+
 
 class WarehouseOpeningBasicInfoCreateUpdateSerializer(CustomModelSerializer):
     """换刀基本信息创建/更新序列化器"""
@@ -1104,7 +1143,10 @@ class WarehouseOpeningBasicInfoCreateUpdateSerializer(CustomModelSerializer):
         fields = '__all__'
         read_only_fields = [
             "id", "warehouse_id", "last_ring_no", "rings_between_openings",
-            "stratum_info_between", "geological_conditions",
+            "stratum_info_between", "geological_conditions", "usage_distance",
+            "opening_duration", "tool_change_duration", "checked_tool_count",
+            "replaced_tool_count", "summary_status", "summary_confirmed_at",
+            "summary_confirmed_by", "summary_withdrawn_at", "summary_withdrawn_by",
         ]
 
     @staticmethod
@@ -1135,6 +1177,29 @@ class WarehouseOpeningBasicInfoCreateUpdateSerializer(CustomModelSerializer):
         return self._apply_auto_stratum_info(instance)
 
 
+class WarehouseOpeningCompletionSerializer(CustomModelSerializer):
+    """桌面端进入明细补录前必须确认的开仓汇总信息。"""
+    opening_duration = serializers.FloatField(min_value=0)
+    tool_change_duration = serializers.FloatField(min_value=0)
+    checked_tool_count = serializers.IntegerField(min_value=0)
+    replaced_tool_count = serializers.IntegerField(min_value=0)
+
+    class Meta:
+        model = WarehouseOpeningBasicInfo
+        fields = [
+            'opening_duration', 'tool_change_duration',
+            'checked_tool_count', 'replaced_tool_count',
+        ]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if attrs['replaced_tool_count'] > attrs['checked_tool_count']:
+            raise serializers.ValidationError({
+                'replaced_tool_count': '更换刀具数量不能大于检查刀具数量'
+            })
+        return attrs
+
+
 class WarehouseOpeningBasicInfoViewSet(CustomModelViewSet):
     """换刀基本信息管理接口"""
     queryset = WarehouseOpeningBasicInfo.objects.annotate(
@@ -1145,6 +1210,68 @@ class WarehouseOpeningBasicInfoViewSet(CustomModelViewSet):
     update_serializer_class = WarehouseOpeningBasicInfoCreateUpdateSerializer
     filter_fields = ['warehouse_id', 'project', 'ring_no', 'shield_model']
     search_fields = ['warehouse_id', 'ring_no']
+
+    @transaction.atomic
+    @action(methods=['post'], detail=True, url_path='complete_summary')
+    def complete_summary(self, request, pk=None):
+        """确认补录前置汇总；数量默认来自移动端汇总，但允许人工校正。"""
+        opening_id = self.get_object().pk
+        opening = WarehouseOpeningBasicInfo.objects.select_for_update().get(pk=opening_id)
+        if opening.summary_status == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+            return ErrorResponse(msg='开仓汇总已确认，如需修改请先撤回确认')
+        serializer = WarehouseOpeningCompletionSerializer(opening, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        opening = serializer.save(
+            summary_status=WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED,
+            summary_confirmed_at=timezone.now(),
+            summary_confirmed_by=(request.user if request.user.is_authenticated else None),
+        )
+        return SuccessResponse(
+            data=WarehouseOpeningBasicInfoSerializer(opening, request=request).data,
+            msg='开仓汇总信息已确认',
+        )
+
+    @transaction.atomic
+    @action(methods=['post'], detail=True, url_path='withdraw_summary')
+    def withdraw_summary(self, request, pk=None):
+        """撤回桌面汇总确认，恢复移动端录入并按明细重算数量。"""
+        opening_id = self.get_object().pk
+        tasks = list(
+            MobileToolChangeTask.objects.select_for_update()
+            .filter(warehouse_id=opening_id)
+            .order_by('pk')
+        )
+        opening = WarehouseOpeningBasicInfo.objects.select_for_update().get(pk=opening_id)
+        if opening.summary_status != WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+            return ErrorResponse(msg='开仓汇总尚未确认，无需撤回')
+
+        details = ToolChangeDetail.objects.filter(warehouse_id=opening_id)
+        opening.checked_tool_count = details.filter(is_checked=True).count()
+        opening.replaced_tool_count = details.filter(is_replaced=True).count()
+        opening.summary_status = WarehouseOpeningBasicInfo.SUMMARY_STATUS_DRAFT
+        opening.summary_withdrawn_at = timezone.now()
+        opening.summary_withdrawn_by = (
+            request.user if request.user.is_authenticated else None
+        )
+        opening.save(update_fields=[
+            'checked_tool_count', 'replaced_tool_count', 'summary_status',
+            'summary_withdrawn_at', 'summary_withdrawn_by', 'update_datetime',
+        ])
+
+        for task in tasks:
+            if task.status == 'CANCELLED':
+                continue
+            task.status = 'RETURNED'
+            task.submitted_at = None
+            task.returned_reason = '开仓汇总已撤回，请复核移动端明细'
+            task.save(update_fields=[
+                'status', 'submitted_at', 'returned_reason', 'update_datetime',
+            ])
+
+        return SuccessResponse(
+            data=WarehouseOpeningBasicInfoSerializer(opening, request=request).data,
+            msg='开仓汇总已撤回，数量已按移动端明细重新计算',
+        )
 
     @action(methods=['get'], detail=False, url_path='auto_stratum_preview',
             permission_classes=[AnonymousUserPermission])
@@ -2104,9 +2231,22 @@ class ToolChangeDetailSerializer(CustomModelSerializer):
         if not record:
             return None
         request = self.context.get('request')
+        confirmed_number = (
+            record.confirmed_tool_instance.display_tool_no
+            if record.confirmed_tool_instance_id else ''
+        )
+        suggested_number = (
+            record.suggested_tool_instance.display_tool_no
+            if record.suggested_tool_instance_id else ''
+        )
         return {
             'id': record.id,
             'old_tool_number': record.old_tool_number,
+            'old_tool_number_display': record.old_tool_number or confirmed_number or suggested_number,
+            'confirmed_tool_instance_id': record.confirmed_tool_instance_id,
+            'confirmed_tool_number': confirmed_number,
+            'suggested_tool_instance_id': record.suggested_tool_instance_id,
+            'suggested_tool_number': suggested_number,
             'wear_condition': record.wear_condition,
             'repair_parts': record.repair_parts or [],
             'repair_result': record.repair_result,
@@ -2159,27 +2299,59 @@ class ToolChangeDetailSerializer(CustomModelSerializer):
         return get_tool_trajectory(obj.cutter_position_no, obj.tool_parent_type)
 
 
+DESKTOP_DETAIL_WRITE_ERROR = (
+    '现场明细不可在桌面直接新增、修改或删除；'
+    '请通过旧刀返修入口补录厂家信息。现场记录有误时，请先撤回开仓汇总，再由移动端更正'
+)
+
+
 class ToolChangeDetailCreateUpdateSerializer(CustomModelSerializer):
-    """换刀明细创建/更新序列化器。"""
+    """保留旧客户端契约，但拒绝绕过移动录入和旧刀返修流程写入。"""
     wear_image = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     class Meta:
         model = ToolChangeDetail
         fields = '__all__'
         read_only_fields = ["id", "replacement_count"]
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        opening = attrs.get('warehouse')
+        if opening is None and self.instance is not None:
+            opening = self.instance.warehouse
+        if opening is not None:
+            error = opening_completion_error(opening)
+            if error:
+                raise serializers.ValidationError({'warehouse': error})
+        raise serializers.ValidationError({'detail': DESKTOP_DETAIL_WRITE_ERROR})
+
 
 class ToolChangeDetailViewSet(CustomModelViewSet):
     """换刀明细管理接口。"""
     queryset = ToolChangeDetail.objects.select_related(
-        'warehouse', 'warehouse__project', 'cutter_position', 'cutter_position__tool_info'
+        'warehouse',
+        'warehouse__project',
+        'cutter_position',
+        'cutter_position__tool_info',
+        'new_tool_record__tool_instance',
+        'old_tool_record__confirmed_tool_instance',
+        'old_tool_record__suggested_tool_instance',
     ).prefetch_related(
-        'new_tool_record', 'old_tool_record__photos'
+        'old_tool_record__photos'
     ).order_by('cutter_position_no', 'warehouse__open_time', 'id')
     serializer_class = ToolChangeDetailSerializer
     create_serializer_class = ToolChangeDetailCreateUpdateSerializer
     update_serializer_class = ToolChangeDetailCreateUpdateSerializer
     filter_fields = ['warehouse', 'cutter_position', 'is_replaced', 'tool_parent_type', 'wear_condition']
     search_fields = ['cutter_position_no', 'tool_number', 'manufacturer']
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # 包括继承来的单条、批量、导入和 PATCH 入口，不能只保护页面按钮。
+        if request.method not in {'GET', 'HEAD', 'OPTIONS'} and self.action in {
+            'create', 'update', 'partial_update', 'destroy', 'multiple_delete',
+            'batch_create', 'batch_update', 'import_data',
+        }:
+            raise serializers.ValidationError(DESKTOP_DETAIL_WRITE_ERROR)
 
     @action(detail=False, methods=['get'], permission_classes=[AnonymousUserPermission])
     def field_options(self, request):
@@ -2236,22 +2408,61 @@ class ToolChangeDetailViewSet(CustomModelViewSet):
         except (TypeError, ValueError):
             raise serializers.ValidationError('数值字段格式不正确')
 
+    @transaction.atomic
     @action(detail=True, methods=['get', 'post', 'put'], url_path='old_tool_record')
     def old_tool_record(self, request, pk=None):
         detail = self.get_object()
         if request.method == 'GET':
             return SuccessResponse(data=ToolChangeDetailSerializer(detail, context={'request': request}).data)
+        # 与移动端保持“开仓 → 明细”的加锁顺序，避免撤回确认与补录并发穿透门禁。
+        opening = WarehouseOpeningBasicInfo.objects.select_for_update().get(
+            pk=detail.warehouse_id,
+        )
+        detail = ToolChangeDetail.objects.select_for_update().get(pk=detail.pk)
+        detail.warehouse = opening
+        completion_error = opening_completion_error(opening)
+        if completion_error:
+            return ErrorResponse(msg=completion_error)
         if not detail.is_replaced:
             return ErrorResponse(msg='未更换刀具不能录入旧刀返修信息')
 
-        record, _ = OldToolRecord.objects.get_or_create(
+        workflow_action = str(request.data.get('workflow_action') or 'SAVE_DRAFT').strip().upper()
+        if workflow_action not in {'SAVE_DRAFT', 'CONFIRM', 'CLOSE'}:
+            return ErrorResponse(msg='旧刀返修操作类型不正确')
+
+        existing_record = OldToolRecord.objects.select_for_update().filter(
             tool_change_detail=detail,
-            defaults={
-                'old_tool_number': detail.tool_number or '',
-                'creator': request.user if request.user.is_authenticated else None,
-                'dept_belong_id': getattr(request.user, 'dept_id', None),
-            },
+        ).first()
+        if existing_record and existing_record.inspection_status == 'CLOSED':
+            if workflow_action == 'CLOSE':
+                detail = self.get_queryset().get(pk=detail.pk)
+                return SuccessResponse(
+                    data=ToolChangeDetailSerializer(detail, context={'request': request}).data,
+                    msg='旧刀返修记录已归档',
+                )
+            return ErrorResponse(msg='旧刀返修记录已归档，不可继续修改')
+
+        photos = request.FILES.getlist('photos') or request.FILES.getlist('old_photos')
+        existing_photo_count = existing_record.photos.count() if existing_record else 0
+        if len(photos) + existing_photo_count > 5:
+            return ErrorResponse(msg='旧刀照片最多上传 5 张')
+        for photo in photos:
+            mime_type = getattr(photo, 'content_type', '') or ''
+            if mime_type not in {'image/jpeg', 'image/jpg', 'image/png'}:
+                return ErrorResponse(msg='旧刀照片仅支持 JPG/JPEG/PNG')
+            if getattr(photo, 'size', 0) > 30 * 1024 * 1024:
+                return ErrorResponse(msg='单张旧刀照片不能超过 30MB')
+
+        removed_instance, removed_tool_number = resolve_removed_tool_identity(detail)
+        record = existing_record or OldToolRecord(
+            tool_change_detail=detail,
+            creator=request.user if request.user.is_authenticated else None,
+            dept_belong_id=getattr(request.user, 'dept_id', None),
         )
+        if not record.suggested_tool_instance_id and removed_instance is not None:
+            record.suggested_tool_instance = removed_instance
+        if not str(record.old_tool_number or '').strip() and removed_tool_number:
+            record.old_tool_number = removed_tool_number
         scalar_fields = {
             'old_tool_number': str,
             'wear_condition': str,
@@ -2266,12 +2477,15 @@ class ToolChangeDetailViewSet(CustomModelViewSet):
             'hub_other_condition': str,
             'disposition': str,
             'scraper_wear_amount': self._parse_float,
+            'remark': str,
         }
         list_fields = {'repair_parts', 'ring_damage', 'bearing_failure_reasons', 'hub_failure_reasons'}
         bool_fields = {'bearing_failed', 'hub_damaged', 'scraper_chipped', 'scraper_broken', 'scraper_detached'}
         for field, converter in scalar_fields.items():
             if field in request.data:
                 value = request.data.get(field)
+                if field == 'old_tool_number' and value in (None, ''):
+                    continue
                 setattr(record, field, None if value in (None, '') and converter is not str else converter(value))
         for field in list_fields:
             if field in request.data:
@@ -2279,35 +2493,62 @@ class ToolChangeDetailViewSet(CustomModelViewSet):
         for field in bool_fields:
             if field in request.data:
                 setattr(record, field, self._parse_bool(request.data.get(field)))
-        if 'inspection_status' in request.data:
-            record.inspection_status = request.data.get('inspection_status') or record.inspection_status
-        elif any(field in request.data for field in set(scalar_fields) | list_fields | bool_fields):
-            record.inspection_status = 'CONFIRMED'
-        record.vendor_feedback_at = timezone.now()
-        record.modifier = str(getattr(request.user, 'id', '') or '')
-        record.save()
 
-        photos = request.FILES.getlist('photos') or request.FILES.getlist('old_photos')
-        if len(photos) + record.photos.count() > 5:
-            return ErrorResponse(msg='旧刀照片最多上传 5 张')
-        for photo in photos:
-            mime_type = getattr(photo, 'content_type', '') or ''
-            if mime_type not in {'image/jpeg', 'image/jpg', 'image/png'}:
-                return ErrorResponse(msg='旧刀照片仅支持 JPG/JPEG/PNG')
-            if getattr(photo, 'size', 0) > 30 * 1024 * 1024:
-                return ErrorResponse(msg='单张旧刀照片不能超过 30MB')
-            OldToolPhoto.objects.create(
-                old_tool_record=record,
-                image=photo,
-                original_filename=getattr(photo, 'name', ''),
-                file_size=getattr(photo, 'size', None),
-                mime_type=mime_type,
-                creator=request.user if request.user.is_authenticated else None,
-                dept_belong_id=getattr(request.user, 'dept_id', None),
-            )
-        detail.save(update_fields=['update_datetime'])
+        if workflow_action in {'CONFIRM', 'CLOSE'} and not record.disposition:
+            return ErrorResponse(msg='确认厂家反馈前请选择旧刀处置结果')
+        if workflow_action == 'CLOSE' and record.inspection_status != 'CONFIRMED':
+            return ErrorResponse(msg='请先确认厂家反馈，再完成归档')
+        if (
+            workflow_action == 'CLOSE'
+            and record.disposition == 'REPAIRABLE'
+            and not str(record.repair_result or '').strip()
+        ):
+            return ErrorResponse(msg='可维修旧刀归档前必须填写厂家返修结果')
+
+        related_instance = record.confirmed_tool_instance or record.suggested_tool_instance
+        if workflow_action == 'CONFIRM':
+            if not record.confirmed_tool_instance_id and record.suggested_tool_instance_id:
+                record.confirmed_tool_instance = record.suggested_tool_instance
+            record.inspection_status = 'CONFIRMED'
+            if not record.vendor_feedback_at:
+                record.vendor_feedback_at = timezone.now()
+            related_instance = record.confirmed_tool_instance or record.suggested_tool_instance
+        elif workflow_action == 'CLOSE':
+            record.inspection_status = 'CLOSED'
+
+        record.modifier = str(getattr(request.user, 'id', '') or '')
+        with transaction.atomic():
+            record.save()
+            for photo in photos:
+                OldToolPhoto.objects.create(
+                    old_tool_record=record,
+                    image=photo,
+                    original_filename=getattr(photo, 'name', ''),
+                    file_size=getattr(photo, 'size', None),
+                    mime_type=getattr(photo, 'content_type', '') or '',
+                    creator=request.user if request.user.is_authenticated else None,
+                    dept_belong_id=getattr(request.user, 'dept_id', None),
+                )
+            if related_instance is not None:
+                if workflow_action == 'CONFIRM':
+                    related_instance.status = 'INSPECTED'
+                elif workflow_action == 'CLOSE':
+                    related_instance.status = (
+                        'SCRAPPED' if record.disposition == 'SCRAP' else 'REPAIRED_CLOSED'
+                    )
+                if workflow_action in {'CONFIRM', 'CLOSE'}:
+                    related_instance.save(update_fields=['status', 'update_datetime'])
+            detail.save(update_fields=['update_datetime'])
         detail = self.get_queryset().get(pk=detail.pk)
-        return SuccessResponse(data=ToolChangeDetailSerializer(detail, context={'request': request}).data, msg='旧刀返修信息已保存')
+        message = {
+            'SAVE_DRAFT': '旧刀返修草稿已保存',
+            'CONFIRM': '厂家反馈已确认',
+            'CLOSE': '旧刀返修记录已归档',
+        }[workflow_action]
+        return SuccessResponse(
+            data=ToolChangeDetailSerializer(detail, context={'request': request}).data,
+            msg=message,
+        )
 
     def _normalize_tool_parent_type(self, value):
         type_map = {

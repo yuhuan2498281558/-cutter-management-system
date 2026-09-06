@@ -124,10 +124,10 @@ const statusOptions = [
   { label: '待确认', value: 'PENDING_VERIFY' },
   { label: '已安装', value: 'INSTALLED' },
   { label: '已换下', value: 'REMOVED' },
-  { label: '待补录', value: 'REMOVED_PENDING_INSPECTION' },
-  { label: '已检查', value: 'INSPECTED' },
-  { label: '维修归档', value: 'REPAIRED_CLOSED' },
-  { label: '报废', value: 'SCRAPPED' },
+  { label: '待厂家检测', value: 'REMOVED_PENDING_INSPECTION' },
+  { label: '厂家已确认', value: 'INSPECTED' },
+  { label: '返修闭环', value: 'REPAIRED_CLOSED' },
+  { label: '已报废', value: 'SCRAPPED' },
 ];
 
 const statusText = (value: string) => statusOptions.find((item) => item.value === value)?.label || value || '-';

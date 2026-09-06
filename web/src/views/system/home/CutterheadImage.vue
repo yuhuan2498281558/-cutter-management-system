@@ -77,7 +77,7 @@
         @contextmenu.prevent
       >
         <div class="image-container">
-          <img src="/cutterhead-placeholder.svg" alt="刀盘" @load="onImageLoad" ref="imageRef" draggable="false" />
+          <img src="/cutterhead.png" alt="刀盘图纸" @load="onImageLoad" ref="imageRef" draggable="false" />
           <svg
             class="hotspot-layer"
             :width="imageWidth"

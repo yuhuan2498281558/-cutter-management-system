@@ -230,8 +230,6 @@ const handleClick = (e: MouseEvent) => {
     y: actualY
   });
 
-  console.log(`已标注: ${currentCutter.value.code} at (${actualX}, ${actualY})`);
-
   // 自动跳到下一个
   if (currentIndex.value < cutterList.value.length - 1) {
     currentIndex.value++;

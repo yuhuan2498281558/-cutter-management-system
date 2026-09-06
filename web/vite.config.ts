@@ -12,8 +12,8 @@ const pathResolve = (dir: string) => {
 const alias: Record<string, string> = {
 	'/@': pathResolve('./src/'),
 	'@views': pathResolve('./src/views'),
-	'vue-i18n': 'vue-i18n/dist/vue-i18n.cjs.js',
-	'@dvaformflow':pathResolve('./src/viwes/plugins/dvaadmin_form_flow/src/')
+	'vue-i18n': 'vue-i18n/dist/vue-i18n.esm-bundler.js',
+	'@dvaformflow': pathResolve('./src/views/plugins/dvaadmin_form_flow/src/')
 };
 
 const viteConfig = defineConfig((mode: ConfigEnv) => {
@@ -46,6 +46,9 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
 		root: process.cwd(),
 		resolve: { alias },
 		base: mode.command === 'serve' ? './' : env.VITE_PUBLIC_PATH,
+		esbuild: {
+			drop: mode.mode === 'production' ? ['console', 'debugger'] : [],
+		},
 		optimizeDeps: {
 			include: ['element-plus/es/locale/lang/zh-cn', 'element-plus/es/locale/lang/en', 'element-plus/es/locale/lang/zh-tw'],
 		},

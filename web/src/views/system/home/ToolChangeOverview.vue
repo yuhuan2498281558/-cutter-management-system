@@ -32,7 +32,7 @@
         </div>
         <div class="cutter-map">
           <div class="map-figure">
-            <img src="/cutterhead-placeholder.svg" alt="刀盘示意图" />
+            <img src="/cutterhead-clean.png" alt="刀盘图纸" />
             <svg
               class="marker-layer"
               viewBox="0 0 1900 2100"
@@ -111,8 +111,8 @@ import { computed, defineComponent, h, onMounted, ref } from 'vue';
 import { ACTIVE_CUTTER_POSITIONS, isActiveCutterPosition } from '/@/constants/cutterPositions';
 import { request } from '/@/utils/service';
 
-type ToolType = 'roller' | 'scraper' | 'ripper';
-type ToolParentType = 'DISC' | 'SCRAPER' | 'RIPPER';
+type ToolType = 'roller' | 'scraper';
+type ToolParentType = 'DISC' | 'SCRAPER';
 type RowStatus = 'changed' | 'checked' | 'warning' | 'normal';
 type LifeStatus = 'life-low' | 'life-mid' | 'life-high' | 'life-unknown';
 
@@ -216,7 +216,6 @@ const ToolChangeTable = defineComponent({
 const toolTypes: Array<{ value: ToolType; label: string; apiType: ToolParentType }> = [
   { value: 'roller', label: '滚刀', apiType: 'DISC' },
   { value: 'scraper', label: '刮刀', apiType: 'SCRAPER' },
-  { value: 'ripper', label: '撕裂刀', apiType: 'RIPPER' },
 ];
 
 const activeType = ref<ToolType>('roller');
@@ -308,7 +307,7 @@ function buildRows(records: ToolChangeApiItem[], apiType: ToolParentType): ToolC
 
   return Object.entries(grouped)
     .map(([position, items]) => buildRow(position, items))
-    .sort((left, right) => comparePosition(left.position, right.position));
+    .sort(compareLifeThenPosition);
 }
 
 function buildRow(position: string, items: ToolChangeApiItem[]): ToolChangeRow {
@@ -384,7 +383,7 @@ function getMarker(row: ToolChangeRow) {
 
   const index = currentRows.value.findIndex((item) => item.position === row.position);
   const angle = (Math.PI * 2 * index) / Math.max(currentRows.value.length, 1) - Math.PI / 2;
-  const radius = activeType.value === 'ripper' ? 760 : 620;
+  const radius = 620;
   return {
     x: 1137 + Math.cos(angle) * radius,
     y: 1049 + Math.sin(angle) * radius,
@@ -445,7 +444,6 @@ function translateDictionary(value: unknown, fallback: string) {
 function normalizeToolType(value: unknown): string {
   const text = String(value || '').trim().toUpperCase();
   if (text === 'CENTER_DISC' || text === 'CENTER') return 'DISC';
-  if (text === 'TEAR') return 'RIPPER';
   return text;
 }
 
@@ -471,9 +469,10 @@ function compareLifeThenPosition(left: ToolChangeRow, right: ToolChangeRow) {
 
 function getLifeSortWeight(status: LifeStatus) {
   const weights: Record<LifeStatus, number> = {
-    'life-low': 0,
+    // 红色最紧急，其次黄色，绿色最后；无有效寿命数据排在末尾。
+    'life-high': 0,
     'life-mid': 1,
-    'life-high': 2,
+    'life-low': 2,
     'life-unknown': 3,
   };
   return weights[status];

@@ -6,6 +6,7 @@ export const apiPrefix = '/api/shield/warehouse_opening/';
 export interface OpeningStratumPreview {
 	last_ring_no: string | null;
 	rings_between_openings: number | null;
+	usage_distance: number | null;
 	stratum_info_between: Record<string, number>;
 	stratum_info_between_list: Array<{
 		stratum_type_code: string;
@@ -13,6 +14,13 @@ export interface OpeningStratumPreview {
 		ring_count: number;
 	}>;
 	geological_conditions: string;
+}
+
+export interface OpeningCompletionPayload {
+	opening_duration: number;
+	tool_change_duration: number;
+	checked_tool_count: number;
+	replaced_tool_count: number;
 }
 
 /**
@@ -90,5 +98,22 @@ export function GetAutoStratumPreview(params: {
 		url: apiPrefix + 'auto_stratum_preview/',
 		method: 'get',
 		params,
+	});
+}
+
+/** 保存进入桌面明细补录前必须确认的开仓汇总信息。 */
+export function CompleteSummary(id: number | string, data: OpeningCompletionPayload) {
+	return request({
+		url: apiPrefix + id + '/complete_summary/',
+		method: 'post',
+		data,
+	});
+}
+
+/** 撤回已确认的开仓汇总，恢复移动端录入并按明细重算数量。 */
+export function WithdrawSummary(id: number | string) {
+	return request({
+		url: apiPrefix + id + '/withdraw_summary/',
+		method: 'post',
 	});
 }

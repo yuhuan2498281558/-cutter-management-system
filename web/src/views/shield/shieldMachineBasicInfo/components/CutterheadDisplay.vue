@@ -21,7 +21,7 @@
         @contextmenu.prevent
       >
         <div class="image-container">
-          <img src="/cutterhead-placeholder.svg" alt="刀盘" draggable="false" />
+          <img src="/cutterhead-clean.png" alt="刀盘图纸" draggable="false" />
           <svg
             class="hotspot-layer"
             :width="IMAGE_WIDTH"

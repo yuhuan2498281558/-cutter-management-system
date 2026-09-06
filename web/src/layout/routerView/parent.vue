@@ -59,11 +59,9 @@ const setTransitionName = computed(() => {
 });
 // 获取组件缓存列表(name值)
 const getKeepAliveNames = computed(() => {
-  console.log('cachedViews:', cachedViews.value)
 	// 过滤掉null、undefined和空字符串
 	const views = themeConfig.value.isTagsview ? cachedViews.value : state.keepAliveNameList;
 	const filteredViews = views.filter(name => name != null && name !== '');
-	console.log('filteredViews:', filteredViews)
 	return filteredViews;
 });
 // 设置 iframe 显示/隐藏

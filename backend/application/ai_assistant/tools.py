@@ -1606,6 +1606,7 @@ def query_tool_change_trend(params_str: str) -> str:
             {
                 "project_id": "项目编号",
                 "tool_type": "DISC/RIPPER/SCRAPER",
+                "ring_range": [起始环号, 结束环号],
                 "interval": 每段环数（默认50）
             }
     """
@@ -1613,6 +1614,7 @@ def query_tool_change_trend(params_str: str) -> str:
         params = json.loads(params_str)
         project_id = params.get('project_id')
         tool_type = params.get('tool_type')
+        ring_range = _parse_ring_range(params.get('ring_range', []))
         # interval 必须为正整数：为 0 或负数会让下方的分段 while 循环
         # （seg_start += interval）永不递增，导致死循环与无界内存增长。
         # 与 query_tunneling_trend / query_tunneling_wear_correlation 保持一致的钳制范围。
@@ -1628,11 +1630,17 @@ def query_tool_change_trend(params_str: str) -> str:
         if tool_type:
             query = query.filter(tool_parent_type=tool_type)
 
-        # 获取所有记录的环号
+        # 获取筛选范围内的记录；环号是 CharField，必须显式按整数过滤。
+        query = query.annotate(
+            ring_int=Cast('warehouse__ring_no', output_field=IntegerField())
+        )
+        if ring_range:
+            query = query.filter(
+                ring_int__gte=ring_range[0],
+                ring_int__lte=ring_range[1],
+            )
         records = list(
-            query.annotate(
-                ring_int=Cast('warehouse__ring_no', output_field=IntegerField())
-            ).values('ring_int', 'is_replaced', 'wear_condition')
+            query.values('ring_int', 'is_replaced', 'wear_condition')
         )
 
         if not records:

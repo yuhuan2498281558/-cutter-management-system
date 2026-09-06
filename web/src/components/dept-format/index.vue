@@ -19,7 +19,6 @@ watch(()=>{
   const result = await deptInfoStore.getParentDeptById(newVal)
   if(result?.nodes){
     let name = ""
-    console.log(result)
     result.nodes.forEach((item:any,index:number)=>{
       name +=  index>0?`/${item.name}`:item.name
     })

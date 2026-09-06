@@ -127,17 +127,34 @@ MENUS = [
 
 
 STANDARD_BUTTONS = [
-    {"name": "查看", "value": "Retrieve", "api": "/api/shield/{module}/{id}/", "method": 1},
-    {"name": "新增", "value": "Create", "api": "/api/shield/{module}/", "method": 2},
-    {"name": "修改", "value": "Update", "api": "/api/shield/{module}/{id}/", "method": 3},
-    {"name": "删除", "value": "Delete", "api": "/api/shield/{module}/{id}/", "method": 4},
-    {"name": "批量删除", "value": "BatchDelete", "api": "/api/shield/{module}/multiple_delete/", "method": 4},
+    {"name": "查看", "value": "Retrieve", "api": "/api/shield/{module}/{id}/", "method": 0},
+    {"name": "新增", "value": "Create", "api": "/api/shield/{module}/", "method": 1},
+    {"name": "修改", "value": "Update", "api": "/api/shield/{module}/{id}/", "method": 2},
+    {"name": "删除", "value": "Delete", "api": "/api/shield/{module}/{id}/", "method": 3},
+    {"name": "批量删除", "value": "BatchDelete", "api": "/api/shield/{module}/multiple_delete/", "method": 3},
 ]
 
 
 READ_ONLY_BUTTONS = [
-    {"name": "查看", "value": "Retrieve", "api": "/api/shield/{module}/", "method": 1},
+    {"name": "查看", "value": "Retrieve", "api": "/api/shield/{module}/", "method": 0},
 ]
+
+
+# source 表示原角色权限的语义；修复命令还要求角色已有同菜单授权。
+WORKFLOW_BUTTONS = {
+    "warehouse_opening": [
+        {"name": "开仓列表", "value": "List", "api": "/api/shield/{module}/", "method": 0, "sources": ("Retrieve", "Update")},
+        {"name": "确认汇总", "value": "CompleteSummary", "api": "/api/shield/{module}/{id}/complete_summary/", "method": 1, "sources": ("Update",)},
+        {"name": "撤回汇总", "value": "WithdrawSummary", "api": "/api/shield/{module}/{id}/withdraw_summary/", "method": 1, "sources": ("Update",)},
+    ],
+    "tool_change_detail": [
+        {"name": "换刀明细列表", "value": "List", "api": "/api/shield/{module}/", "method": 0, "sources": ("Retrieve", "Update")},
+        {"name": "查看刀位列表", "value": "CutterPositionList", "api": "/api/shield/cutter_position_info/", "method": 0, "sources": ("Retrieve", "Update")},
+        {"name": "查看旧刀返修", "value": "OldToolRecordRetrieve", "api": "/api/shield/{module}/{id}/old_tool_record/", "method": 0, "sources": ("Retrieve", "Update")},
+        {"name": "补录旧刀返修", "value": "OldToolRecordCreate", "api": "/api/shield/{module}/{id}/old_tool_record/", "method": 1, "sources": ("Update",)},
+        {"name": "修改旧刀返修", "value": "OldToolRecordUpdate", "api": "/api/shield/{module}/{id}/old_tool_record/", "method": 2, "sources": ("Update",)},
+    ],
+}
 
 
 class Command(BaseCommand):
@@ -205,7 +222,7 @@ class Command(BaseCommand):
             else:
                 menu_updated_count += 1
 
-            buttons = READ_ONLY_BUTTONS if menu_data.get("read_only") else STANDARD_BUTTONS
+            buttons = (READ_ONLY_BUTTONS if menu_data.get("read_only") else STANDARD_BUTTONS) + WORKFLOW_BUTTONS.get(menu_data["api_module"], [])
             for btn_data in buttons:
                 value = f"Shield{menu_data['component_name'].replace('Shield', '')}{btn_data['value']}"
                 MenuButton.objects.update_or_create(

@@ -69,7 +69,7 @@ const state = reactive({
 });
 
 const getSystemConfig = computed(() => systemConfig.value);
-const loginBg = '/login-cutterhead-placeholder.svg';
+const loginBg = '/login-cutterhead.png';
 
 watch(
 	() => userInfos.value.pwd_change_count,

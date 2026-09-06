@@ -29,15 +29,10 @@
 
     <!-- 右侧主内容：全屏桥梁BIM模型展示（删除地图后替换为BIM容器） -->
     <div class="main-content">
-      <button class="overview-toggle" @click="overviewMode = true">
-        换刀展示
-      </button>
-      <button class="mapper-toggle" @click="mapperMode = !mapperMode">
-        {{ mapperMode ? '退出匹配' : '刀位匹配' }}
-      </button>
-      <BimfaceMapper v-if="mapperMode" @close="mapperMode = false" />
-      <BimfaceModel v-else />
-      <!-- 手动标注工具: <CutterheadMapper /> -->
+      <div class="home-actions">
+        <button @click="overviewMode = true">换刀展示</button>
+      </div>
+      <BimfaceModel />
       <!-- 自动标注工具: <CutterheadMapperAuto /> -->
       <!-- 旧版2D模型: <CutterheadModel2D /> -->
       <!-- 旧版3D模型: <CutterheadModelPro /> -->
@@ -54,10 +49,8 @@ import ProjectInfoCard from './projectintroduction.vue';
 import ToolInfo from './toolinfo.vue';
 import CutterheadImage from './CutterheadImage.vue';
 import BimfaceModel from './BimfaceModel.vue';
-import BimfaceMapper from './BimfaceMapper.vue';
 import LeftPanel from './LeftPanel.vue';
 import ToolChangeOverview from './ToolChangeOverview.vue';
-// import CutterheadMapper from './CutterheadMapper.vue'; // 手动刀位标注工具
 // import CutterheadMapperAuto from './CutterheadMapperAuto.vue'; // 自动化刀位标注工具
 // import CutterheadModel2D from './CutterheadModel2D.vue'; // 旧版2D刀盘模型
 // import CutterheadModelPro from './CutterheadModelPro.vue'; // 旧版3D刀盘模型（已弃用）
@@ -79,15 +72,7 @@ const getCurrentDate = () => {
 // const bimContainer = ref(null);
 // const bimViewToken = 'fa4f3d81d0f841b08079ae31a899647f'; // 替换为实际BIMFACE视图令牌
 const bimTitle = ref('盾构机刀盘模型');
-const mapperMode = ref(false);
 const overviewMode = ref(false);
-
-// Ctrl+Shift+M 切换标定工具
-function onKeydown(e) {
-  if (e.ctrlKey && e.shiftKey && e.key === 'M') {
-    mapperMode.value = !mapperMode.value;
-  }
-}
 
 const showEdit = ref(true);
 const titleStyle = ref('');
@@ -223,7 +208,6 @@ const bimFailureCallback = (error) => {
 onMounted(async () => {
   await nextTick();
   fetchToolData();
-  window.addEventListener('keydown', onKeydown);
   setInterval(() => {
     projectDetails.value.updateDate = getCurrentDate();
   }, 86400000); // 24小时（86400000毫秒）更新一次
@@ -231,7 +215,6 @@ onMounted(async () => {
 
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', onKeydown);
   /*
   if (bimApp && bimApp.destroy) {
     bimApp.destroy();
@@ -298,30 +281,16 @@ onUnmounted(() => {
   position: relative;
 }
 
-.overview-toggle {
-  position: absolute;
-  top: 12px;
-  right: 116px;
-  z-index: 60;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid rgba(255,255,255,0.28);
-  border-radius: 6px;
-  background: rgba(20, 33, 49, 0.86);
-  color: #fff;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.overview-toggle:hover {
-  background: rgba(36, 54, 77, 0.94);
-}
-
-.mapper-toggle {
+.home-actions {
   position: absolute;
   top: 12px;
   right: 12px;
   z-index: 60;
+  display: flex;
+  gap: 8px;
+}
+
+.home-actions button {
   height: 32px;
   padding: 0 14px;
   border: 1px solid rgba(255,255,255,0.28);
@@ -332,7 +301,8 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-.mapper-toggle:hover {
+.home-actions button:hover,
+.home-actions button.active {
   background: rgba(36, 54, 77, 0.94);
 }
 

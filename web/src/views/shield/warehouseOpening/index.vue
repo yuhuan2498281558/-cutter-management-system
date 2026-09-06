@@ -5,23 +5,71 @@
         <ExportDropdown title="开仓明细" :crud-binding="crudBinding" />
       </template>
     </fs-crud>
+    <OpeningCompletionDialog
+      v-model="completionVisible"
+      :opening="selectedOpening"
+      @saved="handleCompletionSaved"
+    />
   </fs-page>
 </template>
 
 <script lang="ts" setup name="ShieldWarehouseOpening">
 import { ref, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { useExpose, useCrud } from '@fast-crud/fast-crud';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { createCrudOptions } from './crud';
+import * as api from './api';
 import { request } from '/@/utils/service';
 import ExportDropdown from '/@/views/shield/components/ExportDropdown.vue';
+import OpeningCompletionDialog from './OpeningCompletionDialog.vue';
+import type { WarehouseOpeningBasicInfoType } from './types';
 
 const crudRef = ref();
 const crudBinding = ref();
 const { crudExpose } = useExpose({ crudRef, crudBinding });
+const router = useRouter();
+const completionVisible = ref(false);
+const selectedOpening = ref<WarehouseOpeningBasicInfoType | null>(null);
+
+const openCompletion = (row: WarehouseOpeningBasicInfoType) => {
+  selectedOpening.value = row;
+  completionVisible.value = true;
+};
+
+const handleCompletionSaved = async (opening: WarehouseOpeningBasicInfoType) => {
+  await crudExpose.doRefresh();
+  router.push({
+    path: '/shield/toolChangeDetail',
+    query: {
+      warehouse_id: opening.id,
+      warehouse_code: opening.warehouse_id,
+      mode: 'supplement',
+    },
+  });
+};
+
+const withdrawCompletion = async (opening: WarehouseOpeningBasicInfoType) => {
+  if (!opening.id) return;
+  try {
+    await ElMessageBox.confirm(
+      '撤回后将关闭桌面补录，并按移动端明细重新计算检查数和更换数；移动任务会退回待复核。是否继续？',
+      '撤回汇总确认',
+      { type: 'warning', confirmButtonText: '确认撤回', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  const response = await api.WithdrawSummary(opening.id);
+  ElMessage.success(response.msg || '开仓汇总已撤回');
+  await crudExpose.doRefresh();
+};
 
 // createCrudOptions 只调用一次（setup 上下文），保证 useRouter() 正常
 const { crudOptions } = createCrudOptions({
   crudExpose,
+  onSupplement: openCompletion,
+  onWithdraw: withdrawCompletion,
 });
 const { resetCrudOptions } = useCrud({ crudExpose, crudOptions });
 

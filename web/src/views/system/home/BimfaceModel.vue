@@ -433,12 +433,25 @@ function destroyBimfaceInstance() {
   }
 }
 
+function canCreateWebglContext() {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('webgl2')
+    || canvas.getContext('webgl')
+    || canvas.getContext('experimental-webgl');
+  if (!context) return false;
+  (context as WebGLRenderingContext).getExtension('WEBGL_lose_context')?.loseContext();
+  return true;
+}
+
 async function initModel() {
   const seq = ++initSeq;
   destroyBimfaceInstance();
   modelState.value = 'loading';
   errorMsg.value = '';
   try {
+    if (!canCreateWebglContext()) {
+      throw new Error('当前浏览器无法创建 WebGL 上下文，请释放系统内存后完全退出并重启浏览器，并确认硬件加速已开启');
+    }
     await loadBimfaceSdk();
     const viewToken = await getBimfaceViewToken(true);
 
@@ -455,30 +468,40 @@ async function initModel() {
       loaderConfig,
       () => {
         if (seq !== initSeq) return;
-        const cfg = new W.Glodon.Bimface.Application.WebApplication3DConfig();
-        cfg.domElement = bimContainer.value;
-        bimApp = new W.Glodon.Bimface.Application.WebApplication3D(cfg);
-        viewer = bimApp.getViewer();
-        const onViewAdded = () => {
+        let initStage = '创建 BIM 应用';
+        try {
+          const cfg = new W.Glodon.Bimface.Application.WebApplication3DConfig();
+          cfg.domElement = bimContainer.value;
+          bimApp = new W.Glodon.Bimface.Application.WebApplication3D(cfg);
+          initStage = '加载 BIM 视图';
+          bimApp.addView(viewToken);
+          initStage = '获取 BIM 查看器';
+          viewer = bimApp.getViewer();
+          initStage = '注册 BIM 事件';
+          const onViewAdded = () => {
+            if (seq !== initSeq) return;
+            if (viewAddedTimer) {
+              clearTimeout(viewAddedTimer);
+              viewAddedTimer = null;
+            }
+            fitModelToView();
+            modelState.value = 'ready';
+            syncSize();
+            restoreViewpoint();
+            bindWebglContextHandlers();
+            bindModelSelection(W);
+          };
+          viewer.addEventListener(W.Glodon.Bimface.Viewer.Viewer3DEvent.ViewAdded, onViewAdded);
+          viewAddedTimer = setTimeout(() => {
+            if (seq !== initSeq || modelState.value === 'ready') return;
+            modelState.value = 'error';
+            errorMsg.value = 'BIM 模型加载超时，请检查 BIMFace 模型资源网络或 viewToken 是否有效';
+          }, 8000);
+        } catch (e: any) {
           if (seq !== initSeq) return;
-          if (viewAddedTimer) {
-            clearTimeout(viewAddedTimer);
-            viewAddedTimer = null;
-          }
-          fitModelToView();
-          modelState.value = 'ready';
-          syncSize();
-          restoreViewpoint();
-          bindWebglContextHandlers();
-          bindModelSelection(W);
-        };
-        viewer.addEventListener(W.Glodon.Bimface.Viewer.Viewer3DEvent.ViewAdded, onViewAdded);
-        bimApp.addView(viewToken);
-        viewAddedTimer = setTimeout(() => {
-          if (seq !== initSeq || modelState.value === 'ready') return;
           modelState.value = 'error';
-          errorMsg.value = 'BIM 模型加载超时，请检查 BIMFace 模型资源网络或 viewToken 是否有效';
-        }, 8000);
+          errorMsg.value = `${initStage}失败：${e?.message || '未知错误'}`;
+        }
       },
       (err: any) => {
         if (seq !== initSeq) return;

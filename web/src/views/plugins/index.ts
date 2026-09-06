@@ -12,5 +12,4 @@ export const scanAndInstallPlugins = (app: any) => {
 		pluginNames.add(pluginsName);
 	}
 	pluginsAll = Array.from(pluginNames);
-	console.log('已发现插件：', pluginsAll);
 };

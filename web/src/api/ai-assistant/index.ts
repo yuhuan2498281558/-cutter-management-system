@@ -34,6 +34,7 @@ export interface ChatStreamCallbacks {
 	onChunk: (text: string) => void;
 	onDone: () => void;
 	onError: (msg: string) => void;
+	onMemory?: (info: any) => void;
 }
 
 /**
@@ -80,6 +81,15 @@ export function useAiAssistantApi() {
 					try {
 						const evt = JSON.parse(line.slice(5).trimStart());
 						if (evt.type === 'chunk') callbacks.onChunk(evt.content || '');
+						else if (evt.type === 'memory') {
+							// 后端把诊断字段平铺在事件对象上，且槽位字段名为 slot_names
+							callbacks.onMemory?.(evt.memory || evt.content || {
+								backend: evt.backend,
+								message_count: evt.message_count,
+								summary_revision: evt.summary_revision,
+								slots: evt.slot_names,
+							});
+						}
 						else if (evt.type === 'done') {
 							finished = true;
 							callbacks.onDone();
@@ -107,6 +117,10 @@ export function useAiAssistantApi() {
 		// 健康检查
 		health: () => {
 			return aiService.get('/api/ai/health/').then(res => res.data);
+		},
+		// 获取记忆中的历史对话（只读，用于刷新后回填）
+		history: () => {
+			return aiService.get('/api/ai/history/').then(res => res.data);
 		},
 		// 重置对话
 		reset: () => {

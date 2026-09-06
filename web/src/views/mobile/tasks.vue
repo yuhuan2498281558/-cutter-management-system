@@ -26,10 +26,13 @@
         <div v-for="(task, index) in tasks" :key="task.id" class="task-card" :style="{ animationDelay: `${Math.min(index, 8) * 25}ms` }" @click="openTask(task)">
           <div class="task-main">
             <div class="title-block">
-              <div class="title">{{ task.project_name || '-' }} · 第{{ task.ring_no }}环</div>
+              <div class="title">
+                <span>{{ task.project_name || '-' }}</span>
+                <span class="ring-label">· 第{{ task.ring_no }}环</span>
+              </div>
               <div class="task-id">{{ task.warehouse_id_name || '-' }}</div>
             </div>
-            <van-tag :type="statusType(task.status)">{{ statusText(task.status) }}</van-tag>
+            <van-tag class="status-tag" :type="statusType(task.status)">{{ statusText(task.status) }}</van-tag>
           </div>
           <div class="meta">{{ task.shield_machine || '-' }}<span class="dot">·</span>{{ scopeText(task) }}</div>
           <van-progress :percentage="progressPercent(task)" stroke-width="6" />
@@ -140,8 +143,11 @@ onMounted(loadTasks);
   box-shadow: 0 2px 8px rgba(18, 43, 61, 0.04);
   animation: task-enter 220ms ease both;
 }
-.task-main { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-.title { font-size: 16px; font-weight: 700; color: #122b3d; min-width: 0; }
+.task-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: flex-start; }
+.title-block { min-width: 0; }
+.title { font-size: 16px; font-weight: 700; line-height: 1.45; color: #122b3d; overflow-wrap: anywhere; }
+.ring-label { display: inline-block; white-space: nowrap; }
+.status-tag { flex-shrink: 0; white-space: nowrap; }
 .task-id { margin-top: 4px; color: #84929c; font-size: 12px; }
 .meta, .progress-row { color: #5d6b78; font-size: 13px; margin-top: 8px; }
 .dot { margin: 0 6px; color: #c0cbd1; }

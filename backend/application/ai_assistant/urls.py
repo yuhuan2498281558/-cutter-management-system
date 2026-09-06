@@ -12,5 +12,6 @@ urlpatterns = [
     path('chat/', views.chat, name='ai_chat'),
     path('chat/stream/', views.chat_stream, name='ai_chat_stream'),
     path('health/', views.health_check, name='ai_health'),
+    path('history/', views.conversation_history, name='ai_history'),
     path('reset/', views.reset_conversation, name='ai_reset'),
 ]

@@ -38,7 +38,11 @@
     </div>
 
     <van-pull-refresh v-model="refreshing" class="position-refresh" @refresh="loadTask">
-      <van-list>
+      <div v-if="loadError && !task" class="load-error">
+        <div>{{ loadError }}</div>
+        <van-button size="small" type="primary" plain @click="loadTask">重新加载</van-button>
+      </div>
+      <van-list v-else>
         <div v-for="detail in filteredDetails" :key="detail.id" class="position-card" @click="openEditor(detail)">
           <div class="position-row">
             <div class="position-no">{{ detail.cutter_position_no }}</div>
@@ -188,6 +192,7 @@ const router = useRouter();
 const task = ref<any>(null);
 const details = ref<any[]>([]);
 const refreshing = ref(false);
+const loadError = ref('');
 const keyword = ref('');
 const statusFilter = ref('ALL');
 const typeFilter = ref('ALL');
@@ -316,16 +321,31 @@ const filteredDetails = computed(() => {
 });
 
 async function loadTask() {
+  loadError.value = '';
   try {
     const res: any = await getMobileTask(route.params.id as string);
-    task.value = res.data.task;
-    details.value = sortDetails(res.data.details || []);
-    fieldOptions.value = res.data.field_options || {};
+    const payload = resolveTaskPayload(res);
+    task.value = payload.task;
+    details.value = sortDetails(Array.isArray(payload.details) ? payload.details : []);
+    fieldOptions.value = payload.field_options && typeof payload.field_options === 'object'
+      ? payload.field_options
+      : {};
   } catch (error: any) {
-    showToast(errorMessage(error));
+    loadError.value = errorMessage(error);
+    showToast(loadError.value);
   } finally {
     refreshing.value = false;
   }
+}
+
+function resolveTaskPayload(response: any) {
+  const candidates = [response?.data, response, response?.data?.data];
+  const payload = candidates.find((item) => item && typeof item === 'object' && item.task);
+  if (!payload) {
+    const message = response?.msg || response?.data?.msg || '任务详情返回异常，请重新登录后再试';
+    throw new Error(message);
+  }
+  return payload;
 }
 function openEditor(detail: any) {
   current.value = detail;
@@ -701,6 +721,17 @@ onBeforeUnmount(stopScan);
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+}
+.load-error {
+  min-height: 45vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  color: #5d6b78;
+  text-align: center;
 }
 .position-card {
   background: #fff;
