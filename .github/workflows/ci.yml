@@ -52,7 +52,7 @@ jobs:
           DATABASE_PASSWORD: daoju
           DATABASE_HOST: 127.0.0.1
           DATABASE_PORT: 5432
-        run: python manage.py test application.shield.tests
+        run: python manage.py test application.shield.tests --settings=application.settings_ci
       - name: AI memory tests
         working-directory: backend
         env:
@@ -64,7 +64,7 @@ jobs:
           DATABASE_HOST: 127.0.0.1
           DATABASE_PORT: 5432
           AI_MEMORY_BACKEND: django
-        run: python manage.py test application.ai_assistant
+        run: python manage.py test application.ai_assistant --settings=application.settings_ci
 
   frontend:
     runs-on: ubuntu-latest
@@ -81,6 +81,9 @@ jobs:
       - name: Build frontend
         working-directory: web
         run: npm run build
+      - name: AI assistant interaction and protocol tests
+        working-directory: web
+        run: node --test src/views/ai-assistant/__tests__/chat-session.test.cjs src/views/ai-assistant/__tests__/message-presentation.test.cjs src/api/ai-assistant/__tests__/stream-protocol.test.cjs
 
   hygiene:
     runs-on: ubuntu-latest
