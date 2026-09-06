@@ -1,5 +1,10 @@
 <template>
   <fs-page>
+    <p v-if="loading" role="status">正在加载开仓及换刀明细…</p>
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon>
+      <el-button @click="getWarehouseInfo" :disabled="loading">重新加载</el-button>
+      <el-button @click="goBack">返回列表</el-button>
+    </el-alert>
     <!-- 开仓信息卡片 -->
     <el-card class="warehouse-info-card" shadow="never" style="margin-bottom: 20px;" v-if="warehouseInfo">
       <template #header>
@@ -173,7 +178,7 @@
         </el-table-column>
       </el-table>
     </el-card>
-    <OldToolRepairDialog ref="repairDialogRef" @saved="loadData" />
+    <OldToolRepairDialog v-if="pageActive" ref="repairDialogRef" @saved="getWarehouseInfo" />
     <el-dialog v-model="photoPreviewVisible" title="旧刀磨损照片" width="760px" destroy-on-close>
       <div class="photo-preview">
         <img v-if="photoPreviewUrl" :src="photoPreviewUrl" :alt="photoPreviewName" />
@@ -183,7 +188,7 @@
 </template>
 
 <script lang="ts" setup name="ToolChangeDetail">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onActivated, onDeactivated, onUnmounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { request } from '/@/utils/service';
 import { ElMessage } from 'element-plus';
@@ -198,6 +203,11 @@ const router = useRouter();
 const warehouseId = ref<number>();
 const warehouseInfo = ref<any>(null);
 const dataLoaded = ref(false);
+const loading = ref(false);
+const loadError = ref('');
+const pageActive = ref(true);
+let loadGeneration = 0;
+let detailGeneration = 0;
 const tableData = ref<any[]>([]);
 const warehouseCollapsed = ref(false);
 const searchText = ref('');
@@ -213,7 +223,7 @@ const repairDialogRef = ref();
 const photoPreviewVisible = ref(false);
 const photoPreviewUrl = ref('');
 const photoPreviewName = ref('旧刀照片');
-const isEditable = computed(() => route.query.mode === 'supplement' && warehouseInfo.value?.supplement_ready === true);
+const isEditable = computed(() => pageActive.value && !loading.value && !loadError.value && route.query.mode === 'supplement' && warehouseInfo.value?.supplement_ready === true);
 
 // 刀具父类型映射
 const toolParentTypeMap: any = {
@@ -337,8 +347,19 @@ const naturalSort = (a: string, b: string) => {
 
 // 获取开仓信息
 const getWarehouseInfo = async () => {
+  if (!pageActive.value) return;
+  const generation = ++loadGeneration;
+  detailGeneration++;
+  const id = route.query.warehouse_id;
+  const path = route.path;
+  const isCurrent = () => pageActive.value && generation === loadGeneration && route.query.warehouse_id === id && route.path === path;
+  warehouseInfo.value = null;
+  warehouseId.value = undefined;
+  tableData.value = [];
+  dataLoaded.value = false;
+  loadError.value = '';
+  loading.value = true;
   try {
-    const id = route.query.warehouse_id;
     if (!id) {
       ElMessage.error('缺少开仓ID参数');
       router.back();
@@ -351,7 +372,7 @@ const getWarehouseInfo = async () => {
       url: `/api/shield/warehouse_opening/${id}/`,
       method: 'get',
     });
-
+    if (!isCurrent()) return;
     warehouseInfo.value = res.data;
 
     if (route.query.mode === 'supplement' && !warehouseInfo.value?.supplement_ready) {
@@ -361,27 +382,39 @@ const getWarehouseInfo = async () => {
         query: { ...route.query, mode: 'view' },
       });
     }
-
-    await loadData();
+    if (!isCurrent()) return;
+    await loadData(generation);
   } catch (error: any) {
-    console.error('获取开仓信息失败:', error);
-    ElMessage.error('获取开仓信息失败');
+    if (isCurrent()) loadError.value = '开仓信息加载失败，请检查网络后重新加载。';
+  } finally {
+    if (isCurrent()) loading.value = false;
   }
 };
 
 // 加载数据
-const loadData = async () => {
+const loadData = async (generation = loadGeneration) => {
+  if (!pageActive.value || !warehouseInfo.value || !warehouseId.value) return;
+  const detailRequest = ++detailGeneration;
+  const queryId = route.query.warehouse_id;
+  const path = route.path;
+  const isCurrent = () => pageActive.value && generation === loadGeneration && detailRequest === detailGeneration && route.query.warehouse_id === queryId && route.path === path;
+  const openingId = warehouseId.value;
+  const shieldId = warehouseInfo.value.shield_model;
+  loading.value = true;
+  loadError.value = '';
+  dataLoaded.value = false;
+  tableData.value = [];
   try {
     // 获取刀位信息
     const cutterRes = await request({
       url: '/api/shield/cutter_position_info/',
       method: 'get',
       params: {
-        shield_machine: warehouseInfo.value.shield_model,
+        shield_machine: shieldId,
         limit: 1000,
       },
     });
-
+    if (!isCurrent()) return;
     const cutterPositions = cutterRes.data || cutterRes.results || [];
 
     // 获取已有的换刀明细
@@ -389,11 +422,11 @@ const loadData = async () => {
       url: '/api/shield/tool_change_detail/',
       method: 'get',
       params: {
-        warehouse: warehouseId.value,
+        warehouse: openingId,
         limit: 1000,
       },
     });
-
+    if (!isCurrent()) return;
     const existingDetails = detailRes.data || detailRes.results || [];
     const detailMap = new Map();
     existingDetails.forEach((d: any) => {
@@ -447,12 +480,14 @@ const loadData = async () => {
     dataLoaded.value = true;
     ElMessage.success(`已加载 ${tableData.value.length} 条刀位数据`);
   } catch (error: any) {
-    console.error('加载数据失败:', error);
-    ElMessage.error('加载数据失败');
+    if (isCurrent()) loadError.value = '换刀明细加载失败，未展示旧数据，请重新加载后再查看或补录。';
+  } finally {
+    if (isCurrent()) loading.value = false;
   }
 };
 
 const openOldToolRepair = (row: any) => {
+  if (!pageActive.value || loading.value || loadError.value) return;
   if (!row?.id) {
     ElMessage.warning('该刀位尚无现场记录，请先通过移动端录入');
     return;
@@ -479,6 +514,24 @@ const goBack = () => {
 onMounted(() => {
   getWarehouseInfo();
 });
+onActivated(() => {
+  if (!pageActive.value) {
+    pageActive.value = true;
+    getWarehouseInfo();
+  }
+});
+const invalidateLoads = () => {
+  pageActive.value = false;
+  loadGeneration++;
+  detailGeneration++;
+  loading.value = false;
+  dataLoaded.value = false;
+  tableData.value = [];
+  warehouseInfo.value = null;
+  photoPreviewVisible.value = false;
+};
+onDeactivated(invalidateLoads);
+onUnmounted(invalidateLoads);
 </script>
 
 <style scoped>

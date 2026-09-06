@@ -9,6 +9,10 @@ const esbuild = require('esbuild');
 const { parse, compileScript, compileStyle } = require('@vue/compiler-sfc');
 const webRoot = path.resolve(__dirname, '../../../../..');
 const fixtureService = `
+import {reactive} from 'vue';
+export const fixtureState=reactive({failure:new URLSearchParams(location.search).get('failure')||'',pending:false,reads:0});
+let finish;
+export const release=()=>{const fn=finish;finish=null;fn?.();};
 const positions = ['1','2','17','19','21','80A','80B','S1L'];
 const statuses = [null,null,'PENDING_VENDOR_FEEDBACK','CONFIRMED','CLOSED',null,null,null];
 const photo = '/fixture-photo.svg';
@@ -25,6 +29,12 @@ const rows = positions.map((position,i) => ({
 export async function request(config) {
   if (config.method?.toLowerCase()!=='get') throw new Error('隔离验收禁止业务写入');
   const url=config.url;
+  fixtureState.reads++;
+  if(fixtureState.failure==='opening'&&url.includes('warehouse_opening')) throw new Error('Synthetic opening read failure');
+  if(fixtureState.failure==='detail'&&url==='/api/shield/tool_change_detail/') throw new Error('Synthetic detail read failure');
+  if(fixtureState.failure==='pending'&&url==='/api/shield/tool_change_detail/'){
+    fixtureState.pending=true;await new Promise(resolve=>{finish=resolve;});fixtureState.pending=false;
+  }
   if (url.startsWith('/api/shield/warehouse_opening/')) return {data:{id:1,ring_no:'100',warehouse_id:'TEST-OPENING',project_name:'隔离验收项目（虚构）',shield_model:1,section:'测试区间',shield_model_name:'测试机型',open_time:'2026-01-01 08:00',tool_change_date:'2026-01-01',opening_duration:6,tool_change_duration:3,checked_tool_count:7,replaced_tool_count:6,usage_distance:40,last_ring_no:'80',rings_between_openings:20,supplement_ready:!location.hash.includes('ready=0')}};
   if (url==='/api/shield/cutter_position_info/') return {data:positions.map((p,i)=>({id:i+1,cutter_position_no:p,tool_type:p==='S1L'?'SCRAPER':'DISC',tool_type_name:p==='S1L'?'常压刮刀':'19寸双联常压正滚刀180（转角）'}))};
   if (url==='/api/shield/tool_change_detail/') return {data:rows};
@@ -40,13 +50,23 @@ async function main() {
     absWorkingDir: webRoot, bundle: true, write: false, format: 'iife', platform: 'browser',
     define: { 'process.env.NODE_ENV': '"development"', __VUE_OPTIONS_API__: 'true', __VUE_PROD_DEVTOOLS__: 'false' },
     stdin: { contents: `
-      import {createApp,h} from 'vue';
+      import {createApp,h,KeepAlive} from 'vue';
       import ElementPlus from 'element-plus';
       import {createRouter,createWebHashHistory,RouterView} from 'vue-router';
       import Detail from './src/views/shield/toolChangeDetail/index.vue';
-      const router=createRouter({history:createWebHashHistory(),routes:[{path:'/detail',component:Detail}]});
+      import {fixtureState,release} from '/@/utils/service';
+      const router=createRouter({history:createWebHashHistory(),routes:[{path:'/detail',component:Detail},{path:'/other',component:{render:()=>h('p','其他页面（模拟）')}}]});
       if (!location.hash) location.hash='/detail?warehouse_id=1&mode=view';
-      const app=createApp({render:()=>h(RouterView)});
+      const button=(text,click)=>h('button',{onClick:click},text);
+      const app=createApp({render:()=>h('div',[
+        h('nav',{class:'fixture-controls'},[
+          button('请求正常',()=>fixtureState.failure=''),button('开仓读取失败',()=>fixtureState.failure='opening'),
+          button('明细读取失败',()=>fixtureState.failure='detail'),button('挂起明细',()=>fixtureState.failure='pending'),
+          button('释放明细',release),button('离开明细',()=>router.push('/other')),
+          button('返回明细',()=>router.push('/detail?warehouse_id=1&mode=view')),
+        ]),h('p',{class:'fixture-status'},'模拟读取：'+fixtureState.reads+'；挂起：'+fixtureState.pending+'；故障：'+(fixtureState.failure||'无')),
+        h(RouterView,null,{default:({Component,route})=>h(KeepAlive,null,Component?h(Component,{key:route.fullPath}):null)}),
+      ])});
       app.component('FsPage',{setup:(_, {slots})=>()=>h('main',{class:'fixture-page'},slots.default?.())});
       app.use(ElementPlus);app.use(router);router.isReady().then(()=>app.mount('#app'));
     `, resolveDir: webRoot, loader: 'ts' },
@@ -54,7 +74,7 @@ async function main() {
       build.onResolve({ filter: /^\/@\// }, args => args.path === '/@/utils/service'
         ? { path: 'fixture-service', namespace: 'fixture' }
         : { path: path.join(webRoot, 'src', args.path.slice(3)) });
-      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: fixtureService, loader: 'js' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: fixtureService, loader: 'js', resolveDir: webRoot }));
       build.onLoad({ filter: /\.vue$/ }, args => {
         const { descriptor, errors } = parse(fs.readFileSync(args.path, 'utf8'), { filename: args.path });
         if (errors.length) throw errors[0];
@@ -71,15 +91,16 @@ async function main() {
     } }],
   });
   const html = '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>换刀明细隔离验收</title><link rel="stylesheet" href="/preview.css"><body><aside>隔离验收 · 虚构数据 · 所有写入已阻断</aside><div id="app"></div><script src="/preview.js"></script></body></html>';
-  const css = styles.join('\n') + '\nbody{margin:0;background:#f5f7fa;font-family:Arial,"Microsoft YaHei",sans-serif}aside{padding:8px 20px;background:#fff7e6;color:#7a4d00;font-size:13px}.fixture-page{padding:16px;box-sizing:border-box}';
+  const css = styles.join('\n') + '\nbody{margin:0;background:#f5f7fa;font-family:Arial,"Microsoft YaHei",sans-serif}aside{padding:8px 20px;background:#fff7e6;color:#7a4d00;font-size:13px}.fixture-page{padding:16px;box-sizing:border-box}.fixture-controls{display:flex;flex-wrap:wrap;gap:8px;padding:8px 16px}.fixture-status{padding:0 16px}';
   const assets = new Map([
     ['/', ['text/html; charset=utf-8', html]],
+    ['/favicon.ico', ['image/x-icon', Buffer.alloc(0)]],
     ['/preview.css', ['text/css; charset=utf-8', css]],
     ['/preview.js', ['text/javascript; charset=utf-8', result.outputFiles[0].contents]],
     ['/fixture-photo.svg', ['image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="#e8eef5"/><text x="50" y="105" font-size="22">Synthetic test image</text></svg>']],
   ]);
   const server = http.createServer((req, res) => {
-    const asset = assets.get(req.url);
+    const asset = assets.get(new URL(req.url, 'http://127.0.0.1:5189').pathname);
     if (req.method !== 'GET' || !asset) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'Content-Type': asset[0], 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'" });
     res.end(asset[1]);

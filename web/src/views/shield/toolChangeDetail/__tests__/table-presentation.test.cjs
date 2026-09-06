@@ -72,7 +72,7 @@ test('updated Vue template compiles', () => {
 function setup(t, mode = 'supplement', options = {}) {
   const scope = vue.effectScope();
   const compiled = run(script.content, name => {
-    if (name === 'vue') return { ...vue, onMounted() {} };
+    if (name === 'vue') return { ...vue, onMounted() {}, onActivated() {}, onDeactivated() {}, onUnmounted() {} };
     if (name === 'vue-router') return { useRoute: () => ({ path: '/shield/toolChangeDetail', query: options.query || { mode } }), useRouter: () => options.router || {} };
     if (name === './tablePresentation') return helpers;
     if (name === '/@/utils/service') return { request: options.request || (() => { throw new Error('Unexpected API call'); }) };
