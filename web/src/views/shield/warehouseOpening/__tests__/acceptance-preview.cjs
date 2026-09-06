@@ -30,7 +30,7 @@ async function main() {
       import ElementPlus from 'element-plus';
       import Dialog from './src/views/shield/warehouseOpening/OpeningCompletionDialog.vue';
       import {fixture,settle} from 'summary-fixture';
-      const row=id=>({id,warehouse_id:'TEST-'+id,opening_duration:4,tool_change_duration:2,checked_tool_count:10,replaced_tool_count:3,usage_distance:40});
+      const row=id=>({id,warehouse_id:'TEST-'+id,ring_no:487,opening_duration:4,tool_change_duration:2,checked_tool_count:10,replaced_tool_count:3,usage_distance:40});
       createApp({setup(){
         const visible=ref(true),opening=ref(row(1));
         const button=(label,fn)=>h('button',{onClick:fn},label);
@@ -72,7 +72,7 @@ async function main() {
   const assets=new Map([
     ['/', ['text/html; charset=utf-8','<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>汇总弹窗隔离验收</title><link rel="stylesheet" href="/preview.css"><body><div id="app"></div><script src="/preview.js"></script></body></html>']],
     ['/preview.js',['text/javascript; charset=utf-8',result.outputFiles[0].contents]],
-    ['/preview.css',['text/css; charset=utf-8',styles.join('\n')+'\nbody{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;background:#f5f7fa}main{padding:20px}.controls{display:flex;gap:8px;position:relative;z-index:4000}button{padding:6px 10px}']],
+    ['/preview.css',['text/css; charset=utf-8',styles.join('\n')+'\nbody{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;background:#f5f7fa}main{padding:20px}.controls{display:flex;gap:8px;position:fixed;bottom:0;left:0;right:0;overflow-x:auto;background:white;z-index:4000}.controls button{padding:6px 10px;flex-shrink:0}']],
   ]);
   const server=http.createServer((req,res)=>{
     const asset=assets.get(req.url);

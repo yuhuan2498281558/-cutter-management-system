@@ -1,9 +1,14 @@
 <template>
   <el-dialog
-    v-model="visible" title="确认开仓汇总" width="560px" destroy-on-close
+    v-model="visible" title="确认开仓汇总" width="min(560px, calc(100vw - 32px))" top="5vh" destroy-on-close
+    class="opening-summary-dialog"
     :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving"
     :before-close="beforeClose"
   >
+    <dl class="opening-context" aria-label="当前开仓">
+      <div><dt>开仓编号</dt><dd>{{ opening?.warehouse_id || '-' }}</dd></div>
+      <div><dt>换刀环号</dt><dd>{{ opening?.ring_no ?? '-' }}</dd></div>
+    </dl>
     <el-alert
       type="info"
       :closable="false"
@@ -12,19 +17,25 @@
       class="summary-hint"
     />
     <el-alert v-if="submitError" :title="submitError" type="error" :closable="false" show-icon class="summary-hint" />
-    <el-form ref="formRef" :model="form" :rules="rules" :disabled="saving || !opening?.id" label-width="150px">
+    <el-form ref="formRef" :model="form" :rules="rules" :disabled="saving || !opening?.id" label-width="170px">
+      <fieldset class="summary-section">
+        <legend>作业时长 <span>人工补录，单位：小时</span></legend>
       <el-form-item label="开仓持续时间（小时）" prop="opening_duration">
         <el-input-number v-model="form.opening_duration" :min="0" :precision="2" controls-position="right" />
       </el-form-item>
       <el-form-item label="换刀总时长（小时）" prop="tool_change_duration">
         <el-input-number v-model="form.tool_change_duration" :min="0" :precision="2" controls-position="right" />
       </el-form-item>
+      </fieldset>
+      <fieldset class="summary-section">
+        <legend>刀具数量 <span>已自动带入，可人工校正</span></legend>
       <el-form-item label="检查刀具数量（把）" prop="checked_tool_count">
         <el-input-number v-model="form.checked_tool_count" :min="0" :precision="0" controls-position="right" />
       </el-form-item>
       <el-form-item label="更换刀具数量（把）" prop="replaced_tool_count">
         <el-input-number v-model="form.replaced_tool_count" :min="0" :precision="0" controls-position="right" />
       </el-form-item>
+      </fieldset>
       <el-form-item label="本次使用距离（m）">
         <el-input :model-value="opening?.usage_distance ?? '-'" disabled />
       </el-form-item>
@@ -144,9 +155,30 @@ const submit = async () => {
 };
 </script>
 
+<style>
+.opening-summary-dialog { display: flex; flex-direction: column; max-height: 90vh; max-height: 90dvh; margin-bottom: 0; }
+.opening-summary-dialog .el-dialog__body { min-height: 0; overflow-y: auto; padding-top: 12px; padding-bottom: 8px; }
+.opening-summary-dialog .el-dialog__header,
+.opening-summary-dialog .el-dialog__footer { flex-shrink: 0; }
+.opening-summary-dialog .el-dialog__footer { border-top: 1px solid var(--el-border-color-lighter); padding-top: 14px; }
+@media (max-width: 480px) {
+  .opening-summary-dialog .el-form-item { display: block; }
+  .opening-summary-dialog .el-form-item__label { width: auto !important; height: auto; line-height: 22px; padding-bottom: 6px; }
+}
+</style>
+
 <style scoped>
+.opening-context { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; margin: 0 0 16px; padding: 12px; background: var(--el-fill-color-light); border-radius: 4px; }
+.opening-context dt { font-size: 12px; color: var(--el-text-color-secondary); }
+.opening-context dd { margin: 4px 0 0; font-weight: 600; color: var(--el-text-color-primary); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.summary-section { min-width: 0; border: 0; padding: 0; margin: 0 0 8px; }
+.summary-section legend { width: 100%; margin-bottom: 14px; padding: 0; font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
+.summary-section legend span { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--el-text-color-secondary); }
+@media (max-width: 480px) {
+  .summary-section legend span { display: block; margin: 4px 0 0; }
+}
 .summary-hint {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 :deep(.el-input-number),
