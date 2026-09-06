@@ -179,8 +179,9 @@ router.beforeEach(async (to, from, next) => {
             debugLog('路由加载成功，导航到：', to.path);
             debugLog('已注册路由：', router.getRoutes().map(r => ({ path: r.path, name: r.name })));
             // The initial match may be the static notFound route. Re-resolve by
-            // path only so its stale `name`/`matched` fields cannot win.
-            next({ path: to.fullPath, replace: true });
+            // path so its stale `name`/`matched` fields cannot win. Object-style
+            // navigation requires query/hash separately; embedding them in path drops them.
+            next({ path: to.path, query: to.query, hash: to.hash, replace: true });
         } catch (error) {
             // 初始化失败时清除登录状态并返回登录页。
             console.error('路由初始化失败：', error);
