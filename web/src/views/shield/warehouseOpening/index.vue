@@ -15,7 +15,7 @@
 
 <script lang="ts" setup name="ShieldWarehouseOpening">
 import { ref, onActivated, onDeactivated, onMounted, onUnmounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { isNavigationFailure, NavigationFailureType, useRouter } from 'vue-router';
 import { useExpose, useCrud } from '@fast-crud/fast-crud';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { createCrudOptions } from './crud';
@@ -34,34 +34,65 @@ const selectedOpening = ref<WarehouseOpeningBasicInfoType | null>(null);
 const withdrawingId = ref<number | null>(null);
 let withdrawalGeneration = 0;
 let withdrawalPageActive = true;
+let completionGeneration = 0;
+const invalidateCompletion = () => {
+  completionGeneration++;
+  completionVisible.value = false;
+  selectedOpening.value = null;
+};
 const invalidateWithdrawal = () => {
   withdrawalPageActive = false;
   withdrawalGeneration++;
   withdrawingId.value = null;
+  invalidateCompletion();
 };
 onActivated(() => { withdrawalPageActive = true; });
 onDeactivated(invalidateWithdrawal);
 onUnmounted(invalidateWithdrawal);
 
 const openCompletion = (row: WarehouseOpeningBasicInfoType) => {
+  if (!withdrawalPageActive) return;
+  completionGeneration++;
   selectedOpening.value = row;
   completionVisible.value = true;
 };
 
 const handleCompletionSaved = async (opening: WarehouseOpeningBasicInfoType) => {
-  await crudExpose.doRefresh();
-  router.push({
+  if (!withdrawalPageActive || !opening.id || selectedOpening.value?.id !== opening.id) return;
+  const generation = ++completionGeneration;
+  const isCurrent = () => withdrawalPageActive && generation === completionGeneration;
+  const target = {
     path: '/shield/toolChangeDetail',
     query: {
       warehouse_id: opening.id,
       warehouse_code: opening.warehouse_id,
       mode: 'supplement',
     },
-  });
+  };
+  // Reflect the confirmed server record even if the following list read fails.
+  Object.assign(selectedOpening.value, opening);
+  completionVisible.value = false;
+  selectedOpening.value = null;
+  try {
+    await crudExpose.doRefresh();
+  } catch {
+    if (isCurrent()) ElMessage.warning('开仓汇总已确认，但列表刷新失败，将继续进入补录；返回列表后请刷新核对状态。');
+  }
+  if (!isCurrent()) return;
+  const warnNavigation = () => {
+    if (isCurrent()) ElMessage.warning('开仓汇总已确认，但未能进入补录页，请从列表重新点击“补录明细”，无需重复确认。');
+  };
+  try {
+    const failure = await router.push(target);
+    if (isNavigationFailure(failure, NavigationFailureType.aborted)) warnNavigation();
+  } catch {
+    warnNavigation();
+  }
 };
 
 const withdrawCompletion = async (opening: WarehouseOpeningBasicInfoType) => {
   if (!opening.id || !withdrawalPageActive || withdrawingId.value !== null) return;
+  invalidateCompletion();
   const openingId = opening.id;
   const generation = ++withdrawalGeneration;
   const isCurrent = () => withdrawalPageActive && generation === withdrawalGeneration;

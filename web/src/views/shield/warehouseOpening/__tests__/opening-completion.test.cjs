@@ -276,7 +276,7 @@ test('actual parent saved handler refreshes and navigates to the returned openin
   const calls = [];
   const component = compile(parentScript.content, name => {
     if (name === 'vue') return { ...vue, onMounted() {}, onActivated() {}, onDeactivated() {}, onUnmounted() {} };
-    if (name === 'vue-router') return { useRouter: () => ({ push: value => calls.push(['route', value]) }) };
+    if (name === 'vue-router') return { ...require('vue-router'), useRouter: () => ({ push: value => calls.push(['route', value]) }) };
     if (name === '@fast-crud/fast-crud') return {
       useExpose: () => ({ crudExpose: { doRefresh: async () => calls.push(['refresh']) } }),
       useCrud: () => ({ resetCrudOptions() {} }),
@@ -288,6 +288,7 @@ test('actual parent saved handler refreshes and navigates to the returned openin
   const scope = vue.effectScope();
   t.after(() => scope.stop());
   const state = scope.run(() => component.setup({}, { expose() {} }));
+  state.openCompletion(opening(2));
   await state.handleCompletionSaved(opening(2));
   assert.deepEqual(plain(calls), [['refresh'], ['route', { path: '/shield/toolChangeDetail', query: { warehouse_id: 2, warehouse_code: 'TEST-2', mode: 'supplement' } }]]);
 });
