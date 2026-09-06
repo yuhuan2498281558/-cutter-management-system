@@ -8,8 +8,8 @@ const ts = require('typescript');
 const vue = require('vue');
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc');
 
-function run(source, requireModule = require) {
-  const context = { exports: {}, require: requireModule };
+function run(source, requireModule = require, globals = {}) {
+  const context = { ...globals, exports: {}, require: requireModule };
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
   });
@@ -69,14 +69,14 @@ test('updated Vue template compiles', () => {
   assert.deepEqual(errors, []);
   assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: 'index.vue', id: 'detail-presentation-test', compilerOptions: { bindingMetadata: script.bindings, expressionPlugins: ['typescript'] } }).errors, []);
 });
-function setup(t, mode = 'supplement') {
+function setup(t, mode = 'supplement', options = {}) {
   const scope = vue.effectScope();
   const compiled = run(script.content, name => {
     if (name === 'vue') return { ...vue, onMounted() {} };
-    if (name === 'vue-router') return { useRoute: () => ({ query: { mode } }), useRouter: () => ({}) };
+    if (name === 'vue-router') return { useRoute: () => ({ path: '/shield/toolChangeDetail', query: options.query || { mode } }), useRouter: () => options.router || {} };
     if (name === './tablePresentation') return helpers;
-    if (name === '/@/utils/service') return { request: () => { throw new Error('Unexpected API call'); } };
-    if (name === 'element-plus') return { ElMessage: {} };
+    if (name === '/@/utils/service') return { request: options.request || (() => { throw new Error('Unexpected API call'); }) };
+    if (name === 'element-plus') return { ElMessage: { success() {}, warning() {}, error() {} } };
     if (name.endsWith('.vue')) return {};
     throw new Error(`Unexpected import: ${name}`);
   });
@@ -155,4 +155,139 @@ test('expanded content renders zero values, long remarks and escaped text withou
   assert.ok(html.includes('&lt;script&gt;bad&lt;/script&gt;'));
   assert.ok(!html.includes('<table'));
   assert.equal(JSON.stringify(row), snapshot);
+});
+
+test('real loading joins by position, preserves missing numbers and zero fields, and sorts naturally', async t => {
+  const calls = [];
+  const positions = ['80B', '2', '80A', '1'].map((p, i) => ({ id: i + 1, cutter_position_no: p, tool_type: 'DISC', tool_type_name: '测试滚刀' }));
+  const detail = { id: 12, cutter_position_no: '2', tool_number: 'STORED-2', is_checked: true, is_replaced: true, blade_wear_amount: 0, price: '0', old_tool_record_data: { inspection_status: 'CLOSED' } };
+  const original = JSON.stringify({ positions, detail });
+  const s = setup(t, 'view', { query: { warehouse_id: '123', mode: 'view' }, request: async config => {
+    calls.push(config);
+    if (config.url === '/api/shield/warehouse_opening/123/') return { data: { shield_model: 9, supplement_ready: true } };
+    if (config.url === '/api/shield/cutter_position_info/') return { data: positions };
+    if (config.url === '/api/shield/tool_change_detail/') return { data: [detail] };
+    throw new Error('Unexpected URL');
+  } });
+  await s.getWarehouseInfo();
+  assert.equal(s.dataLoaded.value, true);
+  assert.equal(JSON.stringify(s.tableData.value.map(r => r.cutter_position_no)), JSON.stringify(['1', '2', '80A', '80B']));
+  assert.equal(s.tableData.value[0].tool_number, '');
+  assert.equal(s.tableData.value[1].tool_number, 'STORED-2');
+  assert.equal(s.tableData.value[1].blade_wear_amount, 0);
+  assert.equal(s.tableData.value[1].price, 0);
+  assert.equal(repairStatus(s.tableData.value[1]), 'CLOSED');
+  assert.ok(calls.every(c => c.method === 'get'));
+  assert.equal(calls[1].params.shield_machine, 9);
+  assert.equal(calls[2].params.warehouse, 123);
+  assert.equal(JSON.stringify({ positions, detail }), original);
+});
+
+test('missing warehouse prevents reads and does not guess an id', async t => {
+  let reads = 0, backs = 0;
+  const s = setup(t, 'view', { query: {}, router: { back: () => backs++ }, request: async () => { reads++; } });
+  await s.getWarehouseInfo();
+  assert.equal(reads, 0);
+  assert.equal(backs, 1);
+});
+
+test('unconfirmed warehouse downgrades supplement to view with query preserved', async t => {
+  const replacements = [];
+  const s = setup(t, 'supplement', { query: { warehouse_id: '123', mode: 'supplement', warehouse_code: 'TEST-123' }, router: { replace: async target => replacements.push(target) }, request: async config => ({ data: config.url.includes('warehouse_opening') ? { shield_model: 9, supplement_ready: false } : [] }) });
+  await s.getWarehouseInfo();
+  assert.equal(s.isEditable.value, false);
+  assert.equal(replacements.length, 1);
+  assert.equal(replacements[0].query.mode, 'view');
+  assert.equal(replacements[0].query.warehouse_id, '123');
+  assert.equal(replacements[0].query.warehouse_code, 'TEST-123');
+});
+
+test('parent repair entry enforces missing-record, not-replaced, readonly and archived guards', t => {
+  const s = setup(t, 'view');
+  const opened = [];
+  s.repairDialogRef.value = { open: (row, options) => opened.push({ row, options }) };
+  s.openOldToolRepair({ is_replaced: true });
+  s.openOldToolRepair({ id: 1, is_replaced: false });
+  assert.equal(opened.length, 0);
+  s.openOldToolRepair({ id: 1, is_replaced: true });
+  assert.equal(opened[0].options.readOnly, true);
+  const editable = setup(t);
+  editable.warehouseInfo.value = { supplement_ready: true };
+  editable.repairDialogRef.value = s.repairDialogRef.value;
+  editable.openOldToolRepair({ id: 2, is_replaced: true });
+  editable.openOldToolRepair({ id: 3, is_replaced: true, old_tool_record_data: { inspection_status: 'CLOSED' } });
+  assert.equal(opened[1].options.readOnly, false);
+  assert.equal(opened[2].options.readOnly, true);
+});
+
+function exportHarness(t) {
+  const blobs = [], documents = [];
+  const utility = run(fs.readFileSync(path.resolve(__dirname, '../../utils/export.ts'), 'utf8'), require, {
+    Blob, URL: { createObjectURL: blob => { blobs.push(blob); return 'blob:test'; }, revokeObjectURL() {} },
+    document: { createElement: () => ({ style: {}, click() {} }), body: { appendChild() {}, removeChild() {} } },
+    window: { open: () => ({ document: { write: html => documents.push(html), close() {} }, focus() {}, print() {} }) },
+    setTimeout: fn => fn(),
+  });
+  const s = setup(t);
+  s.tableData.value = rows.map((row, i) => ({ ...row, remark: i === 0 ? '长备注,"引号"\n第二行 <b>文本</b>' : `record-${i}`, price: 0 }));
+  s.searchText.value = 'not-present';
+  assert.equal(s.filteredTableData.value.length, 0);
+  const dropdownSource = fs.readFileSync(path.resolve(__dirname, '../../components/ExportDropdown.vue'), 'utf8');
+  const dropdown = compileScript(parse(dropdownSource).descriptor, { id: 'export-integration-test' });
+  const component = run(dropdown.content, name => {
+    if (name === 'vue') return vue;
+    if (name === '../utils/export') return utility;
+    if (name === 'element-plus') return { ElMessage: { warning() {} } };
+    if (name === '@element-plus/icons-vue') return { Download: {} };
+    throw new Error(`Unexpected export import: ${name}`);
+  });
+  const props = vue.reactive({ title: '隔离导出验收', filename: 'test-only', rows: s.tableData.value, columns: s.exportColumns, meta: s.exportMeta.value });
+  const state = component.default.setup(props, { expose() {} });
+  return { state, blobs, documents };
+}
+
+function parseCsv(text) {
+  const records = []; let record = [], value = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      if (quoted && text[i + 1] === '"') { value += '"'; i++; }
+      else quoted = !quoted;
+    } else if (!quoted && (char === ',' || char === '\n')) {
+      record.push(value); value = '';
+      if (char === '\n') { records.push(record); record = []; }
+    } else value += char;
+  }
+  record.push(value); records.push(record);
+  return records;
+}
+
+test('actual dropdown-to-CSV export retains every row and 18 columns despite empty screen filter', async t => {
+  const { state, blobs } = exportHarness(t);
+  state.handleCommand('csv');
+  assert.equal(blobs.length, 1);
+  const csv = parseCsv((await blobs[0].text()).replace(/^\uFEFF/, ''));
+  const headerIndex = csv.findIndex(row => row.includes('刀位号') && row.includes('刀具编号'));
+  assert.equal(headerIndex, 17); // 16 opening metadata rows and one separator
+  assert.equal(csv[headerIndex].length, 18);
+  const data = csv.slice(headerIndex + 1);
+  assert.equal(data.length, rows.length);
+  assert.ok(data.every(row => row.length === 18));
+  assert.equal(data[0][17], '长备注,"引号"\n第二行 <b>文本</b>');
+  assert.equal(data[0][15], '0');
+  assert.equal(data[1][4], '');
+});
+
+test('actual Excel and print exports keep full table, opening metadata and escaped text', async t => {
+  const { state, blobs, documents } = exportHarness(t);
+  state.handleCommand('excel');
+  state.handleCommand('pdf');
+  for (const html of [await blobs[0].text(), documents[0]]) {
+    assert.ok(html.includes('开仓基本信息'));
+    assert.ok(html.includes('&lt;b&gt;文本&lt;/b&gt;'));
+    const detailRows = html.split('<tr class="detail-header">')[1];
+    assert.equal((detailRows.match(/<th>/g) || []).length, 18);
+    assert.equal((detailRows.match(/<td>/g) || []).length, rows.length * 18);
+    for (const row of rows) assert.ok(html.includes(`<td>${row.cutter_position_no}</td>`));
+  }
 });
