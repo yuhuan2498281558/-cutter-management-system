@@ -1,10 +1,10 @@
 import * as api from './api';
-import { UserPageQuery, AddReq, EditReq, CreateCrudOptionsRet, dict } from '@fast-crud/fast-crud';
+import { UserPageQuery, AddReq, EditReq, CreateCrudOptionsRet, compute, dict } from '@fast-crud/fast-crud';
 import { useRouter } from 'vue-router';
 import AutoStratumDisplay from './AutoStratumDisplay.vue';
 import { createIndexFormatter } from '../crudUtils';
 
-export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdraw }: any): CreateCrudOptionsRet {
+export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdraw, withdrawingId }: any): CreateCrudOptionsRet {
 	const router = useRouter();
 
 	const pageRequest = async (query: UserPageQuery) => {
@@ -134,6 +134,8 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 						link: true,
 						iconRight: 'RefreshLeft',
 						show: ({ row }: any) => row.summary_status === 'CONFIRMED',
+						loading: compute(({ row }: any) => withdrawingId.value === row.id),
+						disabled: compute(() => withdrawingId.value !== null),
 						click: ({ row }: any) => onWithdraw(row),
 					},
 				},

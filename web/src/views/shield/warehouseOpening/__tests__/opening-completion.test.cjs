@@ -275,7 +275,7 @@ test('actual parent saved handler refreshes and navigates to the returned openin
   const parentScript = compileScript(parent, { id: 'completion-parent-test' });
   const calls = [];
   const component = compile(parentScript.content, name => {
-    if (name === 'vue') return { ...vue, onMounted() {} };
+    if (name === 'vue') return { ...vue, onMounted() {}, onActivated() {}, onDeactivated() {}, onUnmounted() {} };
     if (name === 'vue-router') return { useRouter: () => ({ push: value => calls.push(['route', value]) }) };
     if (name === '@fast-crud/fast-crud') return {
       useExpose: () => ({ crudExpose: { doRefresh: async () => calls.push(['refresh']) } }),

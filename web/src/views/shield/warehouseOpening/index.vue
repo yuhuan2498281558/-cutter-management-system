@@ -14,7 +14,7 @@
 </template>
 
 <script lang="ts" setup name="ShieldWarehouseOpening">
-import { ref, onMounted } from 'vue';
+import { ref, onActivated, onDeactivated, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useExpose, useCrud } from '@fast-crud/fast-crud';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -31,6 +31,17 @@ const { crudExpose } = useExpose({ crudRef, crudBinding });
 const router = useRouter();
 const completionVisible = ref(false);
 const selectedOpening = ref<WarehouseOpeningBasicInfoType | null>(null);
+const withdrawingId = ref<number | null>(null);
+let withdrawalGeneration = 0;
+let withdrawalPageActive = true;
+const invalidateWithdrawal = () => {
+  withdrawalPageActive = false;
+  withdrawalGeneration++;
+  withdrawingId.value = null;
+};
+onActivated(() => { withdrawalPageActive = true; });
+onDeactivated(invalidateWithdrawal);
+onUnmounted(invalidateWithdrawal);
 
 const openCompletion = (row: WarehouseOpeningBasicInfoType) => {
   selectedOpening.value = row;
@@ -50,19 +61,36 @@ const handleCompletionSaved = async (opening: WarehouseOpeningBasicInfoType) => 
 };
 
 const withdrawCompletion = async (opening: WarehouseOpeningBasicInfoType) => {
-  if (!opening.id) return;
+  if (!opening.id || !withdrawalPageActive || withdrawingId.value !== null) return;
+  const openingId = opening.id;
+  const generation = ++withdrawalGeneration;
+  const isCurrent = () => withdrawalPageActive && generation === withdrawalGeneration;
+  // The lock includes the confirmation dialog, not only the HTTP request.
+  withdrawingId.value = openingId;
   try {
-    await ElMessageBox.confirm(
-      '撤回后将关闭桌面补录，并按移动端明细重新计算检查数和更换数；移动任务会退回待复核。是否继续？',
-      '撤回汇总确认',
-      { type: 'warning', confirmButtonText: '确认撤回', cancelButtonText: '取消' },
-    );
+    try {
+      await ElMessageBox.confirm(
+        '撤回后将关闭桌面补录，并按移动端明细重新计算检查数和更换数；移动任务会退回待复核。是否继续？',
+        '撤回汇总确认',
+        { type: 'warning', confirmButtonText: '确认撤回', cancelButtonText: '取消' },
+      );
+    } catch {
+      return;
+    }
+    if (!isCurrent()) return;
+    const response = await api.WithdrawSummary(openingId);
+    if (!isCurrent()) return;
+    ElMessage.success(response.msg || '开仓汇总已撤回');
+    try {
+      await crudExpose.doRefresh();
+    } catch {
+      if (isCurrent()) ElMessage.warning('开仓汇总已撤回，但列表刷新失败，请刷新页面核对最新状态。');
+    }
   } catch {
-    return;
+    if (isCurrent()) ElMessage.warning('未能获取撤回结果，请刷新列表核对汇总状态后再重试。');
+  } finally {
+    if (generation === withdrawalGeneration) withdrawingId.value = null;
   }
-  const response = await api.WithdrawSummary(opening.id);
-  ElMessage.success(response.msg || '开仓汇总已撤回');
-  await crudExpose.doRefresh();
 };
 
 // createCrudOptions 只调用一次（setup 上下文），保证 useRouter() 正常
@@ -70,6 +98,7 @@ const { crudOptions } = createCrudOptions({
   crudExpose,
   onSupplement: openCompletion,
   onWithdraw: withdrawCompletion,
+  withdrawingId,
 });
 const { resetCrudOptions } = useCrud({ crudExpose, crudOptions });
 
