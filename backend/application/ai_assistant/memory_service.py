@@ -9,18 +9,25 @@ that future change.
 from __future__ import annotations
 
 import logging
+import json
 import math
 import os
 import re
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterable
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import Count, Max
 
-from langchain_community.chat_message_histories import SQLChatMessageHistory
-from langchain_core.messages import HumanMessage
-from sqlalchemy import create_engine, inspect, text
+from langchain_core.messages import AIMessage, HumanMessage, message_to_dict
+from sqlalchemy import (
+    Column, Index, Integer, MetaData, String, Table, Text, create_engine,
+    func, insert, select, update,
+)
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .models import AssistantMemoryMessage, AssistantMemoryScope
 
@@ -28,6 +35,25 @@ logger = logging.getLogger(__name__)
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# Keep LangChain's existing table and serialization unchanged. The companion
+# table only stores reset generations and the latest structured slots.
+_legacy_metadata = MetaData()
+_legacy_messages = Table(
+    "message_store", _legacy_metadata,
+    Column("id", Integer, primary_key=True),
+    Column("session_id", String(255)),
+    Column("message", Text),
+)
+_legacy_message_index = Index(
+    "ai_memory_message_session_id_idx", _legacy_messages.c.session_id, _legacy_messages.c.id,
+)
+_legacy_scopes = Table(
+    "ai_memory_legacy_scope", _legacy_metadata,
+    Column("session_id", String(255), primary_key=True),
+    Column("generation", Integer, nullable=False, default=0),
+    Column("slots", Text, nullable=True),
+)
 
 
 def _flag_enabled(name: str, default: str = "0") -> bool:
@@ -74,10 +100,14 @@ class MemorySnapshot:
     summary_revision: int = 0
     revision: int = 0
     backend: str = "django"
+    generation: int = 0
+    message_count: int | None = None
+    latest_sequence: int = 0
+    summary_messages: list[StoredMessage] | None = field(default=None, repr=False)
 
     @property
     def last_sequence(self) -> int:
-        return self.messages[-1].sequence if self.messages else 0
+        return self.latest_sequence or (self.messages[-1].sequence if self.messages else 0)
 
 
 class MemoryService:
@@ -93,6 +123,8 @@ class MemoryService:
         self.history_db_url = os.environ.get(
             "LANGCHAIN_HISTORY_DB_URL", "sqlite:///langchain_history.db"
         )
+        self._legacy_engine = None
+        self._legacy_engine_lock = threading.Lock()
 
     @staticmethod
     def scope_key(user_id: str | int | None) -> str:
@@ -109,11 +141,93 @@ class MemoryService:
             return scope_key.split(":", 1)[1]
         return scope_key
 
-    def _legacy_history(self, scope_key: str) -> SQLChatMessageHistory:
-        return SQLChatMessageHistory(
-            session_id=self.legacy_session_id(scope_key),
-            connection_string=self.history_db_url,
-        )
+    def _get_legacy_engine(self):
+        if self._legacy_engine is None:
+            with self._legacy_engine_lock:
+                if self._legacy_engine is None:
+                    kwargs = {"connect_args": {"timeout": 30}} if self.history_db_url.startswith("sqlite:") else {}
+                    engine = create_engine(self.history_db_url, **kwargs)
+                    try:
+                        with engine.begin() as connection:
+                            for table in (_legacy_messages, _legacy_scopes):
+                                connection.execute(CreateTable(table, if_not_exists=True))
+                            connection.execute(CreateIndex(_legacy_message_index, if_not_exists=True))
+                    except Exception:
+                        engine.dispose()
+                        raise
+                    self._legacy_engine = engine
+        return self._legacy_engine
+
+    def close(self):
+        """Release the optional legacy connection pool (also useful in tests)."""
+        if self._legacy_engine is not None:
+            self._legacy_engine.dispose()
+            self._legacy_engine = None
+
+    @contextmanager
+    def _legacy_transaction(self):
+        with self._get_legacy_engine().connect() as connection:
+            # SQLite ignores SELECT FOR UPDATE. Acquire its write reservation
+            # before reading the generation so reset and append serialize.
+            if connection.dialect.name == "sqlite":
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+            else:
+                connection.begin()
+            try:
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _legacy_scope(connection, session_id):
+        values = {"session_id": session_id, "generation": 0, "slots": None}
+        if connection.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+            connection.execute(dialect_insert(_legacy_scopes).values(**values).on_conflict_do_nothing())
+        elif connection.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
+            connection.execute(dialect_insert(_legacy_scopes).values(**values).on_conflict_do_nothing())
+        else:
+            try:
+                with connection.begin_nested():
+                    connection.execute(insert(_legacy_scopes).values(**values))
+            except IntegrityError:
+                pass
+        return connection.execute(
+            select(_legacy_scopes).where(_legacy_scopes.c.session_id == session_id).with_for_update()
+        ).mappings().one()
+
+    @staticmethod
+    def _decode_legacy_rows(rows):
+        messages = []
+        slots = None
+        for row in rows:
+            try:
+                raw = json.loads(row["message"])
+                data = raw.get("data", raw)
+                role = raw.get("type") or data.get("type")
+                if role not in {"human", "ai"}:
+                    continue
+                content = str(data.get("content") or "")
+                metadata = data.get("additional_kwargs") or {}
+                saved_slots = metadata.get("memory_slots")
+                if role == "human" and isinstance(saved_slots, dict):
+                    slots = dict(saved_slots)
+                messages.append(StoredMessage(row["id"], role, content, estimate_tokens(content)))
+            except (ValueError, TypeError, AttributeError):
+                logger.warning("跳过损坏的 AI 历史记录 id=%s", row["id"])
+        return messages, slots
+
+    @staticmethod
+    def _stored_rows(rows):
+        return [StoredMessage(row.sequence, row.role, row.content,
+                              row.token_count or estimate_tokens(row.content)) for row in rows]
+
+    @staticmethod
+    def _context_limit():
+        return min(100, _int_setting("AI_MEMORY_RECENT_TURNS", 3) * 2)
 
     def _get_scope(self, scope_key: str, owner_id: int | None = None) -> AssistantMemoryScope:
         defaults = {"owner_id": owner_id} if owner_id is not None else {}
@@ -128,49 +242,74 @@ class MemoryService:
 
     def load(self, scope_key: str, owner_id: int | None = None) -> MemorySnapshot:
         if self.backend == "legacy":
-            history = self._legacy_history(scope_key)
-            slots = {}
-            stored_messages = []
-            for index, message in enumerate(history.messages, start=1):
-                if message.type == "human":
-                    metadata = getattr(message, "additional_kwargs", {}) or {}
-                    saved_slots = metadata.get("memory_slots")
-                    if isinstance(saved_slots, dict):
-                        slots = dict(saved_slots)
-                content = str(message.content or "")
-                stored_messages.append(StoredMessage(
-                    sequence=index,
-                    role="human" if message.type == "human" else "ai",
-                    content=content,
-                    token_count=estimate_tokens(content),
-                ))
+            session_id = self.legacy_session_id(scope_key)
+            with self._legacy_transaction() as connection:
+                scope = self._legacy_scope(connection, session_id)
+                filtered = _legacy_messages.c.session_id == session_id
+                count, last = connection.execute(select(
+                    func.count(), func.max(_legacy_messages.c.id),
+                ).where(filtered)).one()
+                rows = list(connection.execute(select(_legacy_messages).where(filtered)
+                    .order_by(_legacy_messages.c.id.desc()).limit(self._context_limit())).mappings())
+                messages, saved_slots = self._decode_legacy_rows(reversed(rows))
+                slots = json.loads(scope["slots"]) if scope["slots"] is not None else saved_slots or {}
+                return MemorySnapshot(
+                    scope_key=scope_key, slots=slots, messages=messages, backend="legacy",
+                    generation=scope["generation"], message_count=count, latest_sequence=last or 0,
+                )
+
+        with transaction.atomic():
+            scope = self._get_scope(scope_key, owner_id=owner_id)
+            scope = AssistantMemoryScope.objects.select_for_update().get(pk=scope.pk)
+            stats = scope.messages.aggregate(count=Count("id"), last=Max("sequence"))
+            rows = list(scope.messages.order_by("-sequence")[:self._context_limit()])
             return MemorySnapshot(
-                scope_key=scope_key,
-                slots=slots,
-                messages=stored_messages,
-                backend="legacy",
+                scope_key=scope_key, summary=scope.summary or "", slots=dict(scope.slots or {}),
+                messages=self._stored_rows(reversed(rows)),
+                summary_through_sequence=scope.summary_through_sequence,
+                summary_revision=scope.summary_revision, revision=scope.revision,
+                backend="django", generation=scope.generation,
+                message_count=stats["count"], latest_sequence=stats["last"] or 0,
             )
 
-        scope = self._get_scope(scope_key, owner_id=owner_id)
-        rows = scope.messages.order_by("sequence").all()
-        return MemorySnapshot(
-            scope_key=scope_key,
-            summary=scope.summary or "",
-            slots=dict(scope.slots or {}),
-            messages=[
-                StoredMessage(
-                    sequence=row.sequence,
-                    role=row.role,
-                    content=row.content,
-                    token_count=row.token_count or estimate_tokens(row.content),
-                )
-                for row in rows
-            ],
-            summary_through_sequence=scope.summary_through_sequence,
-            summary_revision=scope.summary_revision,
-            revision=scope.revision,
-            backend="django",
-        )
+    def history_page(self, scope_key: str, owner_id: int | None = None, *,
+                     before_sequence: int | None = None, limit: int = 50) -> dict:
+        """Return an ascending page using a stable, exclusive sequence cursor."""
+        limit = max(1, min(int(limit), 100))
+        if before_sequence is not None and int(before_sequence) < 1:
+            raise ValueError("before_sequence must be positive")
+        if self.backend == "legacy":
+            session_id = self.legacy_session_id(scope_key)
+            with self._legacy_transaction() as connection:
+                scope = self._legacy_scope(connection, session_id)
+                filtered = _legacy_messages.c.session_id == session_id
+                count = connection.scalar(select(func.count()).select_from(_legacy_messages).where(filtered))
+                query = select(_legacy_messages).where(filtered)
+                if before_sequence is not None:
+                    query = query.where(_legacy_messages.c.id < int(before_sequence))
+                rows = list(connection.execute(query.order_by(_legacy_messages.c.id.desc())
+                                              .limit(limit + 1)).mappings())
+                selected = rows[:limit]
+                messages, _ = self._decode_legacy_rows(reversed(selected))
+                generation = scope["generation"]
+                cursor = selected[-1]["id"] if selected else None
+        else:
+            with transaction.atomic():
+                scope = self._get_scope(scope_key, owner_id=owner_id)
+                scope = AssistantMemoryScope.objects.select_for_update().get(pk=scope.pk)
+                count = scope.messages.count()
+                query = scope.messages.all()
+                if before_sequence is not None:
+                    query = query.filter(sequence__lt=int(before_sequence))
+                rows = list(query.order_by("-sequence")[:limit + 1])
+                selected = rows[:limit]
+                messages = self._stored_rows(reversed(selected))
+                generation = scope.generation
+                cursor = selected[-1].sequence if selected else None
+        has_more = len(rows) > limit
+        return {"messages": messages, "message_count": count, "has_more": has_more,
+                "next_before_sequence": cursor if has_more else None,
+                "generation": generation, "backend": self.backend}
 
     def context_messages(
         self,
@@ -197,11 +336,33 @@ class MemoryService:
     def summary_source(self, snapshot: MemorySnapshot, recent_turns: int | None = None) -> list[StoredMessage]:
         recent_turns = recent_turns or _int_setting("AI_MEMORY_RECENT_TURNS", 3)
         cutoff = max(0, snapshot.last_sequence - recent_turns * 2)
-        return [
-            item
-            for item in snapshot.messages
-            if snapshot.summary_through_sequence < item.sequence <= cutoff
-        ]
+        if snapshot.summary_messages is not None:
+            return snapshot.summary_messages
+        if snapshot.message_count is None:
+            candidates = [item for item in snapshot.messages
+                          if snapshot.summary_through_sequence < item.sequence <= cutoff]
+        elif self.backend == "django" and cutoff > snapshot.summary_through_sequence:
+            # Read an incremental batch independently of the six-message chat
+            # window. A reset changes generation and makes this batch empty.
+            candidates = self._stored_rows(AssistantMemoryMessage.objects.filter(
+                scope__scope_key=snapshot.scope_key, scope__generation=snapshot.generation,
+                sequence__gt=snapshot.summary_through_sequence, sequence__lte=cutoff,
+            ).order_by("sequence")[:200])
+        else:
+            candidates = []
+        budget = min(12000, _int_setting("AI_MEMORY_SUMMARY_SOURCE_TOKEN_BUDGET", 6000))
+        selected = []
+        used = 0
+        for item in candidates:
+            if used + item.token_count > budget:
+                break
+            selected.append(item)
+            used += item.token_count
+        # Advance a summary watermark only through a complete response.
+        while selected and selected[-1].role != "ai":
+            selected.pop()
+        snapshot.summary_messages = selected
+        return selected
 
     def summary_due(self, snapshot: MemorySnapshot) -> bool:
         if self.backend != "django":
@@ -238,42 +399,85 @@ class MemoryService:
         slots: dict | None = None,
         owner_id: int | None = None,
         metadata: dict | None = None,
+        expected_generation: int | None = None,
     ) -> MemorySnapshot:
         if not ai_content:
             return self.load(scope_key, owner_id=owner_id)
 
-        if self.backend == "legacy":
-            history = self._legacy_history(scope_key)
-            history.add_message(HumanMessage(
-                content=user_content,
-                additional_kwargs={"memory_slots": dict(slots or {})},
-            ))
-            history.add_ai_message(ai_content)
-            if _flag_enabled("AI_MEMORY_DUAL_WRITE"):
+        mirror = None
+        mirror_generation = None
+        if _flag_enabled("AI_MEMORY_DUAL_WRITE"):
+            try:
+                mirror = MemoryService(backend="django" if self.backend == "legacy" else "legacy")
+                mirror.history_db_url = self.history_db_url
+                # Capture before the primary write. A concurrent reset of the
+                # mirror cannot subsequently be undone by this delayed write.
+                mirror_generation = mirror._generation(scope_key, owner_id)
+            except Exception:
+                logger.exception("AI 记忆双写准备失败，scope=%s", scope_key)
+                if mirror is not None:
+                    mirror.close()
+                mirror = None
+        try:
+            appended = self._append_backend_turn(
+                scope_key, user_content, ai_content, slots=slots, owner_id=owner_id,
+                metadata=metadata, expected_generation=expected_generation,
+            )
+            if appended and mirror is not None:
                 try:
-                    self._append_django_turn(
-                        scope_key,
-                        user_content,
-                        ai_content,
-                        slots=slots,
-                        owner_id=owner_id,
-                        metadata=metadata,
-                        write_legacy=False,
-                    )
+                    if not mirror._append_backend_turn(
+                        scope_key, user_content, ai_content, slots=slots, owner_id=owner_id,
+                        metadata=metadata, expected_generation=mirror_generation,
+                    ):
+                        logger.info("AI 双写因记忆重置跳过，scope=%s", scope_key)
                 except Exception:
-                    logger.exception("AI 记忆 legacy->django 双写失败，scope=%s", scope_key)
-            return self.load(scope_key, owner_id=owner_id)
-
-        self._append_django_turn(
-            scope_key,
-            user_content,
-            ai_content,
-            slots=slots,
-            owner_id=owner_id,
-            metadata=metadata,
-            write_legacy=True,
-        )
+                    logger.exception("AI 记忆双写失败，scope=%s", scope_key)
+        finally:
+            if mirror is not None:
+                mirror.close()
         return self.load(scope_key, owner_id=owner_id)
+
+    def _generation(self, scope_key, owner_id=None):
+        if self.backend == "legacy":
+            with self._legacy_transaction() as connection:
+                return self._legacy_scope(connection, self.legacy_session_id(scope_key))["generation"]
+        return self._get_scope(scope_key, owner_id=owner_id).generation
+
+    def _append_backend_turn(self, scope_key, user_content, ai_content, slots=None,
+                             owner_id=None, metadata=None, expected_generation=None):
+        if self.backend == "django":
+            return self._append_django_turn(
+                scope_key, user_content, ai_content, slots=slots, owner_id=owner_id,
+                metadata=metadata, expected_generation=expected_generation,
+            )
+        session_id = self.legacy_session_id(scope_key)
+        with self._legacy_transaction() as connection:
+            scope = self._legacy_scope(connection, session_id)
+            if expected_generation is not None and scope["generation"] != expected_generation:
+                return False
+            current_slots = slots
+            if current_slots is None:
+                if scope["slots"] is not None:
+                    current_slots = json.loads(scope["slots"])
+                else:
+                    rows = list(connection.execute(select(_legacy_messages).where(
+                        _legacy_messages.c.session_id == session_id,
+                    ).order_by(_legacy_messages.c.id.desc()).limit(self._context_limit())).mappings())
+                    _, saved_slots = self._decode_legacy_rows(reversed(rows))
+                    current_slots = saved_slots or {}
+            messages = [HumanMessage(content=user_content, additional_kwargs={
+                "memory_slots": dict(current_slots),
+            }), AIMessage(content=ai_content)]
+            # One transaction owns both inserts and slots, including rollback
+            # when the second insert fails. No SQLChat per-message commits.
+            connection.execute(insert(_legacy_messages), [{
+                "session_id": session_id,
+                "message": json.dumps(message_to_dict(message), ensure_ascii=False),
+            } for message in messages])
+            connection.execute(update(_legacy_scopes).where(
+                _legacy_scopes.c.session_id == session_id,
+            ).values(slots=json.dumps(current_slots, ensure_ascii=False)))
+        return True
 
     def _append_django_turn(
         self,
@@ -283,12 +487,14 @@ class MemoryService:
         slots: dict | None = None,
         owner_id: int | None = None,
         metadata: dict | None = None,
-        write_legacy: bool = True,
-    ) -> None:
+        expected_generation: int | None = None,
+    ) -> bool:
         metadata = metadata or {}
         with transaction.atomic():
             scope = self._get_scope(scope_key, owner_id=owner_id)
             scope = AssistantMemoryScope.objects.select_for_update().get(pk=scope.pk)
+            if expected_generation is not None and scope.generation != expected_generation:
+                return False
             last = (
                 AssistantMemoryMessage.objects.filter(scope=scope)
                 .order_by("-sequence")
@@ -321,13 +527,7 @@ class MemoryService:
             scope.revision += 1
             scope.save(update_fields=["slots", "revision", "updated_at"])
 
-        if write_legacy and _flag_enabled("AI_MEMORY_DUAL_WRITE"):
-            try:
-                legacy = self._legacy_history(scope_key)
-                legacy.add_user_message(user_content)
-                legacy.add_ai_message(ai_content)
-            except Exception:
-                logger.exception("AI 记忆双写 legacy 失败，scope=%s", scope_key)
+        return True
 
     def save_summary(
         self,
@@ -372,72 +572,49 @@ class MemoryService:
         write_legacy: bool = True,
     ) -> None:
         if self.backend == "legacy":
-            if scope_key:
-                self._legacy_history(scope_key).clear()
-            else:
-                engine = create_engine(self.history_db_url)
-                try:
-                    if inspect(engine).has_table("message_store"):
-                        with engine.begin() as conn:
-                            conn.execute(text("DELETE FROM message_store"))
-                finally:
-                    engine.dispose()
-            if write_legacy and _flag_enabled("AI_MEMORY_DUAL_WRITE"):
-                try:
-                    MemoryService(backend="django").reset(
-                        scope_key,
-                        owner_id=owner_id,
-                        write_legacy=False,
-                    )
-                except Exception:
-                    logger.exception("AI 记忆 legacy->django reset 双写失败，scope=%s", scope_key)
-            return
-        if not scope_key:
+            with self._legacy_transaction() as connection:
+                delete = _legacy_messages.delete()
+                change = update(_legacy_scopes)
+                if scope_key:
+                    session_id = self.legacy_session_id(scope_key)
+                    self._legacy_scope(connection, session_id)
+                    delete = delete.where(_legacy_messages.c.session_id == session_id)
+                    change = change.where(_legacy_scopes.c.session_id == session_id)
+                else:
+                    # Lock existing scope rows in the same order for reset-all.
+                    list(connection.execute(select(_legacy_scopes.c.session_id)
+                         .order_by(_legacy_scopes.c.session_id).with_for_update()))
+                connection.execute(delete)
+                connection.execute(change.values(
+                    generation=_legacy_scopes.c.generation + 1, slots="{}",
+                ))
+        else:
             with transaction.atomic():
-                AssistantMemoryMessage.objects.all().delete()
-                AssistantMemoryScope.objects.all().update(
-                    slots={},
-                    summary="",
-                    summary_through_sequence=0,
-                    summary_revision=F("summary_revision") + 1,
-                    revision=F("revision") + 1,
-                )
-            if write_legacy and _flag_enabled("AI_MEMORY_DUAL_WRITE"):
-                try:
-                    engine = create_engine(self.history_db_url)
-                    try:
-                        if inspect(engine).has_table("message_store"):
-                            with engine.begin() as conn:
-                                conn.execute(text("DELETE FROM message_store"))
-                    finally:
-                        engine.dispose()
-                except Exception:
-                    logger.exception("AI 记忆双写 reset all legacy 失败")
-            return
-        with transaction.atomic():
-            scope = self._get_scope(scope_key, owner_id=owner_id)
-            scope = AssistantMemoryScope.objects.select_for_update().get(pk=scope.pk)
-            scope.messages.all().delete()
-            scope.slots = {}
-            scope.summary = ""
-            scope.summary_through_sequence = 0
-            scope.summary_revision += 1
-            scope.revision += 1
-            scope.save(
-                update_fields=[
-                    "slots",
-                    "summary",
-                    "summary_through_sequence",
-                    "summary_revision",
-                    "revision",
-                    "updated_at",
-                ]
-            )
+                scopes = AssistantMemoryScope.objects.select_for_update().order_by("pk")
+                if scope_key:
+                    scope = self._get_scope(scope_key, owner_id=owner_id)
+                    scopes = scopes.filter(pk=scope.pk)
+                for scope in scopes:
+                    scope.messages.all().delete()
+                    scope.slots = {}
+                    scope.summary = ""
+                    scope.summary_through_sequence = 0
+                    scope.summary_revision += 1
+                    scope.revision += 1
+                    scope.generation += 1
+                    scope.save(update_fields=[
+                        "slots", "summary", "summary_through_sequence", "summary_revision",
+                        "revision", "generation", "updated_at",
+                    ])
         if write_legacy and _flag_enabled("AI_MEMORY_DUAL_WRITE"):
+            mirror = MemoryService(backend="django" if self.backend == "legacy" else "legacy")
+            mirror.history_db_url = self.history_db_url
             try:
-                self._legacy_history(scope_key).clear()
+                mirror.reset(scope_key, owner_id=owner_id, write_legacy=False)
             except Exception:
-                logger.exception("AI 记忆双写 reset legacy 失败，scope=%s", scope_key)
+                logger.exception("AI 记忆双写 reset 失败，scope=%s", scope_key)
+            finally:
+                mirror.close()
 
 
 def serialize_messages(messages: Iterable[StoredMessage]) -> list[dict]:

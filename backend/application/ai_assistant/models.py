@@ -25,6 +25,7 @@ class AssistantMemoryScope(models.Model):
     summary_through_sequence = models.PositiveBigIntegerField(default=0)
     summary_revision = models.PositiveIntegerField(default=0)
     revision = models.PositiveIntegerField(default=0)
+    generation = models.PositiveBigIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

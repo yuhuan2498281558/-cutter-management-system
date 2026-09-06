@@ -94,6 +94,8 @@ ENV/
 .DS_Store
 **/migrations/*.py
 !**/migrations/__init__.py
+!application/ai_assistant/migrations/*.py
+!dvadmin/system/migrations/0001_initial.py
 *.pyc
 conf/*
 !conf/env.example.py
