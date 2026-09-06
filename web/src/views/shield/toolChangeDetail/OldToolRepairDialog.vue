@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" :title="readOnly ? '查看旧刀厂家返修信息' : '旧刀厂家返修补录'" width="820px" :close-on-click-modal="false">
+  <el-dialog v-model="visible" :title="readOnly ? '查看旧刀厂家返修信息' : '旧刀厂家返修补录'" width="820px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="!saving">
     <div v-if="row" class="record-context">
       <span>刀位：{{ row.cutter_position_no || '-' }}</span>
       <span>刀具类型：{{ row.tool_type_name || row.tool_parent_type || '-' }}</span>
@@ -7,7 +7,10 @@
       <span>返修状态：<el-tag size="small" :type="inspectionStatusType">{{ inspectionStatusText }}</el-tag></span>
     </div>
 
-    <el-form v-loading="loading" :model="form" :disabled="readOnly || isClosed" label-width="132px" class="repair-form">
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon class="load-error">
+      <el-button link type="primary" @click="retryLoad">重新加载</el-button>
+    </el-alert>
+    <el-form v-loading="loading" :model="form" :disabled="!canSave" label-width="132px" class="repair-form">
       <el-form-item label="旧刀磨损照片">
         <div class="photo-links">
           <el-link
@@ -127,19 +130,21 @@
     </el-form>
 
     <template #footer>
-      <el-button @click="visible = false">取消</el-button>
+      <el-button :disabled="saving" @click="visible = false">取消</el-button>
       <template v-if="!readOnly && !isClosed">
-        <el-button :loading="saving" @click="save('SAVE_DRAFT')">保存草稿</el-button>
+        <el-button :loading="saving" :disabled="!canSave" @click="save('SAVE_DRAFT')">保存草稿</el-button>
         <el-button
           v-if="inspectionStatus === 'PENDING_VENDOR_FEEDBACK'"
           type="primary"
           :loading="saving"
+          :disabled="!canSave"
           @click="save('CONFIRM')"
         >确认厂家反馈</el-button>
         <el-button
           v-else-if="inspectionStatus === 'CONFIRMED'"
           type="warning"
           :loading="saving"
+          :disabled="!canSave"
           @click="save('CLOSE')"
         >完成归档</el-button>
       </template>
@@ -155,7 +160,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { GetOldToolRecord, GetToolChangeOptions, UpdateOldToolRecord } from './api';
 
@@ -163,6 +168,9 @@ const emit = defineEmits<{ (event: 'saved'): void }>();
 
 const visible = ref(false);
 const loading = ref(false);
+const loaded = ref(false);
+const loadError = ref('');
+let loadVersion = 0;
 const saving = ref(false);
 const readOnly = ref(false);
 const row = ref<any>(null);
@@ -173,7 +181,10 @@ const fileList = ref<any[]>([]);
 const photoPreviewVisible = ref(false);
 const photoPreviewUrl = ref('');
 const photoPreviewName = ref('旧刀磨损照片');
-const options = reactive<any>({ ring_damage: [], bearing_failure_reasons: [], hub_failure_reasons: [], old_tool_dispositions: [] });
+type FieldOption = { value: string; label: string };
+const options = reactive<Record<'ring_damage' | 'bearing_failure_reasons' | 'hub_failure_reasons' | 'old_tool_dispositions', FieldOption[]>>({
+  ring_damage: [], bearing_failure_reasons: [], hub_failure_reasons: [], old_tool_dispositions: [],
+});
 
 const form = reactive<any>({
   old_tool_number: '',
@@ -202,6 +213,7 @@ const form = reactive<any>({
 const toolParentType = computed(() => row.value?.tool_parent_type || '');
 const remainingPhotoSlots = computed(() => Math.max(0, 5 - existingPhotos.value.length));
 const isClosed = computed(() => inspectionStatus.value === 'CLOSED');
+const canSave = computed(() => visible.value && loaded.value && !loading.value && !saving.value && !readOnly.value && !isClosed.value);
 const inspectionStatusText = computed(() => ({
   PENDING_VENDOR_FEEDBACK: '待厂家反馈',
   CONFIRMED: '厂家反馈已确认',
@@ -240,10 +252,26 @@ function applyRecord(record: any) {
   existingPhotos.value = record.photos || [];
 }
 
-async function open(input: any, options: { readOnly?: boolean } = {}) {
+function invalidateLoad() {
+  loadVersion += 1;
+  loaded.value = false;
+  loading.value = false;
+}
+
+watch(visible, value => {
+  if (!value) invalidateLoad();
+}, { flush: 'sync' });
+onUnmounted(invalidateLoad);
+
+async function open(input: any, openOptions: { readOnly?: boolean } = {}) {
+  if (saving.value) return;
+  const version = ++loadVersion;
   row.value = input;
-  readOnly.value = options.readOnly === true;
+  readOnly.value = openOptions.readOnly === true;
   resetForm();
+  loaded.value = false;
+  loadError.value = '';
+  Object.keys(options).forEach(key => { options[key as keyof typeof options] = []; });
   visible.value = true;
   loading.value = true;
   try {
@@ -251,10 +279,27 @@ async function open(input: any, options: { readOnly?: boolean } = {}) {
       GetOldToolRecord(input.id),
       GetToolChangeOptions(),
     ]);
+    if (version !== loadVersion || !visible.value) return;
+    if (!recordRes.data || !optionRes.data || Object.keys(options).some(key => !Array.isArray(optionRes.data[key]))) {
+      throw new Error('返修信息或选项数据不完整');
+    }
     applyRecord(recordRes.data?.old_tool_record_data);
-    Object.assign(options, optionRes.data || {});
+    Object.keys(options).forEach(key => {
+      options[key as keyof typeof options] = optionRes.data[key];
+    });
+    loaded.value = true;
+  } catch {
+    if (version === loadVersion && visible.value) {
+      loadError.value = '返修信息加载失败，暂不能保存，请重新加载。';
+    }
   } finally {
-    loading.value = false;
+    if (version === loadVersion) loading.value = false;
+  }
+}
+
+function retryLoad() {
+  if (row.value && !loading.value && !saving.value) {
+    return open(row.value, { readOnly: readOnly.value });
   }
 }
 
@@ -267,7 +312,7 @@ function appendValue(data: FormData, key: string, value: any) {
 }
 
 async function save(workflowAction: 'SAVE_DRAFT' | 'CONFIRM' | 'CLOSE') {
-  if (!row.value) return;
+  if (!row.value || !canSave.value) return;
   if (workflowAction !== 'SAVE_DRAFT' && !form.disposition) {
     ElMessage.warning('请先选择旧刀处置结果');
     return;
@@ -276,29 +321,33 @@ async function save(workflowAction: 'SAVE_DRAFT' | 'CONFIRM' | 'CLOSE') {
     ElMessage.warning('可维修旧刀归档前必须填写厂家返修结果');
     return;
   }
-  if (workflowAction === 'CLOSE') {
-    try {
+  const version = loadVersion;
+  const recordId = row.value.id;
+  saving.value = true;
+  try {
+    if (workflowAction === 'CLOSE') {
       await ElMessageBox.confirm('归档后将不能继续修改该旧刀返修信息，是否继续？', '完成归档', {
         confirmButtonText: '确认归档',
         cancelButtonText: '取消',
         type: 'warning',
       });
-    } catch {
-      return;
     }
-  }
-  saving.value = true;
-  try {
+    if (version !== loadVersion || !visible.value) return;
     const data = new FormData();
     data.append('workflow_action', workflowAction);
     Object.entries(form).forEach(([key, value]) => appendValue(data, key, value));
     fileList.value.forEach((item) => {
       if (item.raw) data.append('photos', item.raw);
     });
-    const response: any = await UpdateOldToolRecord(row.value.id, data);
+    const response: any = await UpdateOldToolRecord(recordId, data);
+    if (version !== loadVersion || !visible.value) return;
     ElMessage.success(response.msg || (workflowAction === 'SAVE_DRAFT' ? '草稿已保存' : workflowAction === 'CONFIRM' ? '厂家反馈已确认' : '旧刀返修记录已归档'));
     visible.value = false;
     emit('saved');
+  } catch (error: any) {
+    if (error !== 'cancel' && error !== 'close' && version === loadVersion && visible.value) {
+      ElMessage.error('保存未完成，已保留填写内容，请确认后重试');
+    }
   } finally {
     saving.value = false;
   }
@@ -316,6 +365,7 @@ defineExpose({ open });
 
 <style scoped>
 .record-context { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 16px; color: #606266; }
+.load-error { margin-bottom: 12px; }
 .repair-form { max-height: 62vh; overflow-y: auto; padding-right: 10px; }
 .full-width { width: 100%; }
 .photo-links { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
