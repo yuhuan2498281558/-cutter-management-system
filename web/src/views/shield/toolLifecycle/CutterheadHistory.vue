@@ -11,7 +11,7 @@
           <circle :cx="CUTTERHEAD_IMAGE_CENTER.x" :cy="CUTTERHEAD_IMAGE_CENTER.y" :r="FACE_RADIUS" />
         </clipPath>
       </defs>
-      <image href="/cutterhead.png" :width="CUTTERHEAD_IMAGE_SIZE.width" :height="CUTTERHEAD_IMAGE_SIZE.height" clip-path="url(#lifecycle-cutter-face)" />
+      <image :href="CUTTERHEAD_IMAGE" :width="CUTTERHEAD_IMAGE_SIZE.width" :height="CUTTERHEAD_IMAGE_SIZE.height" clip-path="url(#lifecycle-cutter-face)" />
       <g v-for="position in ACTIVE_CUTTER_POSITIONS" :key="position.code"
         role="button" tabindex="0" :aria-label="`${position.code}号刀位`" :aria-pressed="modelValue === position.code"
         @click="$emit('update:modelValue', position.code)" @keydown.enter.prevent="$emit('update:modelValue', position.code)"
@@ -26,6 +26,7 @@
 </template>
 <script setup lang="ts">
 import { ACTIVE_CUTTER_POSITIONS, CUTTERHEAD_IMAGE_SIZE, CUTTERHEAD_IMAGE_CENTER } from '/@/constants/cutterPositions';
+import { CUTTERHEAD_IMAGE } from '/@/utils/engineeringAssets';
 import { ref } from 'vue';
 const zoomed = ref(false);
 // Crop only the drawing background; marker coordinates stay in the original

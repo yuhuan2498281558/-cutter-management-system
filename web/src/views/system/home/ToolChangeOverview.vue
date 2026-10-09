@@ -32,7 +32,7 @@
         </div>
         <div class="cutter-map">
           <div class="map-figure">
-            <img src="/cutterhead-clean.png" alt="刀盘图纸" />
+            <img :src="CUTTERHEAD_CLEAN_IMAGE" alt="刀盘图纸" />
             <svg
               class="marker-layer"
               viewBox="0 0 1900 2100"
@@ -110,6 +110,7 @@
 import { computed, defineComponent, h, onMounted, ref } from 'vue';
 import { ACTIVE_CUTTER_POSITIONS, isActiveCutterPosition } from '/@/constants/cutterPositions';
 import { request } from '/@/utils/service';
+import { CUTTERHEAD_CLEAN_IMAGE } from '/@/utils/engineeringAssets';
 
 type ToolType = 'roller' | 'scraper';
 type ToolParentType = 'DISC' | 'SCRAPER';

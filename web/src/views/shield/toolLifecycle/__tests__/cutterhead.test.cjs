@@ -38,7 +38,8 @@ test('cropped drawing keeps all original hit targets visible and selectable, inc
     { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
   const emitted = [];
   const h = setup(t, '../toolLifecycle/CutterheadHistory.vue', {
-    props: { modelValue: '3', $emit: (...args) => emitted.push(args) }, modules: { '/@/constants/cutterPositions': context.exports },
+    props: { modelValue: '3', $emit: (...args) => emitted.push(args) },
+    modules: { '/@/constants/cutterPositions': context.exports, '/@/utils/engineeringAssets': { CUTTERHEAD_IMAGE: '/configured-cutterhead.png' } },
   });
   const nodes = h.nodes();
   const svg = nodes.find(node => node.type === 'svg');
@@ -63,6 +64,7 @@ test('cropped drawing keeps all original hit targets visible and selectable, inc
   h.props.modelValue = 'y5';
   assert.equal(h.nodes().find(node => node.type === 'g' && node.props['aria-label'] === 'y5号刀位').props['aria-pressed'], true);
   assert.equal(nodes.find(node => node.type === 'image').props['clip-path'], 'url(#lifecycle-cutter-face)');
+  assert.equal(nodes.find(node => node.type === 'image').props.href, '/configured-cutterhead.png');
 });
 
 test('segment details never import another deployment or unconfirmed removal', () => {

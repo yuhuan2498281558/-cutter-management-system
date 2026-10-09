@@ -52,7 +52,7 @@
       >
         <img
           ref="imageRef"
-          src="/cutterhead.png"
+          :src="CUTTERHEAD_IMAGE"
           @click="handleClick"
           @load="onImageLoad"
           draggable="false"
@@ -94,6 +94,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { ACTIVE_CUTTER_POSITIONS } from '/@/constants/cutterPositions';
+import { CUTTERHEAD_IMAGE } from '/@/utils/engineeringAssets';
 
 const emit = defineEmits<{
   close: [];

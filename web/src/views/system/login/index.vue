@@ -1,6 +1,6 @@
 <template>
 	<div class="login-page">
-		<img :src="loginBg" class="login-page__background" alt="" aria-hidden="true" fetchpriority="high" />
+		<img v-if="loginBg" :src="loginBg" class="login-page__background" alt="" aria-hidden="true" fetchpriority="high" />
 		<div class="login-page__scrim" aria-hidden="true"></div>
 
 		<main class="login-page__content">
@@ -57,6 +57,7 @@ import { NextLoading } from '/@/utils/loading';
 import { SystemConfigStore } from '/@/stores/systemConfig';
 import { getBaseURL } from '/@/utils/baseUrl';
 import { useUserInfo } from '/@/stores/userInfo';
+import { LOGIN_BACKGROUND_IMAGE } from '/@/utils/engineeringAssets';
 
 const Account = defineAsyncComponent(() => import('/@/views/system/login/component/account.vue'));
 const ChangePwd = defineAsyncComponent(() => import('/@/views/system/login/component/changePwd.vue'));
@@ -69,7 +70,7 @@ const state = reactive({
 });
 
 const getSystemConfig = computed(() => systemConfig.value);
-const loginBg = '/login-cutterhead.png';
+const loginBg = LOGIN_BACKGROUND_IMAGE;
 
 watch(
 	() => userInfos.value.pwd_change_count,

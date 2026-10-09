@@ -77,7 +77,7 @@
         @contextmenu.prevent
       >
         <div class="image-container">
-          <img src="/cutterhead.png" alt="刀盘图纸" @load="onImageLoad" ref="imageRef" draggable="false" />
+          <img :src="CUTTERHEAD_IMAGE" alt="刀盘图纸" @load="onImageLoad" ref="imageRef" draggable="false" />
           <svg
             class="hotspot-layer"
             :width="imageWidth"
@@ -107,6 +107,7 @@
 import { ref } from 'vue';
 import { getCutterInfo, type CutterPositionInfo } from './cutterApi';
 import { ACTIVE_CUTTER_POSITIONS } from '/@/constants/cutterPositions';
+import { CUTTERHEAD_IMAGE } from '/@/utils/engineeringAssets';
 import { getCutterOutline } from '/@/constants/cutterOutlines';
 
 const imageRef = ref<HTMLImageElement>();

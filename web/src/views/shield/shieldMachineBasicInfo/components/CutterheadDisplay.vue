@@ -21,7 +21,7 @@
         @contextmenu.prevent
       >
         <div class="image-container">
-          <img src="/cutterhead-clean.png" alt="刀盘图纸" draggable="false" />
+          <img :src="CUTTERHEAD_CLEAN_IMAGE" alt="刀盘图纸" draggable="false" />
           <svg
             class="hotspot-layer"
             :width="IMAGE_WIDTH"
@@ -49,6 +49,7 @@
 <script setup lang="ts">
 import { ref, withDefaults } from 'vue';
 import { ACTIVE_CUTTER_POSITIONS, CUTTERHEAD_IMAGE_SIZE } from '/@/constants/cutterPositions';
+import { CUTTERHEAD_CLEAN_IMAGE } from '/@/utils/engineeringAssets';
 import type { CutterInfo } from '/@/types/cutter.types';
 
 interface Props {
