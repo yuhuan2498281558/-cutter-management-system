@@ -36,8 +36,6 @@ from .models import (
     NewToolRecord,
     OldToolRecord,
     OldToolPhoto,
-    WearTypeDict,
-    AbnormalCauseDict,
     ShieldMachineBasicInfo,
     CutterPositionInfo,
     CutterModelMapping,
@@ -1344,82 +1342,6 @@ class WarehouseOpeningBasicInfoViewSet(CustomModelViewSet):
         return SuccessResponse(options)
 
 
-# ==================== 磨损类型字典管理 ====================
-
-class WearTypeDictSerializer(CustomModelSerializer):
-    """
-    磨损类型字典-序列化器
-    """
-    class Meta:
-        model = WearTypeDict
-        fields = '__all__'
-        read_only_fields = ["id"]
-
-
-class WearTypeDictCreateUpdateSerializer(CustomModelSerializer):
-    """
-    磨损类型字典管理 创建/更新时的序列化器
-    """
-    class Meta:
-        model = WearTypeDict
-        fields = '__all__'
-
-
-class WearTypeDictViewSet(CustomModelViewSet):
-    """
-    磨损类型字典管理接口
-    list:查询
-    create:新增
-    update:修改
-    retrieve:单例
-    destroy:删除
-    """
-    queryset = WearTypeDict.objects.all()
-    serializer_class = WearTypeDictSerializer
-    create_serializer_class = WearTypeDictCreateUpdateSerializer
-    update_serializer_class = WearTypeDictCreateUpdateSerializer
-    filter_fields = ['wear_type_name', 'wear_type_code']
-    search_fields = ['wear_type_name', 'wear_type_code']
-
-
-# ==================== 异常原因字典管理 ====================
-
-class AbnormalCauseDictSerializer(CustomModelSerializer):
-    """
-    异常原因字典-序列化器
-    """
-    class Meta:
-        model = AbnormalCauseDict
-        fields = '__all__'
-        read_only_fields = ["id"]
-
-
-class AbnormalCauseDictCreateUpdateSerializer(CustomModelSerializer):
-    """
-    异常原因字典管理 创建/更新时的序列化器
-    """
-    class Meta:
-        model = AbnormalCauseDict
-        fields = '__all__'
-
-
-class AbnormalCauseDictViewSet(CustomModelViewSet):
-    """
-    异常原因字典管理接口
-    list:查询
-    create:新增
-    update:修改
-    retrieve:单例
-    destroy:删除
-    """
-    queryset = AbnormalCauseDict.objects.all()
-    serializer_class = AbnormalCauseDictSerializer
-    create_serializer_class = AbnormalCauseDictCreateUpdateSerializer
-    update_serializer_class = AbnormalCauseDictCreateUpdateSerializer
-    filter_fields = ['cause_name', 'cause_code']
-    search_fields = ['cause_name', 'cause_code']
-
-
 # ==================== 盾构机基本信息管理 ====================
 
 class ShieldMachineBasicInfoSerializer(CustomModelSerializer):
@@ -1966,6 +1888,11 @@ class StratumBasicInfoSerializer(CustomModelSerializer):
     """
     project_name = serializers.CharField(read_only=True, source='project.project_name')
     stratum_types_list = serializers.SerializerMethodField(read_only=True)
+    stratum_ratio_labels = serializers.SerializerMethodField(read_only=True)
+    rock_types_list = serializers.SerializerMethodField(read_only=True)
+    longitudinal_type_ratios = serializers.SerializerMethodField(read_only=True)
+    longitudinal_area_notes = serializers.SerializerMethodField(read_only=True)
+    engineering_zones_list = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = StratumBasicInfo
@@ -1973,8 +1900,30 @@ class StratumBasicInfoSerializer(CustomModelSerializer):
         read_only_fields = ["id"]
 
     def get_stratum_types_list(self, obj):
-        """获取该环号关联的所有地层类型（从系统字典）。"""
+        """兼容字段：历史工程地质条件，不表示面积岩性。"""
         return obj.get_stratum_types()
+
+    def get_rock_types_list(self, obj):
+        return obj.get_rock_types()
+
+    def get_longitudinal_type_ratios(self, obj):
+        from application.shield.longitudinal_ratios import withhold_condition_derived_ratios
+        return withhold_condition_derived_ratios(obj.longitudinal_type_ratios)
+
+    def get_longitudinal_area_notes(self, obj):
+        from application.shield.longitudinal_ratios import longitudinal_area_notes
+        return longitudinal_area_notes(
+            (c.strip() for c in obj.stratum_type_codes.split(',') if c.strip()),
+            obj.longitudinal_type_ratios,
+        )
+
+    def get_engineering_zones_list(self, obj):
+        from application.shield.longitudinal_ratios import engineering_zones
+        return engineering_zones(obj.longitudinal_type_ratios)
+
+    def get_stratum_ratio_labels(self, obj):
+        from application.shield.stratum_ratios import stratum_label
+        return {code: stratum_label(code) for code in obj.stratum_type_ratios}
 
 
 class StratumBasicInfoCreateUpdateSerializer(CustomModelSerializer):
@@ -1991,6 +1940,20 @@ class StratumBasicInfoCreateUpdateSerializer(CustomModelSerializer):
     class Meta:
         model = StratumBasicInfo
         fields = '__all__'
+
+    def validate_stratum_type_ratios(self, value):
+        from application.shield.stratum_ratios import validate_stratum_ratios
+        try:
+            return validate_stratum_ratios(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_longitudinal_type_ratios(self, value):
+        from application.shield.longitudinal_ratios import validate_longitudinal_ratios
+        try:
+            return validate_longitudinal_ratios(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def create(self, validated_data):
         stratum_types_data = validated_data.pop('stratum_types_data', [])

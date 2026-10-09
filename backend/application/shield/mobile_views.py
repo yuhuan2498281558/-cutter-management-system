@@ -701,6 +701,11 @@ class MobileTaskViewSet(viewsets.ViewSet):
                 task = queryset.select_for_update(of=("self",)).filter(pk=pk).first()
                 if not task or not user_can_open_task(request.user, task):
                     return None
+                # 与撤回、保存一致：先锁任务，再锁开仓。关联查询的快照
+                # 可能早于桌面确认，认领和提交都必须使用锁定后的最新状态。
+                task.warehouse = WarehouseOpeningBasicInfo.objects.select_for_update().get(
+                    pk=task.warehouse_id
+                )
                 if (
                     task.recorder_id is None
                     and task.warehouse.summary_status
@@ -951,6 +956,8 @@ class MobileTaskViewSet(viewsets.ViewSet):
         task = self._get_task(request, pk, claim=True)
         if not task:
             return ErrorResponse(msg="任务不存在或无权访问")
+        if task.warehouse.summary_status == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+            return ErrorResponse(msg="开仓汇总已确认，移动端不可继续提交；请先由桌面端撤回确认")
         if task.status in {"SUBMITTED", "COMPLETED", "CANCELLED"}:
             return ErrorResponse(msg="当前任务不可提交")
         details = list(scoped_details(task))
@@ -1184,6 +1191,30 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
     # ------------------------------------------------------------------
     # 批量预计算
     # ------------------------------------------------------------------
+    @action(detail=False, methods=["get"])
+    def scopes(self, request):
+        rows = ToolChangeDetail.objects.order_by(
+            "warehouse__project_id", "warehouse__shield_model_id"
+        ).values("warehouse__project_id", "warehouse__project__project_name",
+                 "warehouse__shield_model_id", "warehouse__shield_model__shield_model").distinct()
+        return SuccessResponse(data=[{
+            "project": row["warehouse__project_id"],
+            "project_name": row["warehouse__project__project_name"],
+            "shield_machine": row["warehouse__shield_model_id"],
+            "machine_name": row["warehouse__shield_model__shield_model"],
+        } for row in rows], msg="success")
+
+    @action(detail=False, methods=["get"])
+    def position_history(self, request):
+        from application.shield.cutter_position_scope import normalize_cutter_position_no
+        from application.shield.lifecycle_history import build_position_history
+        project = str(request.query_params.get("project") or "")
+        machine = str(request.query_params.get("shield_machine") or "")
+        position = normalize_cutter_position_no(request.query_params.get("position"))
+        if not project.isdigit() or not machine.isdigit() or not is_active_cutter_position(position):
+            return ErrorResponse(msg="请选择项目、盾构机和有效刀位")
+        return SuccessResponse(data=build_position_history(project, machine, position), msg="success")
+
     @staticmethod
     def _replacement_ring_map(project=None, shield_machine=None):
         """{(project_id, shield_id, 刀位编号): [已换刀环号升序]}

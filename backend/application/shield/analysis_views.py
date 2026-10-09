@@ -9,26 +9,56 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.authentication import SessionAuthentication
+from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from dvadmin.utils.permission import CustomPermission
 from django.db.models import (
     Count, Sum, Avg, Q, IntegerField, DecimalField, FloatField, Min, Max
 )
 from django.db.models.functions import TruncMonth, Cast
-from django.core.cache import cache
+from django.utils import timezone
+from django.core.cache import cache as shared_cache
 from .models import (
     WarehouseOpeningBasicInfo,
     ToolChangeDetail,
     ShieldTunnelingData,
     StratumBasicInfo,
     TOOL_TYPES,
+    NewToolRecord, OldToolRecord,
 )
 from .wear import (
     Q_WEAR_ABNORMAL,
     Q_WEAR_NORMAL,
     Q_WEAR_RECORDED,
     normalize_wear,
+    classify_wear_counts,
 )
+from .analysis_metrics import (
+    active_observed_queryset, analysis_meta, cost_source_rows, select_cost_rows,
+    summarize_cost_rows, confirmed_service_segments,
+    RING_NUMERIC_REGEX,
+    ANALYSIS_REQUEST, scoped_queryset, blade_track_range,
+)
+
+
+class _AnalysisCache:
+    """Business aggregates are fresh per request; only dictionary labels are cached.
+
+    Opening confirmation/withdrawal and vendor feedback can change any old ring.
+    There is no analysis invalidation event, so an expiring aggregate cannot claim
+    to represent the current confirmed scope.
+    """
+    @staticmethod
+    def get(key):
+        return None if key.startswith('analysis_') else shared_cache.get(key)
+
+    @staticmethod
+    def set(key, value, timeout):
+        if not key.startswith('analysis_'):
+            shared_cache.set(key, value, timeout)
+
+
+cache = _AnalysisCache()
 
 
 def success(data):
@@ -62,7 +92,7 @@ NORMAL_WEAR = '正常'
 
 # 环号是自由文本 CharField，直接 Cast 遇到非数字环号会让 PostgreSQL 抛
 # DataError 导致整页 500。统一走这个帮助函数：先滤掉非数字环号再转换。
-_RING_NUMERIC_REGEX = r'^\d+$'
+_RING_NUMERIC_REGEX = RING_NUMERIC_REGEX
 
 
 def _with_ring_int(qs, field='ring_no'):
@@ -94,16 +124,16 @@ CUSTOM_DIMENSIONS = [
 
 CUSTOM_METRICS = [
     {'value': 'opening_count', 'label': '开仓次数', 'unit': '次'},
-    {'value': 'checked_tool_count', 'label': '检查刀具数', 'unit': '把'},
+    {'value': 'checked_tool_count', 'label': '有效观察记录数', 'unit': '条'},
     {'value': 'replacement_count', 'label': '更换刀具数', 'unit': '把'},
     {'value': 'complete_count', 'label': '整刀更换数', 'unit': '把'},
     {'value': 'repair_count', 'label': '维修数', 'unit': '次'},
     {'value': 'abnormal_count', 'label': '异常磨损数', 'unit': '把'},
     {'value': 'abnormal_rate', 'label': '异常磨损率', 'unit': '%'},
     {'value': 'normal_rate', 'label': '正常磨损率', 'unit': '%'},
-    {'value': 'total_cost', 'label': '换刀总费用', 'unit': '元'},
-    {'value': 'avg_price', 'label': '平均单价', 'unit': '元'},
-    {'value': 'cost_per_opening', 'label': '单次开仓费用', 'unit': '元/次'},
+    {'value': 'total_cost', 'label': '登记费用合计', 'unit': '元'},
+    {'value': 'avg_price', 'label': '更换登记均价（含历史）', 'unit': '元'},
+    {'value': 'cost_per_opening', 'label': '平均每次开仓登记费用', 'unit': '元/次'},
     {'value': 'avg_opening_duration', 'label': '平均开仓时长', 'unit': '小时'},
     {'value': 'avg_rings_between_openings', 'label': '平均开仓间隔', 'unit': '环'},
     {'value': 'avg_thrust', 'label': '平均推力', 'unit': ''},
@@ -171,7 +201,10 @@ def _build_detail_queryset(openings, params, only_replaced=None, include_manufac
     根据开仓记录和分析筛选参数构造换刀明细 QuerySet。
     支持 tool_parent_type / tool_type_name / manufacturer，保证各图表口径一致。
     """
-    qs = ToolChangeDetail.objects.filter(warehouse__in=openings)
+    qs = active_observed_queryset(
+        scoped_queryset(ToolChangeDetail.objects.filter(warehouse__in=openings)),
+        track_bounds=blade_track_range(params),
+    )
     if only_replaced is not None:
         qs = qs.filter(is_replaced=only_replaced)
 
@@ -212,17 +245,29 @@ def _build_detail_queryset(openings, params, only_replaced=None, include_manufac
     if manufacturers:
         qs = qs.filter(manufacturer__in=manufacturers)
     if cost_types:
-        qs = qs.filter(replacement_type__in=cost_types)
+        cost_query = Q(pk__in=[])
+        if 'COMPLETE' in cost_types:
+            cost_query |= Q(id__in=scoped_queryset(NewToolRecord.objects.all()).values('tool_change_detail_id')) | Q(replacement_type='COMPLETE')
+        if 'REPAIR' in cost_types:
+            cost_query |= Q(id__in=scoped_queryset(OldToolRecord.objects.all()).values('tool_change_detail_id')) | Q(replacement_type='REPAIR')
+        qs = qs.filter(cost_query)
 
     return qs
 
 
-def _build_opening_queryset(params):
+def _build_opening_queryset(params, include_all_statuses=False, include_invalid_rings=False):
     """
     根据筛选参数构造开仓记录 QuerySet
     params: request.query_params（QueryDict）
     """
-    qs = WarehouseOpeningBasicInfo.objects.all()
+    qs = scoped_queryset(WarehouseOpeningBasicInfo.objects.all())
+    if not include_invalid_rings:
+        qs = qs.filter(ring_no__regex=_RING_NUMERIC_REGEX)
+    status = str(params.get('summary_status') or 'CONFIRMED').upper()
+    if status not in {'CONFIRMED', 'DRAFT', 'ALL'}:
+        raise ValidationError({'summary_status': '请选择 CONFIRMED、DRAFT 或 ALL'})
+    if not include_all_statuses and status != 'ALL':
+        qs = qs.filter(summary_status=status)
 
     project = _get_query_value(params, 'project')          # 项目 PK
     machine = _get_query_value(params, 'shield_machine')   # 盾构机 PK
@@ -244,13 +289,21 @@ def _build_opening_queryset(params):
     machine_int = _safe_int(machine)
     if project and project_int is not None:
         qs = qs.filter(project_id=project_int)
+    elif project:
+        raise ValidationError({'project': '项目编号必须是整数'})
     if machine and machine_int is not None:
         qs = qs.filter(shield_model_id=machine_int)
+    elif machine:
+        raise ValidationError({'shield_machine': '盾构机编号必须是整数'})
     if start_ring or end_ring:
         # ring_no 是 CharField，转成整数后过滤（跳过非数字环号）
         qs = _with_ring_int(qs)
         start_ring_int = _safe_int(start_ring)
         end_ring_int = _safe_int(end_ring)
+        if (start_ring and start_ring_int is None) or (end_ring and end_ring_int is None):
+            raise ValidationError({'ring_range': '环号必须是整数'})
+        if start_ring_int is not None and end_ring_int is not None and start_ring_int > end_ring_int:
+            raise ValidationError({'ring_range': '起始环号不能大于结束环号'})
         if start_ring_int is not None:
             qs = qs.filter(ring_int__gte=start_ring_int)
         if end_ring_int is not None:
@@ -262,7 +315,224 @@ def _build_opening_queryset(params):
     return qs
 
 
+def _meta(openings, params, details=None):
+    raw = scoped_queryset(ToolChangeDetail.objects.filter(warehouse__in=openings))
+    result = analysis_meta(
+        openings, params, raw,
+        details if details is not None else _build_detail_queryset(openings, params),
+        _build_opening_queryset(params, include_all_statuses=True).filter(summary_status='DRAFT').count(),
+    )
+    ring_free = params.copy()
+    for key in ('start_ring', 'end_ring'):
+        if key in ring_free:
+            del ring_free[key]
+    result['excluded_invalid_ring_opening_count'] = _build_opening_queryset(
+        ring_free, include_invalid_rings=True,
+    ).exclude(ring_no__regex=_RING_NUMERIC_REGEX).count()
+    if result['excluded_invalid_ring_opening_count']:
+        result['warnings'].append('环号必须为1至9位数字；范围内存在不可定位的历史开仓，已排除并单列数量。')
+    return result
+
+
+def _cost_detail_rows(details):
+    """Load only replaced rows and fields used by cost attribution and pairing."""
+    return list(details.filter(is_replaced=True).annotate(
+        analysis_source_ring=Cast('warehouse__ring_no', output_field=IntegerField()),
+    ).order_by('cutter_position_no', 'analysis_source_ring', 'warehouse_id', 'id')
+        .select_related('warehouse', 'new_tool_record', 'old_tool_record').only(
+        'id', 'warehouse_id', 'cutter_position_no', 'tool_parent_type', 'is_replaced',
+        'price', 'manufacturer', 'tool_number', 'replacement_type', 'wear_condition',
+        'warehouse__id', 'warehouse__warehouse_id', 'warehouse__ring_no', 'warehouse__open_time',
+        'warehouse__project_id', 'warehouse__shield_model_id', 'warehouse__summary_status',
+        'new_tool_record__id', 'new_tool_record__tool_change_detail_id',
+        'old_tool_record__id', 'old_tool_record__tool_change_detail_id', 'old_tool_record__old_tool_number',
+        'old_tool_record__inspection_status', 'old_tool_record__repair_price',
+    ))
+
+
+def _cost_rows(details, params, service_segments=None):
+    loaded = _cost_detail_rows(details) if hasattr(details, 'select_related') else details
+    rows = cost_source_rows(loaded)
+    segments = {row['detail_id']: row for row in (
+        service_segments if service_segments is not None else confirmed_service_segments(loaded))}
+    for row in rows:
+        if row.get('original_source') == 'confirmed_repair':
+            segment = segments.get(row['detail_id'])
+            row['manufacturer'] = segment['manufacturer'] if segment and segment['paired'] else ''
+            row['manufacturer_basis'] = '旧刀原安装厂家' if row['manufacturer'] else '旧刀厂家待核实'
+    cost_types = [value.upper() for value in _get_query_values(params, 'cost_type', 'cost_types', 'cost_types[]')]
+    rows = select_cost_rows(rows, cost_types)
+    manufacturers = _get_query_values(params, 'manufacturer', 'manufacturers', 'manufacturers[]')
+    return [row for row in rows if not manufacturers or row['manufacturer'] in manufacturers]
+
+
+def _ring_allocation(openings, params, sources):
+    scopes = set(openings.values_list('project_id', 'shield_model_id'))
+    stratum = _get_query_values(params, 'stratum_type', 'stratum_types', 'stratum_types[]', 'stratumType', 'stratumTypes', 'stratumTypes[]')
+    span = _get_ring_span(openings)
+    available = len(scopes) == 1 and None not in next(iter(scopes), ()) and openings.count() >= 2 and span > 1 and not stratum
+    reason = '' if available else '仅单项目、单盾构机、至少两个不同开仓环号且未筛地层时计算'
+    return {
+        'available': available, 'reason': reason, 'ring_count': span if available else 0,
+        'basis': '最大开仓环号 − 最小开仓环号 + 1；不是实际掘进环数',
+        'complete': round(sources['installation'] / span, 2) if available else None,
+        'repair': round(sources['confirmed_repair'] / span, 2) if available else None,
+        'total': round(sources['total'] / span, 2) if available else None,
+    }
+
+
+def _apply_cost_contract(action, data, openings, details, params):
+    rows = _cost_rows(_build_detail_queryset(openings, params, include_manufacturer=False), params)
+    sources = summarize_cost_rows(rows)
+    data['cost_sources'] = sources
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row['opening_id']].append(row)
+    opening_list = list(_with_ring_int(openings).order_by('ring_int', 'id'))
+    if action == 'overview':
+        data['kpi']['cost_sources'] = sources
+        data['kpi']['total_cost'] = sources['total']
+        month_rows = defaultdict(list)
+        for op in opening_list:
+            month_rows[_date_text(op.open_time, '%Y-%m')].extend(grouped[op.id])
+        monthly = {item['month']: item for item in data['monthly_trend']}
+        for month, source_rows in month_rows.items():
+            item = monthly.setdefault(month, {'month': month, 'replacements': 0, 'repairs': 0, 'untyped': 0, 'total_replacements': 0})
+            item['cost_sources'] = summarize_cost_rows(source_rows)
+            item['cost'] = item['cost_sources']['total']
+        data['monthly_trend'] = [monthly[month] for month in sorted(monthly)]
+        for item in data['recent_openings']:
+            item['cost_sources'] = summarize_cost_rows(grouped[item['id']])
+            item['cost'] = item['cost_sources']['total']
+    elif action == 'cost_overview':
+        data['source_rows'] = rows
+        data['source_rows_total'] = len(rows)
+        data['source_rows_truncated'] = False
+        data['replacement_vs_repair'] = {'complete': sources['installation'], 'repair': sources['confirmed_repair'], 'legacy': sources['legacy'], 'unresolved': sources['unresolved'], 'total': sources['total']}
+        data['cost_per_ring'] = _ring_allocation(openings, params, sources)
+        types = list(dict.fromkeys([item['tool_type'] for item in data['type_breakdown']] + [row['tool_parent_type'] for row in rows]))
+        data['type_breakdown'] = []
+        for tool_type in types:
+            part = summarize_cost_rows([row for row in rows if row['tool_parent_type'] == tool_type])
+            data['type_breakdown'].append({'tool_type': tool_type, 'cost_sources': part,
+                'complete_cost': part['installation'], 'repair_cost': part['confirmed_repair'], 'legacy_cost': part['legacy'], 'total': part['total']})
+    elif action == 'cost_trend':
+        data['items'] = []
+        cumulative = 0
+        counts = dict(details.filter(is_replaced=True).values('warehouse_id').annotate(n=Count('id')).values_list('warehouse_id', 'n'))
+        for op in opening_list:
+            part = summarize_cost_rows(grouped[op.id])
+            cumulative = round(cumulative + part['total'], 2)
+            data['items'].append({'opening_id': op.id, 'ring_no': op.ring_no, 'open_time': _date_text(op.open_time, '%Y-%m-%d'),
+                'complete_cost': part['installation'], 'repair_cost': part['confirmed_repair'],
+                'installation_cost': part['installation'], 'confirmed_repair_cost': part['confirmed_repair'],
+                'legacy_cost': part['legacy'], 'unresolved_cost': part['unresolved'], 'total_cost': part['total'],
+                'cumulative_cost': cumulative, 'replacement_count': counts.get(op.id, 0), 'cost_sources': part})
+    return rows
+
+
+def _brand_contract(action, openings, params):
+    broad = _build_detail_queryset(openings, params, only_replaced=True, include_manufacturer=False).select_related('warehouse')
+    selected = _get_query_values(params, 'manufacturer', 'manufacturers', 'manufacturers[]')
+    supply = _cost_detail_rows(broad)
+    visible_install_ids = set(scoped_queryset(NewToolRecord.objects.filter(
+        tool_change_detail_id__in=[row.id for row in supply],
+    )).values_list('tool_change_detail_id', flat=True))
+    segments = confirmed_service_segments(supply)
+    costs = _cost_rows(supply, params, service_segments=segments)
+    total_sources = summarize_cost_rows(costs)
+    allocation = _ring_allocation(openings, params, total_sources)
+    if selected:
+        supply = [row for row in supply if row.manufacturer in selected]
+        segments = [row for row in segments if row['manufacturer'] in selected]
+    names = sorted({row.manufacturer for row in supply if row.manufacturer}
+                   | {row['manufacturer'] for row in segments if row['manufacturer']}
+                   | {row['manufacturer'] for row in costs if row['manufacturer']})
+    items = []
+    for name in names:
+        installed = [row for row in supply if row.manufacturer == name]
+        modern = [row for row in installed if row.id in visible_install_ids]
+        priced = [row for row in modern if row.price is not None]
+        pairs = [row for row in segments if row['manufacturer'] == name and row['paired']]
+        wear = [row for row in pairs if row['wear_state'] is not None]
+        abnormal = sum(row['wear_state'] == 'ABNORMAL' for row in wear)
+        sources = summarize_cost_rows([row for row in costs if row['manufacturer'] == name])
+        items.append({
+            'manufacturer': name, 'total_cost': sources['total'], 'cost_sources': sources,
+            'count': len(installed), 'opening_count': len({row.warehouse_id for row in installed}),
+            'installation_count': len(modern), 'legacy_replacement_count': len(installed) - len(modern),
+            'priced_count': len(priced), 'missing_price_count': len(modern) - len(priced),
+            'avg_cost': round(sum(float(row.price) for row in priced) / len(priced), 2) if priced else None,
+            'cost_per_ring': round(sources['total'] / allocation['ring_count'], 2) if allocation['available'] else None,
+            'abnormal_count': abnormal,
+            'normal_count': len(wear) - abnormal, 'wear_recorded_count': len(wear),
+            'unrecorded_wear_count': len(pairs) - len(wear),
+            'abnormal_rate': round(abnormal / len(wear), 4) if wear else None,
+            'normal_rate': round((len(wear) - abnormal) / len(wear), 4) if wear else None,
+            'avg_lifespan': round(sum(row['service_rings'] for row in pairs) / len(pairs), 1) if pairs else None,
+            'lifespan_count': len(pairs), 'paired_count': len(pairs),
+            'pairing_unresolved_count': sum(row['manufacturer'] == name and not row['paired'] for row in segments),
+        })
+    items.sort(key=lambda item: (-item['total_cost'], item['manufacturer']))
+    base = {
+        'items': items, 'ring_count': allocation['ring_count'],
+        'service_rows': segments, 'service_rows_total': len(segments), 'service_rows_truncated': False,
+        'pairing_unresolved_count': sum(not row['paired'] for row in segments),
+        'unknown_manufacturer_count': sum(not row.manufacturer for row in supply),
+        'cost_sources': total_sources,
+        'source_rows': costs, 'source_rows_total': len(costs), 'source_rows_truncated': False,
+        'service_basis': '按拆除环归集的系统已确认配对服役段；已拆刀样本，不代表总体寿命',
+    }
+    if action == 'brand_cost':
+        return base
+    ordered = list(_with_ring_int(openings).order_by('ring_int', 'id'))
+    base.update(manufacturers=names, time_axis=[{'opening_id': op.id, 'ring_no': op.ring_no, 'open_time': _date_text(op.open_time, '%Y-%m-%d')} for op in ordered])
+    if action == 'brand_price_trend':
+        series = []
+        for name in names:
+            values, counts, missing = [], [], []
+            for op in ordered:
+                installed = [row for row in supply if row.manufacturer == name and row.warehouse_id == op.id]
+                modern = [row for row in installed if row.id in visible_install_ids]
+                priced = [row for row in modern if row.price is not None]
+                values.append(round(sum(float(row.price) for row in priced) / len(priced), 2) if priced else None)
+                counts.append(len(priced))
+                missing.append(len(modern) - len(priced))
+            series.append({'manufacturer': name, 'data': values, 'count_data': counts, 'missing_price_count_data': missing})
+        base['series'] = series
+    else:
+        for field in ('abnormal_rate_series', 'normal_rate_series', 'lifespan_series'):
+            base[field] = []
+        for name in names:
+            abnormal_values, normal_values, wear_counts, abnormal_counts, lives, life_counts = [], [], [], [], [], []
+            for op in ordered:
+                pairs = [row for row in segments if row['manufacturer'] == name and row['opening_id'] == op.id and row['paired']]
+                wear = [row for row in pairs if row['wear_state'] is not None]
+                abnormal = sum(row['wear_state'] == 'ABNORMAL' for row in wear)
+                abnormal_values.append(round(abnormal / len(wear), 4) if wear else None)
+                normal_values.append(round((len(wear) - abnormal) / len(wear), 4) if wear else None)
+                wear_counts.append(len(wear)); abnormal_counts.append(abnormal)
+                lives.append(round(sum(row['service_rings'] for row in pairs) / len(pairs), 1) if pairs else None)
+                life_counts.append(len(pairs))
+            for field, values, counts in (('abnormal_rate_series', abnormal_values, wear_counts), ('normal_rate_series', normal_values, wear_counts), ('lifespan_series', lives, life_counts)):
+                base[field].append({'manufacturer': name, 'data': values, 'count_data': counts, 'abnormal_count_data': abnormal_counts})
+    return base
+
+
+def _wear_details(openings, params):
+    """A manufacturer filter refers to the inspected old tool, not its replacement."""
+    details = _build_detail_queryset(openings, params, include_manufacturer=False)
+    selected = _get_query_values(params, 'manufacturer', 'manufacturers', 'manufacturers[]')
+    if not selected:
+        return details
+    ids = [row['detail_id'] for row in confirmed_service_segments(details.select_related('warehouse'))
+           if row['paired'] and row['manufacturer'] in selected]
+    return details.filter(id__in=ids)
+
+
 def _date_text(value, fmt):
+    if value and hasattr(value, 'tzinfo') and timezone.is_aware(value):
+        value = timezone.localtime(value)
     return value.strftime(fmt) if value else ''
 
 
@@ -296,15 +566,15 @@ def _get_metric_value(bucket, metric, parent_bucket=None):
     if metric == 'abnormal_count':
         return bucket['abnormal_count']
     if metric == 'abnormal_rate':
-        return round(bucket['abnormal_count'] / denom * 100, 2) if denom else 0
+        return round(bucket['abnormal_count'] / denom * 100, 2) if denom else None
     if metric == 'normal_rate':
         return round(
             (bucket['wear_recorded_count'] - bucket['abnormal_count']) / denom * 100, 2
-        ) if denom else 0
+        ) if denom else None
     if metric == 'total_cost':
         return round(bucket['price_total'], 2)
     if metric == 'avg_price':
-        return round(bucket['price_total'] / price_count, 2) if price_count else 0
+        return round(bucket['avg_price_total'] / price_count, 2) if price_count else None
     if metric == 'cost_per_opening':
         return round(bucket['price_total'] / opening_count, 2) if opening_count else 0
     if metric == 'avg_opening_duration':
@@ -336,6 +606,7 @@ def _new_custom_bucket():
         'wear_recorded_count': 0,
         'price_total': 0.0,
         'price_count': 0,
+        'avg_price_total': 0.0,
         'opening_duration_total': 0.0,
         'opening_duration_count': 0,
         'rings_between_total': 0.0,
@@ -356,6 +627,7 @@ def _new_custom_bucket():
 _NUMERIC_BUCKET_KEYS = (
     'detail_count', 'replacement_count', 'complete_count', 'repair_count',
     'abnormal_count', 'wear_recorded_count', 'price_total', 'price_count',
+    'avg_price_total',
     'opening_duration_total', 'opening_duration_count',
     'rings_between_total', 'rings_between_count',
     'thrust_total', 'thrust_count', 'torque_total', 'torque_count',
@@ -373,7 +645,7 @@ def _merge_buckets(target, source):
 
 
 def _add_custom_record(bucket, record):
-    bucket['detail_count'] += 1
+    bucket['detail_count'] += record.get('observation_count', 1)
     if record['is_replaced']:
         bucket['replacement_count'] += 1
         if record['replacement_type_raw'] == 'COMPLETE':
@@ -386,8 +658,9 @@ def _add_custom_record(bucket, record):
         bucket['wear_recorded_count'] += 1
         if wear_state == 'ABNORMAL':
             bucket['abnormal_count'] += 1
+    bucket['price_total'] += record.get('cost_total', record['price'] or 0)
     if record['price'] is not None:
-        bucket['price_total'] += record['price']
+        bucket['avg_price_total'] += record['price']
         bucket['price_count'] += 1
 
     opening_id = record['opening_id']
@@ -460,7 +733,7 @@ def _aggregate_custom_records(records, group_fields):
     return buckets
 
 
-def _build_custom_records(openings, details, metrics=None):
+def _build_custom_records(openings, details, metrics=None, params=None):
     metrics = set(metrics or [])
     opening_list = list(
         openings
@@ -475,7 +748,7 @@ def _build_custom_records(openings, details, metrics=None):
     tunneling_map = {}
     if metrics & {'avg_thrust', 'avg_torque', 'avg_cutterhead_speed', 'avg_penetration'}:
         try:
-            tunneling_qs = ShieldTunnelingData.objects.filter(ring_no__in=ring_nos)
+            tunneling_qs = scoped_queryset(ShieldTunnelingData.objects.filter(ring_no__in=ring_nos))
             if project_ids:
                 tunneling_qs = tunneling_qs.filter(project_id__in=project_ids)
             if machine_ids:
@@ -501,8 +774,8 @@ def _build_custom_records(openings, details, metrics=None):
     if 'avg_burial_depth' in metrics:
         try:
             stratum_rows = (
-                StratumBasicInfo.objects
-                .filter(project_id__in=project_ids, ring_no__in=ring_nos)
+                scoped_queryset(StratumBasicInfo.objects
+                .filter(project_id__in=project_ids, ring_no__in=ring_nos))
                 .values('project_id', 'ring_no')
                 .annotate(burial_depth=Avg('burial_depth', output_field=FloatField()))
             )
@@ -523,6 +796,9 @@ def _build_custom_records(openings, details, metrics=None):
         .filter(warehouse__ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('warehouse__ring_no', output_field=IntegerField()))
         .order_by('ring_int', 'cutter_position_no')
     )
+    source_map = defaultdict(list)
+    for source in _cost_rows(details, params or {}):
+        source_map[source['detail_id']].append(source)
     for detail in detail_qs:
         op = opening_map.get(detail.warehouse_id) or detail.warehouse
         tunneling = tunneling_map.get((op.project_id, op.shield_model_id, op.ring_no), {})
@@ -540,14 +816,16 @@ def _build_custom_records(openings, details, metrics=None):
             'tool_parent_type': TOOL_TYPE_LABELS.get(detail.tool_parent_type, detail.tool_parent_type or empty),
             'tool_type_name': tool_info.tool_type_name if tool_info and tool_info.tool_type_name else empty,
             'cutter_position_no': detail.cutter_position_no or empty,
-            'replacement_type': replacement_type_labels.get(detail.replacement_type, '未更换'),
+            'replacement_type': replacement_type_labels.get(detail.replacement_type, '未分类更换' if detail.is_replaced else '未更换'),
             'replacement_type_raw': detail.replacement_type,
             'wear_condition': detail.wear_condition or empty,
             'wear_condition_raw': detail.wear_condition,
             'stratum_types': stratum_types or [empty],
             'geological_conditions': op.geological_conditions or empty,
             'is_replaced': detail.is_replaced,
-            'price': price,
+            'price': price if detail.is_replaced else None,
+            'cost_total': summarize_cost_rows(source_map[detail.id])['total'],
+            '_cost_sources': source_map[detail.id],
             'opening_duration': _safe_float(op.opening_duration),
             'rings_between_openings': _safe_float(op.rings_between_openings),
             'thrust': _safe_float(tunneling.get('thrust')),
@@ -557,7 +835,33 @@ def _build_custom_records(openings, details, metrics=None):
             'burial_depth': burial_depth_map.get((op.project_id, op.ring_no)),
         }
         records.append(record)
+    if _get_query_values(params or {}, 'manufacturer', 'manufacturers', 'manufacturers[]') and set(metrics) & {'total_cost', 'cost_per_opening'}:
+        records = [record for record in records if record['_cost_sources']]
     return records
+
+
+def _custom_cost_dimensions(records, fields, metrics):
+    """Source rows may carry a different supplier than this event's new tool."""
+    vendor_axis = bool(set(fields) & {'manufacturer', 'brand'})
+    if vendor_axis and set(metrics) & {'abnormal_count', 'abnormal_rate', 'normal_rate'}:
+        raise ValidationError({'metrics': '厂家磨损请使用厂家表现页的已确认旧刀配对统计；不支持直接按新装厂家分组'})
+    costs = {'total_cost', 'cost_per_opening'}
+    if 'replacement_type' in fields and set(metrics) & costs:
+        raise ValidationError({'metrics': '同一次更换可有新装与返修费用；费用构成请使用成本分析页，不能按旧更换类型分摊'})
+    if not vendor_axis or not set(metrics) & costs:
+        return records
+    if set(metrics) - costs - {'opening_count'}:
+        raise ValidationError({'metrics': '厂家费用按费用来源分组，与新装数量或均价样本不同，请分别查询'})
+    if 'brand' in fields:
+        raise ValidationError({'x_field': '返修来源没有可靠旧刀品牌快照，请改用厂家分组或移除费用指标'})
+    result = []
+    for record in records:
+        for source in record['_cost_sources']:
+            if source['included']:
+                result.append({**record, 'manufacturer': source['manufacturer'] or '厂家待核实',
+                               'price': source['amount'], 'cost_total': source['amount'],
+                               'observation_count': 0, 'is_replaced': False})
+    return result
 
 
 def _build_custom_line(records, x_field, metrics):
@@ -691,6 +995,65 @@ class AnalysisViewSet(viewsets.ViewSet):
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     permission_classes = [CustomPermission]
 
+    def dispatch(self, request, *args, **kwargs):
+        token = ANALYSIS_REQUEST.set(None)
+        try:
+            return super().dispatch(request, *args, **kwargs)
+        finally:
+            ANALYSIS_REQUEST.reset(token)
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if self.permission_classes:
+            ANALYSIS_REQUEST.set(request)
+        # Validate even metadata-only actions before finalization, so invalid
+        # scope follows the project's standard error envelope.
+        _build_opening_queryset(request.query_params)
+        blade_track_range(request.query_params)
+
+    def analysis_success(self, request, data):
+        """Enhance inside the action so errors still use DRF's exception handler."""
+        openings = _build_opening_queryset(request.query_params)
+        details = _build_detail_queryset(openings, request.query_params)
+        if self.action in {'wear_distribution', 'wear_trend'}:
+            details = _wear_details(openings, request.query_params)
+        data['meta'] = _meta(openings, request.query_params, details)
+        data['meta']['observed_basis'] = '当前筛选的新装/现场明细样本；费用来源和已拆刀样本分别计数'
+        if self.action in {'wear_distribution', 'wear_trend'}:
+            data['meta']['observed_basis'] = '当前现场磨损观察样本；筛厂家时仅系统已确认旧刀配对'
+        if 'service_rows' in data:
+            data['meta']['service_sample_count'] = sum(row['paired'] for row in data['service_rows'])
+            data['meta']['pairing_unresolved_count'] = data.get('pairing_unresolved_count', 0)
+        if self.action in {'overview', 'cost_overview', 'cost_trend'}:
+            sources = _apply_cost_contract(self.action, data, openings, details, request.query_params)
+            data['meta']['cost_source_count'] = len(sources)
+        elif 'source_rows_total' in data:
+            data['meta']['cost_source_count'] = data['source_rows_total']
+        if self.action in {'brand_price_trend', 'brand_performance_trend'} and request.query_params.get('include_details') == 'false':
+            for key in ('items', 'source_rows', 'service_rows'):
+                data.pop(key, None)
+        return success(data)
+
+    @action(detail=False, methods=['get'], url_path='brand_stratum_performance')
+    def brand_stratum_performance(self, request):
+        from .stratum_performance import manufacturer_stratum_performance
+        params = request.query_params.copy()
+        selected = str(params.get('service_stratum') or '').strip()
+        # The ordinary stratum filter selects opening intervals. This action
+        # instead examines every ring of each complete installation segment.
+        for key in ('stratum_type', 'stratum_types', 'stratum_types[]', 'stratumType', 'stratumTypes', 'stratumTypes[]'):
+            params.pop(key, None)
+        openings = _build_opening_queryset(params)
+        details = _build_detail_queryset(openings, params, only_replaced=True, include_manufacturer=False)
+        data = manufacturer_stratum_performance(
+            details, selected, _get_query_values(params, 'manufacturer', 'manufacturers', 'manufacturers[]'),
+            _get_stratum_label_map(),
+        )
+        data['meta'] = _meta(openings, params, details)
+        data['meta']['scope']['service_stratum'] = selected
+        data['meta']['observed_basis'] = '按拆除开仓范围选取已确认旧刀配对，再关联其完整服役环段地层'
+        return success(data)
+
     @action(detail=False, methods=['get'], url_path='filter_options')
     def filter_options(self, request):
         """
@@ -700,7 +1063,7 @@ class AnalysisViewSet(viewsets.ViewSet):
         cache_key = f"analysis_filter_options_{request.query_params.urlencode()}"
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
         details = _build_detail_queryset(
@@ -718,6 +1081,10 @@ class AnalysisViewSet(viewsets.ViewSet):
         )
 
         parent_label_map = dict(TOOL_TYPES)
+        manufacturers = sorted(set(manufacturers) | {
+            row['manufacturer'] for row in confirmed_service_segments(details.select_related('warehouse'))
+            if row['manufacturer'] and row['paired']
+        })
         tool_type_rows = (
             details
             .exclude(cutter_position__tool_info__tool_type_name__isnull=True)
@@ -764,13 +1131,14 @@ class AnalysisViewSet(viewsets.ViewSet):
             'tool_types': [
                 {'value': value, 'label': label}
                 for value, label in TOOL_TYPES
+                if value in {'DISC', 'SCRAPER'}
             ],
             'tool_type_names': tool_type_names,
             'stratum_types': stratum_types,
             'manufacturers': manufacturers,
         }
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)
 
     @action(detail=False, methods=['get'], url_path='custom_fields')
     def custom_fields(self, request):
@@ -778,7 +1146,7 @@ class AnalysisViewSet(viewsets.ViewSet):
         自定义分析可选字段。
         返回前端可用于 X/Y 轴和矩阵维度的白名单，避免任意字段查询。
         """
-        return success({
+        return self.analysis_success(request, {
             'dimensions': CUSTOM_DIMENSIONS,
             'metrics': CUSTOM_METRICS,
             'defaults': {
@@ -789,7 +1157,7 @@ class AnalysisViewSet(viewsets.ViewSet):
                 'matrix': {
                     'x_field': 'manufacturer',
                     'y_field': 'tool_parent_type',
-                    'metrics': ['abnormal_rate'],
+                    'metrics': ['total_cost'],
                 },
             },
         })
@@ -839,7 +1207,7 @@ class AnalysisViewSet(viewsets.ViewSet):
 
         valid_metrics = [metric for metric in metrics if metric in CUSTOM_METRIC_MAP]
         if not valid_metrics:
-            valid_metrics = ['replacement_count', 'abnormal_rate'] if chart_type == 'line' else ['abnormal_rate']
+            valid_metrics = ['replacement_count', 'abnormal_rate'] if chart_type == 'line' else ['total_cost']
         valid_metrics = valid_metrics[:2]
 
         cache_key = (
@@ -848,11 +1216,20 @@ class AnalysisViewSet(viewsets.ViewSet):
         )
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
         details = _build_detail_queryset(openings, request.query_params)
-        records = _build_custom_records(openings, details, valid_metrics)
+        manufacturer_selected = bool(_get_query_values(request.query_params, 'manufacturer', 'manufacturers', 'manufacturers[]'))
+        if manufacturer_selected and set(valid_metrics) & {'abnormal_count', 'abnormal_rate', 'normal_rate'}:
+            raise ValidationError({'metrics': '厂家磨损请在厂家表现页按已确认旧刀样本查询'})
+        cost_metrics = {'total_cost', 'cost_per_opening'}
+        if manufacturer_selected and set(valid_metrics) & cost_metrics:
+            if set(valid_metrics) - cost_metrics - {'opening_count'}:
+                raise ValidationError({'metrics': '筛选厂家时费用来源与新装观察样本不同，请将费用与数量/均价分别查询'})
+            details = _build_detail_queryset(openings, request.query_params, include_manufacturer=False)
+        records = _build_custom_records(openings, details, valid_metrics, request.query_params)
+        records = _custom_cost_dimensions(records, (x_fields + y_fields) if chart_type == 'matrix' else [x_field], valid_metrics)
 
         if chart_type == 'matrix':
             result = _build_custom_matrix(records, x_fields, y_fields, valid_metrics)
@@ -867,8 +1244,10 @@ class AnalysisViewSet(viewsets.ViewSet):
             'y_fields': y_fields if chart_type == 'matrix' else [],
             'metrics': valid_metrics,
         }
+        result['record_basis'] = '费用来源记录' if set(valid_metrics) & cost_metrics and set((x_fields + y_fields) if chart_type == 'matrix' else [x_field]) & {'manufacturer', 'brand'} else '有效现场观察明细'
+        result['excluded_combination_note'] = '厂家磨损由厂家表现页按旧刀配对统计；地层组可能重叠'
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)
 
     # ─────────────────────────────────────────────────────────────
     # 概览仪表盘
@@ -886,7 +1265,7 @@ class AnalysisViewSet(viewsets.ViewSet):
         cache_key = f"analysis_overview_{request.query_params.urlencode()}"
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
         all_details = _build_detail_queryset(openings, request.query_params)
@@ -907,8 +1286,8 @@ class AnalysisViewSet(viewsets.ViewSet):
         avg_rings = openings.aggregate(avg=Avg('rings_between_openings'))['avg'] or 0
 
         # 最近一次开仓的磨损率（按环号整数排序）
-        abnormal_rate = 0.0
-        healthy_rate = 0.0
+        abnormal_rate = None
+        healthy_rate = None
         latest = (
             openings
             .filter(ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('ring_no', output_field=IntegerField()))
@@ -916,12 +1295,13 @@ class AnalysisViewSet(viewsets.ViewSet):
             .last()
         )
         if latest:
-            latest_all = all_details.filter(warehouse=latest)
+            latest_all = _wear_details(openings, request.query_params).filter(warehouse=latest)
             total_cnt = latest_all.count()
             # 分母改为"有磨损记录"的行数：自动生成但未填写的行不再被算成异常
-            recorded_cnt = latest_all.filter(Q_WEAR_RECORDED).count()
+            counts = classify_wear_counts(latest_all.values_list('wear_condition', flat=True))
+            recorded_cnt = counts['recorded']
             if recorded_cnt > 0:
-                healthy_cnt = latest_all.filter(Q_WEAR_NORMAL).count()
+                healthy_cnt = counts['normal']
                 abnormal_rate = round((recorded_cnt - healthy_cnt) / recorded_cnt, 3)
                 healthy_rate = round(healthy_cnt / recorded_cnt, 3)
 
@@ -935,7 +1315,15 @@ class AnalysisViewSet(viewsets.ViewSet):
             'avg_rings_between_openings': round(float(avg_rings), 1),
             'abnormal_wear_rate': abnormal_rate,
             'healthy_rate': healthy_rate,
+            'detail_checked_count': all_details.count(),
+            'summary_checked_count': openings.filter(summary_status='CONFIRMED').aggregate(n=Sum('checked_tool_count'))['n'] or 0,
+            'summary_replaced_count': openings.filter(summary_status='CONFIRMED').aggregate(n=Sum('replaced_tool_count'))['n'] or 0,
         }
+        confirmed_details = active_observed_queryset(scoped_queryset(ToolChangeDetail.objects.filter(
+            warehouse__in=openings.filter(summary_status='CONFIRMED'), is_replaced=True,
+        ))).count()
+        kpi['summary_detail_replaced_count'] = confirmed_details
+        kpi['replacement_gap'] = kpi['summary_replaced_count'] - confirmed_details
 
         # ── 月度趋势（整刀+维修 堆叠，附费用） ───────────────────
         monthly_qs = (
@@ -945,6 +1333,7 @@ class AnalysisViewSet(viewsets.ViewSet):
             .annotate(
                 replacements=Count('id', filter=Q(replacement_type='COMPLETE')),
                 repairs=Count('id', filter=Q(replacement_type='REPAIR')),
+                total_replacements=Count('id'),
                 cost=Sum('price', output_field=DecimalField()),
             )
             .order_by('month')
@@ -954,6 +1343,8 @@ class AnalysisViewSet(viewsets.ViewSet):
                 'month': r['month'].strftime('%Y-%m') if r['month'] else '',
                 'replacements': r['replacements'],
                 'repairs': r['repairs'],
+                'untyped': r['total_replacements'] - r['replacements'] - r['repairs'],
+                'total_replacements': r['total_replacements'],
                 'cost': float(r['cost'] or 0),
             }
             for r in monthly_qs
@@ -1005,6 +1396,8 @@ class AnalysisViewSet(viewsets.ViewSet):
         )
         # 转成 {warehouse_id: aggregated_data}
         agg_map = {r['warehouse_id']: r for r in recent_agg}
+        whole_counts = dict(active_observed_queryset(scoped_queryset(ToolChangeDetail.objects.filter(warehouse__in=openings, is_replaced=True)))
+                            .values('warehouse_id').annotate(n=Count('id')).values_list('warehouse_id', 'n'))
 
         recent_openings = []
         for op in sorted_openings.reverse()[:10]:
@@ -1020,6 +1413,10 @@ class AnalysisViewSet(viewsets.ViewSet):
                 'cost': float(agg.get('cost') or 0),
                 'geological_conditions': op.geological_conditions or '',
                 'abnormal_count': agg.get('abnormal_count', 0),
+                'summary_status': op.summary_status,
+                'summary_replaced_count': op.replaced_tool_count if op.summary_status == 'CONFIRMED' else None,
+                'summary_detail_replaced_count': whole_counts.get(op.id, 0),
+                'replacement_gap': (op.replaced_tool_count - whole_counts.get(op.id, 0)) if op.summary_status == 'CONFIRMED' and op.replaced_tool_count is not None else None,
             })
 
         result = {
@@ -1029,7 +1426,7 @@ class AnalysisViewSet(viewsets.ViewSet):
             'recent_openings': recent_openings,
         }
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)
 
     # ─────────────────────────────────────────────────────────────
     # 成本分析
@@ -1045,7 +1442,7 @@ class AnalysisViewSet(viewsets.ViewSet):
         cache_key = f"analysis_cost_overview_{request.query_params.urlencode()}"
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
         replaced = _build_detail_queryset(openings, request.query_params, only_replaced=True)
@@ -1106,7 +1503,7 @@ class AnalysisViewSet(viewsets.ViewSet):
             'type_breakdown': type_breakdown,
         }
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)
 
     @action(detail=False, methods=['get'], url_path='cost_trend')
     def cost_trend(self, request):
@@ -1118,7 +1515,7 @@ class AnalysisViewSet(viewsets.ViewSet):
         cache_key = f"analysis_cost_trend_{request.query_params.urlencode()}"
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
         replaced = _build_detail_queryset(openings, request.query_params, only_replaced=True)
@@ -1159,7 +1556,7 @@ class AnalysisViewSet(viewsets.ViewSet):
 
         result = {'items': items}
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)
 
     @action(detail=False, methods=['get'], url_path='brand_cost')
     def brand_cost(self, request):
@@ -1168,84 +1565,7 @@ class AnalysisViewSet(viewsets.ViewSet):
         返回：
           items - [{manufacturer, total_cost, count, avg_cost}] 按费用降序
         """
-        cache_key = f"analysis_brand_cost_{request.query_params.urlencode()}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return success(cached)
-
-        openings = _build_opening_queryset(request.query_params)
-        replaced = _build_detail_queryset(openings, request.query_params, only_replaced=True)
-        ring_count = _get_ring_span(openings)
-
-        brand_qs = (
-            replaced
-            .exclude(manufacturer__isnull=True)
-            .exclude(manufacturer='')
-            .values('manufacturer')
-            .annotate(
-                total_cost=Sum('price', output_field=DecimalField()),
-                count=Count('id'),
-                priced_count=Count('id', filter=Q(price__isnull=False)),
-                opening_count=Count('warehouse_id', distinct=True),
-                abnormal_count=Count('id', filter=Q_WEAR_ABNORMAL),
-                wear_recorded_count=Count('id', filter=Q_WEAR_RECORDED),
-            )
-            .order_by('-total_cost')
-        )
-
-        from collections import defaultdict
-        replaced_with_ring = (
-            replaced
-            .exclude(manufacturer__isnull=True)
-            .exclude(manufacturer='')
-            .filter(warehouse__ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('warehouse__ring_no', output_field=IntegerField()))
-            .values('cutter_position_id', 'manufacturer', 'replacement_count', 'ring_int')
-            .order_by('cutter_position_id', 'replacement_count')
-        )
-        pos_records = defaultdict(list)
-        for r in replaced_with_ring:
-            pos_records[r['cutter_position_id']].append(r)
-
-        manufacturer_lifespans = defaultdict(list)
-        for records in pos_records.values():
-            records.sort(key=lambda x: x['replacement_count'])
-            for i in range(1, len(records)):
-                prev = records[i - 1]
-                curr = records[i]
-                if curr['ring_int'] and prev['ring_int']:
-                    lifespan = curr['ring_int'] - prev['ring_int']
-                    if lifespan > 0:
-                        # 归属修正：prev→curr 这段环数是"prev 那次装上的刀"的服役寿命，
-                        # 原实现记在 curr（下一把新刀）的厂家名下，使整条链条错位一位，
-                        # 厂家寿命排名会系统性反转。
-                        manufacturer_lifespans[prev['manufacturer']].append(lifespan)
-
-        items = [
-            {
-                'manufacturer': r['manufacturer'],
-                'total_cost': float(r['total_cost'] or 0),
-                'count': r['count'],
-                'opening_count': r['opening_count'],
-                'abnormal_count': r['abnormal_count'],
-                'normal_count': r['count'] - r['abnormal_count'],
-                # 均价分母只算"有价格"的记录，缺价格不等于降价
-                'avg_cost': round(float(r['total_cost'] or 0) / r['priced_count'], 2) if r['priced_count'] else 0,
-                'cost_per_ring': round(float(r['total_cost'] or 0) / ring_count, 2) if ring_count else 0,
-                # 异常率分母只算"有磨损记录"的行
-                'abnormal_rate': round(r['abnormal_count'] / r['wear_recorded_count'], 4) if r['wear_recorded_count'] else 0,
-                'normal_rate': round((r['wear_recorded_count'] - r['abnormal_count']) / r['wear_recorded_count'], 4) if r['wear_recorded_count'] else 0,
-                'avg_lifespan': round(
-                    sum(manufacturer_lifespans.get(r['manufacturer'], [])) /
-                    len(manufacturer_lifespans.get(r['manufacturer'], [])),
-                    1,
-                ) if manufacturer_lifespans.get(r['manufacturer']) else None,
-                'lifespan_count': len(manufacturer_lifespans.get(r['manufacturer'], [])),
-            }
-            for r in brand_qs
-        ]
-        result = {'items': items, 'ring_count': ring_count}
-        cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, _brand_contract('brand_cost', _build_opening_queryset(request.query_params), request.query_params))
 
     @action(detail=False, methods=['get'], url_path='brand_price_trend')
     def brand_price_trend(self, request):
@@ -1257,82 +1577,15 @@ class AnalysisViewSet(viewsets.ViewSet):
           series        - [{manufacturer, data: [avg_price|null, ...]}]
             data 与 time_axis 等长，无数据点为 null
         """
-        cache_key = f"analysis_brand_price_trend_{request.query_params.urlencode()}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return success(cached)
-
-        openings = _build_opening_queryset(request.query_params)
-
-        replaced = (
-            _build_detail_queryset(openings, request.query_params, only_replaced=True)
-            .exclude(manufacturer__isnull=True)
-            .exclude(manufacturer='')
-        )
-
-        # 按厂家 × 开仓 聚合平均单价
-        agg = (
-            replaced
-            .values('manufacturer', 'warehouse_id')
-            .annotate(
-                avg_price=Avg('price', output_field=DecimalField()),
-                count=Count('id'),
-            )
-        )
-
-        # 构建 {warehouse_id: {manufacturer: avg_price}}
-        from collections import defaultdict
-        wh_brand_map = defaultdict(dict)
-        all_manufacturers = set()
-        for r in agg:
-            wh_brand_map[r['warehouse_id']][r['manufacturer']] = {
-                'avg_price': round(float(r['avg_price'] or 0), 2),
-                'count': r['count'],
-            }
-            all_manufacturers.add(r['manufacturer'])
-
-        # 时间轴：按环号升序
-        sorted_openings = (
-            openings
-            .filter(ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('ring_no', output_field=IntegerField()))
-            .order_by('ring_int')
-        )
-        time_axis = [
-            {
-                'ring_no': op.ring_no,
-                'open_time': op.open_time.strftime('%Y-%m-%d') if op.open_time else '',
-            }
-            for op in sorted_openings
-        ]
-        wh_ids = [op.id for op in sorted_openings]
-
-        manufacturers = sorted(all_manufacturers)
-        series = []
-        for mfr in manufacturers:
-            data = []
-            count_data = []
-            for wh_id in wh_ids:
-                stat = wh_brand_map[wh_id].get(mfr)
-                data.append(stat['avg_price'] if stat else None)
-                count_data.append(stat['count'] if stat else 0)
-            series.append({'manufacturer': mfr, 'data': data, 'count_data': count_data})
-
-        result = {
-            'manufacturers': manufacturers,
-            'time_axis': time_axis,
-            'series': series,
-        }
-        cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, _brand_contract('brand_price_trend', _build_opening_queryset(request.query_params), request.query_params))
 
     @action(detail=False, methods=['get'], url_path='brand_performance_trend')
     def brand_performance_trend(self, request):
         """
         各厂家刀具性能随时间变化趋势
         指标：异常率、正常磨损率、平均使用寿命（环数）
-        寿命定义：同一刀位相邻两次更换的开仓环号之差
-                  即 ring_no(本次更换) - ring_no(上次更换)
-                  通过 replacement_count 字段匹配相邻更换记录
+        服役环数：系统已确认旧刀配对的合法安装—拆除环号之差。
+        完整配对先于厂家及拆除环段筛选，未配对样本不计入均值。
         返回：
           manufacturers         - [str]
           time_axis             - [{ring_no, open_time}]
@@ -1340,142 +1593,7 @@ class AnalysisViewSet(viewsets.ViewSet):
           normal_rate_series    - [{manufacturer, data: [rate|null, ...]}]
           lifespan_series       - [{manufacturer, data: [avg_rings|null, ...]}]
         """
-        cache_key = f"analysis_brand_perf_trend_{request.query_params.urlencode()}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return success(cached)
-
-        openings = _build_opening_queryset(request.query_params)
-        details = _build_detail_queryset(openings, request.query_params)
-
-        replaced = details.filter(is_replaced=True).exclude(
-            manufacturer__isnull=True).exclude(manufacturer='')
-
-        # 按厂家 × 开仓聚合：总数、异常数
-        agg = (
-            replaced
-            .values('manufacturer', 'warehouse_id')
-            .annotate(
-                total=Count('id'),
-                abnormal=Count('id', filter=Q_WEAR_ABNORMAL),
-            )
-        )
-
-        from collections import defaultdict
-        wh_brand_map = defaultdict(dict)
-        all_manufacturers = set()
-        for r in agg:
-            wh_brand_map[r['warehouse_id']][r['manufacturer']] = {
-                'total': r['total'],
-                'abnormal': r['abnormal'],
-            }
-            all_manufacturers.add(r['manufacturer'])
-
-        # ── 寿命计算 ──────────────────────────────────────────────
-        # 取所有更换记录（含开仓环号），按刀位 + replacement_count 排序
-        # 寿命 = 本次更换环号 - 上次更换环号
-        replaced_with_ring = (
-            replaced
-            .filter(warehouse__ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('warehouse__ring_no', output_field=IntegerField()))
-            .values('cutter_position_id', 'manufacturer', 'warehouse_id', 'replacement_count', 'ring_int')
-            .order_by('cutter_position_id', 'replacement_count')
-        )
-
-        # {warehouse_id: {manufacturer: [lifespan, ...]}}
-        wh_brand_lifespans = defaultdict(lambda: defaultdict(list))
-
-        # 按刀位分组，计算相邻更换的环数差
-        pos_records = defaultdict(list)
-        for r in replaced_with_ring:
-            pos_records[r['cutter_position_id']].append(r)
-
-        for pos_id, records in pos_records.items():
-            records.sort(key=lambda x: x['replacement_count'])
-            for i in range(1, len(records)):
-                prev = records[i - 1]
-                curr = records[i]
-                if curr['ring_int'] and prev['ring_int']:
-                    lifespan = curr['ring_int'] - prev['ring_int']
-                    if lifespan > 0:
-                        # 同上：寿命归属于装上这把刀的那次更换（prev），而非换下它的那次
-                        wh_brand_lifespans[curr['warehouse_id']][prev['manufacturer']].append(lifespan)
-
-        # 聚合为每次开仓的平均寿命
-        wh_brand_avg_lifespan = {}
-        for wh_id, brand_map in wh_brand_lifespans.items():
-            wh_brand_avg_lifespan[wh_id] = {
-                mfr: round(sum(ls) / len(ls), 1)
-                for mfr, ls in brand_map.items() if ls
-            }
-
-        sorted_openings = (
-            openings
-            .filter(ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('ring_no', output_field=IntegerField()))
-            .order_by('ring_int')
-        )
-        time_axis = [
-            {
-                'ring_no': op.ring_no,
-                'open_time': op.open_time.strftime('%Y-%m-%d') if op.open_time else '',
-            }
-            for op in sorted_openings
-        ]
-        wh_ids = [op.id for op in sorted_openings]
-
-        manufacturers = sorted(all_manufacturers)
-        abnormal_rate_series = []
-        normal_rate_series = []
-        lifespan_series = []
-
-        for mfr in manufacturers:
-            abnormal_data = []
-            normal_data = []
-            total_count_data = []
-            abnormal_count_data = []
-            lifespan_data = []
-            lifespan_count_data = []
-            for wh_id in wh_ids:
-                stat = wh_brand_map[wh_id].get(mfr)
-                if stat is None or stat['total'] == 0:
-                    abnormal_data.append(None)
-                    normal_data.append(None)
-                    total_count_data.append(0)
-                    abnormal_count_data.append(0)
-                else:
-                    abnormal_data.append(round(stat['abnormal'] / stat['total'], 4))
-                    normal_data.append(round((stat['total'] - stat['abnormal']) / stat['total'], 4))
-                    total_count_data.append(stat['total'])
-                    abnormal_count_data.append(stat['abnormal'])
-                lifespan_val = wh_brand_avg_lifespan.get(wh_id, {}).get(mfr)
-                lifespan_data.append(lifespan_val)
-                lifespan_count_data.append(len(wh_brand_lifespans.get(wh_id, {}).get(mfr, [])))
-            abnormal_rate_series.append({
-                'manufacturer': mfr,
-                'data': abnormal_data,
-                'count_data': total_count_data,
-                'abnormal_count_data': abnormal_count_data,
-            })
-            normal_rate_series.append({
-                'manufacturer': mfr,
-                'data': normal_data,
-                'count_data': total_count_data,
-                'abnormal_count_data': abnormal_count_data,
-            })
-            lifespan_series.append({
-                'manufacturer': mfr,
-                'data': lifespan_data,
-                'count_data': lifespan_count_data,
-            })
-
-        result = {
-            'manufacturers': manufacturers,
-            'time_axis': time_axis,
-            'abnormal_rate_series': abnormal_rate_series,
-            'normal_rate_series': normal_rate_series,
-            'lifespan_series': lifespan_series,
-        }
-        cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, _brand_contract('brand_performance_trend', _build_opening_queryset(request.query_params), request.query_params))
 
     # ─────────────────────────────────────────────────────────────
     # 磨损分析
@@ -1491,10 +1609,10 @@ class AnalysisViewSet(viewsets.ViewSet):
         cache_key = f"analysis_wear_dist_{request.query_params.urlencode()}"
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
-        details = _build_detail_queryset(openings, request.query_params)
+        details = _wear_details(openings, request.query_params)
 
         wear_qs = (
             details
@@ -1506,14 +1624,18 @@ class AnalysisViewSet(viewsets.ViewSet):
         items = [
             {
                 'wear_condition': r['wear_condition'] or '未知',
+                'state': normalize_wear(r['wear_condition']),
                 'count': r['count'],
                 'percentage': round(r['count'] / total * 100, 1) if total else 0,
             }
             for r in wear_qs
         ]
-        result = {'items': items, 'total': total}
+        counts = classify_wear_counts(details.values_list('wear_condition', flat=True))
+        result = {'items': items, 'total': total, 'checked_count': total,
+                  'wear_recorded_count': counts['recorded'], 'unrecorded_count': counts['unrecorded'],
+                  'abnormal_count': counts['abnormal'], 'normal_count': counts['normal']}
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)
 
     @action(detail=False, methods=['get'], url_path='wear_trend')
     def wear_trend(self, request):
@@ -1525,21 +1647,15 @@ class AnalysisViewSet(viewsets.ViewSet):
         cache_key = f"analysis_wear_trend_{request.query_params.urlencode()}"
         cached = cache.get(cache_key)
         if cached is not None:
-            return success(cached)
+            return self.analysis_success(request, cached)
 
         openings = _build_opening_queryset(request.query_params)
-        all_details = _build_detail_queryset(openings, request.query_params)
+        all_details = _wear_details(openings, request.query_params)
 
         # 每次开仓：总数 + 异常数（一次聚合）
-        wear_agg = (
-            all_details
-            .values('warehouse_id')
-            .annotate(
-                total=Count('id', filter=Q_WEAR_RECORDED),
-                abnormal=Count('id', filter=Q_WEAR_ABNORMAL),
-            )
-        )
-        agg_map = {r['warehouse_id']: r for r in wear_agg}
+        wear_rows = defaultdict(list)
+        for row in all_details.values('warehouse_id', 'wear_condition', 'is_replaced'):
+            wear_rows[row['warehouse_id']].append(row)
 
         sorted_openings = (
             openings
@@ -1548,10 +1664,11 @@ class AnalysisViewSet(viewsets.ViewSet):
         )
         items = []
         for op in sorted_openings:
-            agg = agg_map.get(op.id, {'total': 0, 'abnormal': 0})
-            total = agg['total']
-            abnormal = agg['abnormal']
-            abnormal_rate = round(abnormal / total, 3) if total else 0
+            samples = wear_rows[op.id]
+            counts = classify_wear_counts(row['wear_condition'] for row in samples)
+            total = counts['recorded']
+            abnormal = counts['abnormal']
+            abnormal_rate = round(abnormal / total, 3) if total else None
             # 地层类型信息（转换为中文名）
             stratum_types = ''
             if hasattr(op, 'stratum_info_between') and op.stratum_info_between:
@@ -1564,6 +1681,11 @@ class AnalysisViewSet(viewsets.ViewSet):
                 'open_time': op.open_time.strftime('%Y-%m-%d') if op.open_time else '',
                 'total': total,
                 'abnormal': abnormal,
+                'opening_id': op.id,
+                'checked_count': len(samples),
+                'replacement_count': sum(row['is_replaced'] for row in samples),
+                'wear_recorded_count': total,
+                'unrecorded_count': counts['unrecorded'],
                 'abnormal_rate': abnormal_rate,
                 'geological_conditions': op.geological_conditions or '',
                 'stratum_types': stratum_types,
@@ -1571,4 +1693,4 @@ class AnalysisViewSet(viewsets.ViewSet):
 
         result = {'items': items}
         cache.set(cache_key, result, 300)
-        return success(result)
+        return self.analysis_success(request, result)

@@ -83,22 +83,6 @@ MENUS = [
         "sort": 21,
     },
     {
-        "name": "磨损类型字典",
-        "web_path": "/shield/wearTypeDict",
-        "component": "shield/wearTypeDict/index",
-        "component_name": "ShieldWearTypeDict",
-        "api_module": "wear_type_dict",
-        "sort": 30,
-    },
-    {
-        "name": "异常原因字典",
-        "web_path": "/shield/abnormalCauseDict",
-        "component": "shield/abnormalCauseDict/index",
-        "component_name": "ShieldAbnormalCauseDict",
-        "api_module": "abnormal_cause_dict",
-        "sort": 31,
-    },
-    {
         "name": "掘进动态数据",
         "web_path": "/shield/tunnelingData",
         "component": "shield/tunnelingData/index",

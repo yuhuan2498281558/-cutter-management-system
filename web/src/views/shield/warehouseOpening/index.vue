@@ -1,5 +1,5 @@
 <template>
-  <fs-page>
+  <fs-page class="warehouse-opening-page">
     <fs-crud ref="crudRef" v-bind="crudBinding">
       <template #actionbar-right>
         <ExportDropdown title="开仓明细" :crud-binding="crudBinding" />
@@ -14,7 +14,7 @@
 </template>
 
 <script lang="ts" setup name="ShieldWarehouseOpening">
-import { ref, onActivated, onDeactivated, onMounted, onUnmounted } from 'vue';
+import { ref, watchEffect, onActivated, onDeactivated, onMounted, onUnmounted } from 'vue';
 import { isNavigationFailure, NavigationFailureType, useRouter } from 'vue-router';
 import { useExpose, useCrud } from '@fast-crud/fast-crud';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -133,6 +133,18 @@ const { crudOptions } = createCrudOptions({
 });
 const { resetCrudOptions } = useCrud({ crudExpose, crudOptions });
 
+// Fast-CRUD's menu items do not inherit button disabled/loading props.
+// Lock the whole menu while the existing withdrawal confirmation/request is pending.
+watchEffect(() => {
+  const dropdown = crudBinding.value?.rowHandle?.dropdown;
+  if (!dropdown?.more) return;
+  const pending = withdrawingId.value !== null;
+  dropdown.disabled = pending;
+  dropdown.more.disabled = pending;
+  dropdown.more.loading = pending;
+  dropdown.more.text = pending ? '撤回中' : '更多';
+});
+
 onMounted(async () => {
   try {
     const [projectRes, smRes] = await Promise.all([
@@ -159,3 +171,95 @@ onMounted(async () => {
   crudExpose.doRefresh();
 });
 </script>
+
+<style>
+/* Fast-CRUD teleports this dialog; keep the layout local to this wrapper. */
+.warehouse-opening-form-dialog.el-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  max-height: 90dvh;
+  margin-bottom: 0;
+}
+.warehouse-opening-form-dialog .el-dialog__header { flex-shrink: 0; }
+.warehouse-opening-form-dialog .el-dialog__body,
+.warehouse-opening-form-dialog .fs-form-wrapper-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.warehouse-opening-form-dialog .el-dialog__body { padding: 12px 20px 16px; }
+.warehouse-opening-form-dialog .fs-form-body {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.warehouse-opening-form-dialog .fs-form-footer-btns {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.warehouse-opening-form-dialog .fs-form-footer-btns .el-button + .el-button { margin-left: 0; }
+@media (max-width: 767px) {
+  .warehouse-opening-form-dialog .el-dialog__body { padding: 12px 16px 16px; }
+  .warehouse-opening-form-dialog .el-form-item { display: block !important; }
+  .warehouse-opening-form-dialog .el-form-item__label {
+    width: 100% !important;
+    height: auto;
+    line-height: 20px;
+    justify-content: flex-start;
+    padding: 0 0 4px;
+  }
+  .warehouse-opening-form-dialog .fs-form-item-label-text { white-space: normal; }
+  .warehouse-opening-form-dialog .el-form-item__content { margin-left: 0 !important; min-width: 0; }
+}
+</style>
+
+<style scoped>
+@media (max-width: 767px) {
+  .warehouse-opening-page :deep(.el-table__cell.el-table-fixed-column--right) {
+    position: relative !important;
+    right: auto !important;
+  }
+
+  .warehouse-opening-page :deep(.el-table__cell.el-table-fixed-column--right::before) {
+    display: none;
+  }
+
+  .warehouse-opening-page :deep(.fs-search .fs-search-columns) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .warehouse-opening-page :deep(.fs-search .fs-search-col) {
+    width: auto;
+    min-width: 0 !important;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .warehouse-opening-page :deep(.fs-search .fs-search-slot:empty) { display: none; }
+  .warehouse-opening-page :deep(.fs-search .fs-search-buttons-group) { grid-column: 1 / -1; }
+  .warehouse-opening-page :deep(.fs-search .el-form-item) { display: block !important; margin: 0 !important; }
+  .warehouse-opening-page :deep(.fs-search .el-form-item__label) {
+    width: 100% !important;
+    height: auto;
+    line-height: 20px;
+    margin-bottom: 4px;
+    padding: 0;
+    justify-content: flex-start;
+  }
+  .warehouse-opening-page :deep(.fs-search .el-form-item__content) { min-width: 0; margin-left: 0 !important; gap: 8px; }
+  .warehouse-opening-page :deep(.fs-search .el-input),
+  .warehouse-opening-page :deep(.fs-search .el-select) { width: 100%; }
+  .warehouse-opening-page :deep(.fs-search-buttons-group .el-button) { margin: 0; }
+}
+</style>

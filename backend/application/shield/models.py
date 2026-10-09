@@ -71,28 +71,6 @@ BLADE_WEAR_DESCRIPTION_CHOICES = [
 ]
 
 
-class WearTypeDict(CoreModel):
-    wear_type_name = models.CharField(max_length=50, verbose_name="wear type name")
-    wear_type_code = models.CharField(max_length=20, unique=True, verbose_name="wear type code")
-    description = models.TextField(blank=True, verbose_name="description")
-
-    class Meta:
-        verbose_name = "wear type dict"
-        verbose_name_plural = verbose_name
-        db_table = "shield_wear_type_dict"
-
-
-class AbnormalCauseDict(CoreModel):
-    cause_name = models.CharField(max_length=100, verbose_name="cause name")
-    cause_code = models.CharField(max_length=20, unique=True, verbose_name="cause code")
-    description = models.TextField(blank=True, verbose_name="description")
-
-    class Meta:
-        verbose_name = "abnormal cause dict"
-        verbose_name_plural = verbose_name
-        db_table = "shield_abnormal_cause_dict"
-
-
 class ProjectInfo(CoreModel):
     project_id = models.CharField(max_length=50, unique=True, verbose_name="project id")
     project_name = models.CharField(max_length=100, verbose_name="project name")
@@ -139,6 +117,8 @@ class StratumBasicInfo(CoreModel):
     project = models.ForeignKey(ProjectInfo, on_delete=models.CASCADE, verbose_name="project")
     ring_no = models.CharField(max_length=20, verbose_name="ring no")
     stratum_type_codes = models.CharField(max_length=500, verbose_name="stratum type codes", blank=True)
+    stratum_type_ratios = models.JSONField(default=dict, blank=True, verbose_name="cross-section stratum percentages")
+    longitudinal_type_ratios = models.JSONField(default=dict, blank=True, verbose_name="longitudinal-section area percentages")
     stratum_info = models.TextField(verbose_name="stratum info", blank=True)
     burial_depth = models.FloatField(verbose_name="burial depth", null=True, blank=True)
 
@@ -152,9 +132,11 @@ class StratumBasicInfo(CoreModel):
         return f"{self.project.project_name} - {self.ring_no}"
 
     def get_stratum_types(self):
+        """Historical engineering-condition tags, not cross-section rock types."""
         if not self.stratum_type_codes:
             return []
         from dvadmin.system.models import Dictionary
+        from application.shield.stratum_ratios import stratum_label
 
         result = []
         for code in self.stratum_type_codes.split(","):
@@ -163,8 +145,19 @@ class StratumBasicInfo(CoreModel):
                 continue
             item = Dictionary.objects.filter(parent__value="stratum_type", value=code, status=True).first()
             if item:
-                result.append({"code": item.value, "name": item.label, "description": item.remark or ""})
+                result.append({"code": item.value, "name": stratum_label(code) if code == 'WEAK_GRANITE' else item.label, "description": item.remark or ""})
+            else:
+                result.append({"code": code, "name": stratum_label(code), "description": "历史工程地质条件"})
         return result
+
+    def get_rock_types(self):
+        from application.shield.stratum_ratios import validate_stratum_ratios, stratum_label
+        try:
+            ratios = validate_stratum_ratios(self.stratum_type_ratios)
+        except ValueError:
+            return []
+        return [{"code": code, "name": stratum_label(code), "percent": percent}
+                for code, percent in ratios.items() if percent > 0]
 
 
 class ToolCategory(CoreModel):

@@ -15,7 +15,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, unref } from 'vue';
 import { Download } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { exportTableData, type ExportColumn, type ExportFormat, type ExportMetaItem } from '../utils/export';
@@ -29,21 +29,23 @@ const props = defineProps<{
   crudBinding?: any;
 }>();
 
+const resolvedCrudBinding = computed(() => unref(props.crudBinding));
+
 const exportRows = computed(() => {
   if (props.rows) return props.rows;
-  return props.crudBinding?.value?.data || [];
+  return resolvedCrudBinding.value?.data || [];
 });
 
 const exportColumns = computed<ExportColumn[]>(() => {
   if (props.columns?.length) return props.columns;
-  const columns = props.crudBinding?.value?.columns || {};
+  const columns = resolvedCrudBinding.value?.table?.columns || {};
   return Object.entries(columns)
-    .filter(([key, config]: any) => key !== '_index' && config?.column?.show !== false)
+    .filter(([key, config]: any) => key !== '_index' && config?.show !== false)
     .map(([key, config]: any) => ({
       key,
       title: config?.title || key,
       formatter: (row: any, index: number) => {
-        const formatter = config?.column?.formatter;
+        const formatter = config?.formatter;
         if (typeof formatter === 'function') {
           return formatter({ row, index, value: row?.[key] });
         }

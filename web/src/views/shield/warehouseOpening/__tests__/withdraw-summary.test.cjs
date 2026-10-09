@@ -169,6 +169,7 @@ test('real API uses original POST endpoint without inventing a payload', async (
 
 test('real CRUD button reflects pending row and locks all withdrawal buttons', async () => {
   const { createCrudOptions } = compile(fs.readFileSync(path.resolve(__dirname, '../crud.tsx'), 'utf8'), name => {
+    if (name === 'vue') return { ...vue, onDeactivated() {}, onScopeDispose() {} };
     if (name === '@fast-crud/fast-crud') return { dict: options => options, compute: fn => fn };
     if (name === 'vue-router') return { useRouter: () => ({}) };
     if (name === '../crudUtils') return { createIndexFormatter: () => () => 1 };

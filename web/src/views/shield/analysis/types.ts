@@ -2,10 +2,13 @@
 // 全局筛选参数
 // ─────────────────────────────────────────────────────────────
 export interface AnalysisFilter {
+  summary_status?: 'CONFIRMED' | 'DRAFT' | 'ALL';
   project?: number | string;
   shield_machine?: number | string;
   start_ring?: string;
   end_ring?: string;
+  blade_track_min?: string;
+  blade_track_max?: string;
   stratum_type?: string;
   stratum_types?: string | string[];
   tool_parent_type?: string;
@@ -17,6 +20,59 @@ export interface AnalysisFilter {
   manufacturers?: string | string[];
 }
 
+export interface AnalysisMeta {
+  schema_version: number;
+  generated_at: string;
+  summary_status: string;
+  opening_count: number;
+  draft_opening_count: number;
+  excluded_inactive_count: number;
+  unobserved_count: number;
+  warnings: string[];
+  scope: AnalysisFilter & { project_name?: string; shield_machine_name?: string };
+  wear_basis?: string;
+  observed_count?: number;
+  observed_basis?: string;
+  legacy_observed_count?: number;
+  cost_source_count?: number;
+  service_sample_count?: number;
+  pairing_unresolved_count?: number;
+  excluded_invalid_ring_opening_count?: number;
+  filter_capabilities?: string[];
+  blade_track_basis?: string;
+}
+
+export interface CostSources {
+  installation: number;
+  confirmed_repair: number;
+  legacy: number;
+  unresolved: number;
+  total: number;
+  missing_price_count: number;
+  pending_repair_count: number;
+  repair_missing_price_count: number;
+  unresolved_count: number;
+  priced_count: number;
+}
+
+export interface CostSourceRow {
+  id: string | number;
+  detail_id: number;
+  opening_id: number;
+  warehouse_id: string;
+  ring_no: string;
+  tool_parent_type: string;
+  cutter_position_no: string;
+  manufacturer: string;
+  source: 'installation' | 'confirmed_repair' | 'legacy_complete' | 'legacy_repair' | 'legacy_untyped' | 'unresolved';
+  amount: number | null;
+  included: boolean;
+  reason: string;
+  old_tool_number: string;
+  new_tool_number: string;
+  inspection_status?: string;
+}
+
 // ─────────────────────────────────────────────────────────────
 // 概览仪表盘
 // ─────────────────────────────────────────────────────────────
@@ -26,8 +82,16 @@ export interface OverviewKpi {
   total_repairs: number;
   total_cost: number;
   avg_rings_between_openings: number;
-  abnormal_wear_rate: number;   // 0~1
-  healthy_rate: number;          // 0~1
+  abnormal_wear_rate: number | null;
+  healthy_rate: number | null;
+  total_completes?: number;
+  total_untyped?: number;
+  detail_checked_count?: number;
+  summary_checked_count?: number;
+  summary_replaced_count?: number;
+  replacement_gap?: number;
+  summary_detail_replaced_count?: number;
+  cost_sources?: CostSources;
 }
 
 export interface MonthlyTrendItem {
@@ -35,6 +99,8 @@ export interface MonthlyTrendItem {
   replacements: number;
   repairs: number;
   cost: number;
+  untyped?: number;
+  total_replacements?: number;
 }
 
 export interface TypeTrendItem {
@@ -53,9 +119,14 @@ export interface RecentOpeningItem {
   cost: number;
   geological_conditions: string;
   abnormal_count: number;
+  summary_status?: string;
+  summary_replaced_count?: number;
+  replacement_gap?: number;
+  cost_sources?: CostSources;
 }
 
 export interface OverviewData {
+  meta?: AnalysisMeta;
   kpi: OverviewKpi;
   monthly_trend: MonthlyTrendItem[];
   type_trend: TypeTrendItem[];
@@ -70,9 +141,15 @@ export interface CostTypeBreakdownItem {
   complete_cost: number;
   repair_cost: number;
   total: number;
+  cost_sources?: CostSources;
 }
 
 export interface CostOverviewData {
+  meta?: AnalysisMeta;
+  cost_sources?: CostSources;
+  source_rows?: CostSourceRow[];
+  source_rows_total?: number;
+  source_rows_truncated?: boolean;
   replacement_vs_repair: {
     complete: number;
     repair: number;
@@ -80,9 +157,11 @@ export interface CostOverviewData {
   };
   cost_per_ring?: {
     ring_count: number;
-    complete: number;
-    repair: number;
-    total: number;
+    complete: number | null;
+    repair: number | null;
+    total: number | null;
+    available?: boolean;
+    reason?: string;
   };
   type_breakdown: CostTypeBreakdownItem[];
 }
@@ -93,6 +172,12 @@ export interface CostTrendItem {
   complete_cost: number;
   repair_cost: number;
   cumulative_cost: number;
+  installation_cost?: number;
+  confirmed_repair_cost?: number;
+  legacy_cost?: number;
+  unresolved_cost?: number;
+  total_cost?: number;
+  replacement_count?: number;
 }
 
 export interface BrandCostItem {
@@ -102,12 +187,19 @@ export interface BrandCostItem {
   opening_count?: number;
   abnormal_count?: number;
   normal_count?: number;
-  avg_cost: number;
-  cost_per_ring?: number;
-  abnormal_rate?: number;
-  normal_rate?: number;
+  avg_cost: number | null;
+  cost_per_ring?: number | null;
+  abnormal_rate?: number | null;
+  normal_rate?: number | null;
   avg_lifespan?: number | null;
   lifespan_count?: number;
+  priced_count?: number;
+  missing_price_count?: number;
+  wear_recorded_count?: number;
+  unrecorded_wear_count?: number;
+  paired_count?: number;
+  pairing_unresolved_count?: number;
+  cost_sources?: CostSources;
 }
 
 export interface BrandPriceTrendSeries {
@@ -117,6 +209,7 @@ export interface BrandPriceTrendSeries {
 }
 
 export interface BrandPriceTrendData {
+  meta?: AnalysisMeta;
   manufacturers: string[];
   time_axis: { ring_no: string; open_time: string }[];
   series: BrandPriceTrendSeries[];
@@ -130,6 +223,7 @@ export interface BrandPerfTrendSeries {
 }
 
 export interface BrandPerformanceTrendData {
+  meta?: AnalysisMeta;
   manufacturers: string[];
   time_axis: { ring_no: string; open_time: string }[];
   abnormal_rate_series: BrandPerfTrendSeries[];
@@ -147,11 +241,16 @@ export interface WearDistributionItem {
 }
 
 export interface WearTrendItem {
+  id?: number;
+  warehouse_id?: string;
   ring_no: string;
   open_time: string;
   total: number;
   abnormal: number;
-  abnormal_rate: number;
+  abnormal_rate: number | null;
+  checked_count?: number;
+  replacement_count?: number;
+  unrecorded_count?: number;
   geological_conditions: string;
   stratum_types: string;
 }
@@ -181,17 +280,18 @@ export interface CustomLineSeries {
   metric: string;
   name: string;
   unit: string;
-  data: number[];
+  data: (number | null)[];
 }
 
 export interface CustomMatrixSeries {
   metric: string;
   name: string;
   unit: string;
-  data: [number, number, number][];
+  data: [number, number, number | null][];
 }
 
 export interface CustomChartData {
+  meta?: AnalysisMeta;
   chart_type: 'line' | 'matrix';
   x_field: CustomFieldOption;
   y_field?: CustomFieldOption;

@@ -37,7 +37,7 @@
       </el-form-item>
       </fieldset>
       <el-form-item label="本次使用距离（m）">
-        <el-input :model-value="opening?.usage_distance ?? '-'" disabled />
+        <el-input :model-value="opening?.usage_distance ?? '-'" disabled class="summary-distance" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -168,17 +168,21 @@ const submit = async () => {
 </style>
 
 <style scoped>
-.opening-context { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; margin: 0 0 16px; padding: 12px; background: var(--el-fill-color-light); border-radius: 4px; }
-.opening-context dt { font-size: 12px; color: var(--el-text-color-secondary); }
-.opening-context dd { margin: 4px 0 0; font-weight: 600; color: var(--el-text-color-primary); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.opening-context { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin: 0 0 12px; padding: 10px 12px; background: var(--el-fill-color-light); border-radius: 4px; font-size: 13px; line-height: 22px; }
+.opening-context > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: baseline; gap: 8px; min-width: 0; }
+.opening-context dt { color: var(--el-text-color-regular); }
+.opening-context dd { margin: 0; font-weight: 600; color: var(--el-text-color-primary); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .summary-section { min-width: 0; border: 0; padding: 0; margin: 0 0 8px; }
-.summary-section legend { width: 100%; margin-bottom: 14px; padding: 0; font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
+.summary-section legend { width: 100%; margin-bottom: 12px; padding: 0; font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
 .summary-section legend span { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--el-text-color-secondary); }
 @media (max-width: 480px) {
+  .opening-context { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .summary-section legend span { display: block; margin: 4px 0 0; }
 }
+.summary-distance { --el-disabled-text-color: var(--el-text-color-regular); }
+.summary-distance :deep(.el-input__inner) { text-align: center; font-variant-numeric: tabular-nums; }
 .summary-hint {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 :deep(.el-input-number),

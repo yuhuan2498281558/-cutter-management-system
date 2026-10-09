@@ -7,6 +7,9 @@ export interface AnalysisFilterParams {
   shield_machine?: number | string;
   start_ring?: string;
   end_ring?: string;
+  blade_track_min?: string;
+  blade_track_max?: string;
+  summary_status?: 'CONFIRMED' | 'DRAFT' | 'ALL';
   stratum_type?: string;
   stratum_types?: string | string[];
   tool_parent_type?: string;
@@ -45,12 +48,17 @@ export function getBrandCost(params: AnalysisFilterParams = {}) {
 
 /** 各厂家平均单价时序趋势 */
 export function getBrandPriceTrend(params: AnalysisFilterParams = {}) {
-  return request({ url: API_PREFIX + 'brand_price_trend/', method: 'get', params });
+  return request({ url: API_PREFIX + 'brand_price_trend/', method: 'get', params: { ...params, include_details: 'false' } });
 }
 
 /** 各厂家刀具性能时序趋势（异常率 / 正常磨损率） */
 export function getBrandPerformanceTrend(params: AnalysisFilterParams = {}) {
-  return request({ url: API_PREFIX + 'brand_performance_trend/', method: 'get', params });
+  return request({ url: API_PREFIX + 'brand_performance_trend/', method: 'get', params: { ...params, include_details: 'false' } });
+}
+
+/** 按刀具完整服役环段的地层比较原安装厂家 */
+export function getBrandStratumPerformance(params: AnalysisFilterParams & { service_stratum?: string } = {}) {
+  return request({ url: API_PREFIX + 'brand_stratum_performance/', method: 'get', params });
 }
 
 /** 磨损等级分布 */

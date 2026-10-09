@@ -2,6 +2,7 @@ import json
 import shutil
 import tempfile
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -281,6 +282,80 @@ class ToolChangeFlowTests(TestCase):
         self.assertEqual(repair_response.data["code"], 2000)
         self.assertEqual(OldToolRecord.objects.get(tool_change_detail=details[0]).remark, "已送厂家检测")
 
+    def test_confirmed_summary_rejects_mobile_submit_without_changing_records(self):
+        WarehouseOpeningBasicInfo.objects.filter(pk=self.opening.pk).update(
+            summary_status="CONFIRMED", checked_tool_count=7, replaced_tool_count=3,
+        )
+        view = MobileTaskViewSet()
+        view.action_map = {}
+        request = view.initialize_request(self.request_for(self.first_operator, method="post"))
+        request.user = self.first_operator
+        for status in ("UNASSIGNED", "PENDING", "IN_PROGRESS", "RETURNED"):
+            with self.subTest(status=status):
+                MobileToolChangeTask.objects.filter(pk=self.task.pk).update(
+                    status=status,
+                    recorder=None if status == "UNASSIGNED" else self.first_operator,
+                )
+                before_task = MobileToolChangeTask.objects.filter(pk=self.task.pk).values().get()
+                before_details = list(self.opening.tool_change_details.order_by("pk").values())
+                before_opening = WarehouseOpeningBasicInfo.objects.filter(pk=self.opening.pk).values().get()
+                response = view.submit(request, pk=self.task.pk)
+                self.assertNotEqual(response.data["code"], 2000)
+                self.assertIn("汇总已确认", response.data["msg"])
+                self.assertEqual(MobileToolChangeTask.objects.filter(pk=self.task.pk).values().get(), before_task)
+                self.assertEqual(list(self.opening.tool_change_details.order_by("pk").values()), before_details)
+                self.assertEqual(WarehouseOpeningBasicInfo.objects.filter(pk=self.opening.pk).values().get(), before_opening)
+
+    def test_mobile_submit_checks_fresh_summary_before_claiming_task(self):
+        """模拟取到任务关联快照后汇总被确认，不能根据旧 DRAFT 快照认领或提交。"""
+        view = MobileTaskViewSet()
+        view.action_map = {}
+        request = view.initialize_request(self.request_for(self.first_operator, method="post"))
+        request.user = self.first_operator
+        before_task = MobileToolChangeTask.objects.filter(pk=self.task.pk).values().get()
+        before_details = list(self.opening.tool_change_details.order_by("pk").values())
+
+        def confirm_after_task_read(user, task):
+            self.assertEqual(task.warehouse.summary_status, "DRAFT")
+            WarehouseOpeningBasicInfo.objects.filter(pk=task.warehouse_id).update(summary_status="CONFIRMED")
+            return True
+
+        with patch("application.shield.mobile_views.user_can_open_task", side_effect=confirm_after_task_read):
+            response = view.submit(request, pk=self.task.pk)
+        self.assertNotEqual(response.data["code"], 2000)
+        self.assertIn("汇总已确认", response.data["msg"])
+        self.assertEqual(MobileToolChangeTask.objects.filter(pk=self.task.pk).values().get(), before_task)
+        self.assertEqual(list(self.opening.tool_change_details.order_by("pk").values()), before_details)
+
+    def test_mobile_submit_recovers_after_desktop_withdraws_summary(self):
+        self.first_operator.is_superuser = True
+        self.first_operator.save(update_fields=["is_superuser"])
+        client = APIClient()
+        client.force_authenticate(user=self.first_operator)
+        summary_response = client.post(
+            f"/api/shield/warehouse_opening/{self.opening.pk}/complete_summary/",
+            {"opening_duration": 4, "tool_change_duration": 2, "checked_tool_count": 2, "replaced_tool_count": 0},
+            format="json",
+            HTTP_USER_AGENT="shield-submit-lock-test-client",
+        )
+        self.assertEqual(summary_response.data["code"], 2000)
+        view = MobileTaskViewSet()
+        view.action_map = {}
+        request = view.initialize_request(self.request_for(self.first_operator, method="post"))
+        request.user = self.first_operator
+        self.assertNotEqual(view.submit(request, pk=self.task.pk).data["code"], 2000)
+        response = client.post(
+            f"/api/shield/warehouse_opening/{self.opening.pk}/withdraw_summary/", {}, format="json",
+            HTTP_USER_AGENT="shield-submit-lock-test-client",
+        )
+        self.assertEqual(response.data["code"], 2000)
+        self.assertEqual(view.submit(request, pk=self.task.pk).data["code"], 2000)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "SUBMITTED")
+        self.assertEqual(self.task.recorder_id, self.first_operator.pk)
+        self.assertIsNotNone(self.task.submitted_at)
+        self.assertFalse(self.opening.tool_change_details.filter(is_checked=True).exists())
+
     def test_confirmed_summary_blocks_mobile_save_until_desktop_withdraws(self):
         """确认后锁定移动端；撤回后重算数量、重开任务并恢复录入。"""
         self.first_operator.is_superuser = True
@@ -557,19 +632,69 @@ class ToolChangeFlowTests(TestCase):
     def test_trajectory_uses_radial_distance_for_rollers_and_scrapers(self):
         self.assertEqual(get_tool_trajectory("1", "DISC")["radius_mm"], 135)
         self.assertEqual(get_tool_trajectory("13", "DISC")["radius_mm"], 1555)
-        self.assertEqual(get_tool_trajectory("18", "DISC")["radius_mm"], 2035)
-        self.assertEqual(get_tool_trajectory("80-A", "DISC")["radius_mm"], 6809.8)
-        self.assertEqual(get_tool_trajectory("y1", "DISC")["radius_mm"], 6605)
-        self.assertEqual(get_tool_trajectory("Y3", "DISC")["radius_mm"], 6650)
-        self.assertEqual(get_tool_trajectory("y5", "DISC")["radius_mm"], 6670)
+        self.assertEqual(get_tool_trajectory("18", "DISC")["radius_mm"], 1655)
+        self.assertEqual(get_tool_trajectory("80-A", "DISC")["radius_mm"], 6830)
+        self.assertEqual(get_tool_trajectory("y1", "DISC")["radius_mm"], 6809.8)
+        self.assertEqual(get_tool_trajectory("Y3", "DISC")["radius_mm"], 6770.8)
+        self.assertEqual(get_tool_trajectory("y5", "DISC")["radius_mm"], 6830)
         self.assertEqual(get_tool_trajectory("y2", "DISC")["status"], "PENDING_REVIEW")
         scraper = get_tool_trajectory("S14R", "SCRAPER")
         self.assertEqual(scraper["status"], "CONFIRMED")
-        self.assertEqual(scraper["radius_mm"], 5910)
+        self.assertEqual(scraper["radius_mm"], 5900)
 
         detail = self.opening.tool_change_details.get(cutter_position_no="1")
         payload = MobileToolChangeDetailSerializer(detail).data
         self.assertEqual(payload["trajectory"]["display"], "R135 mm")
+
+    def test_trajectory_maps_drawing_arms_without_renumbering_current_positions(self):
+        # Independently transcribed from drawing pages 19/24 at the current
+        # upper-right and downward installation locations.
+        expected = {
+            "14": ("18", 2035), "16": ("21", 2275), "25": ("30", 2995),
+            "28": ("33", 3235), "37": ("42", 3955), "40": ("45", 4195),
+            "49": ("54", 4915), "52": ("57", 5155), "61": ("66", 5875),
+            "64": ("69", 6115), "18": ("14", 1655), "21": ("16", 1855),
+            "30": ("25", 2595), "33": ("28", 2835), "42": ("37", 3555),
+            "45": ("40", 3795), "54": ("49", 4515), "57": ("52", 4755),
+            "66": ("61", 5475), "69": ("64", 5715),
+        }
+        for code, (drawing, radius) in expected.items():
+            with self.subTest(code=code):
+                trajectory = get_tool_trajectory(code, "DISC")
+                self.assertEqual(trajectory["drawing_position_no"], drawing)
+                self.assertEqual(trajectory["radius_mm"], radius)
+
+        detail = self.opening.tool_change_details.get(cutter_position_no="1")
+        detail.cutter_position_no = "14"
+        payload = MobileToolChangeDetailSerializer(detail).data
+        self.assertEqual(payload["cutter_position_no"], "14")
+        self.assertEqual(payload["trajectory"]["display"], "R2035 mm")
+
+    def test_edge_trajectory_dimensions_and_y_installation_references(self):
+        edge = {"71": 6266, "72": 6352.8, "73": 6436.3, "74": 6515.4,
+                "75": 6591.1, "76": 6658.4, "77": 6718.6, "78": 6770.8,
+                "79": 6809.8, "80A": 6830, "80B": 6830}
+        for code, radius in edge.items():
+            with self.subTest(code=code):
+                self.assertEqual(get_tool_trajectory(code, "DISC")["radius_mm"], radius)
+        for code, drawing in (("Y1", "#2"), ("Y3", "#1"), ("Y5", "#3")):
+            self.assertEqual(get_tool_trajectory(code, "DISC")["drawing_position_no"], drawing)
+
+    def test_scraper_tracks_preserve_sides_and_separate_s19_excavation_radius(self):
+        radii = (3430, 3620, 3810, 4000, 4190, 4380, 4570, 4760, 4950,
+                 5140, 5330, 5520, 5710, 5900, 6090, 6303.9, 6493.1, 6651, 6765.2)
+        for number, radius in enumerate(radii, 1):
+            for side in ("L", "R"):
+                code = f"S{number}{side}"
+                with self.subTest(code=code):
+                    value = get_tool_trajectory(code, "SCRAPER")
+                    self.assertEqual(value["radius_mm"], radius)
+                    self.assertEqual(value["drawing_position_no"], code)
+                    if number == 19:
+                        self.assertEqual(value["excavation_radius_mm"], 6810)
+                        self.assertIn("中心参考", value["source"])
+                    else:
+                        self.assertNotIn("excavation_radius_mm", value)
 
     def test_recordable_position_scope_matches_confirmed_trajectory_map(self):
         expected_codes = {

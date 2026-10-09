@@ -47,6 +47,7 @@ function setup(t, overrides = {}) {
     require(name) {
       if (name === 'vue') return { ...vue, onUnmounted: fn => unmount.push(fn) };
       if (name === './api') return api;
+      if (name === './PhotoPreview.vue') return {};
       if (name === 'element-plus') return {
         ElMessage: Object.fromEntries(['success', 'error', 'warning'].map(level => [level, text => notices.push({ level, text })])),
         ElMessageBox: { confirm: overrides.confirm || (async () => {}) },
@@ -70,6 +71,193 @@ test('loads backend options into the rendered reactive state', async t => {
   }
   assert.deepEqual(openOptions, { readOnly: false });
   assert.equal(s.form.old_tool_number, 'OLD-1');
+});
+
+test('repair uses the latest position trajectory without resubmitting legacy free text', async t => {
+  const trajectory = { status: 'CONFIRMED', radius_mm: 1955, display: 'R1955 mm', source: '图纸依据' };
+  const { state: s, writes } = setup(t, {
+    GetOldToolRecord: async () => ({ data: { trajectory, old_tool_record_data: { tool_track: '中心刀轨' } } }),
+  });
+  await s.open({ id: 17, tool_parent_type: 'DISC', trajectory: { display: '旧刀位值' } });
+  assert.equal(s.trajectoryDisplay.value, 'R1955 mm');
+  assert.equal(s.form.tool_track, undefined);
+  assert.equal(writes.length, 0);
+  await s.save('SAVE_DRAFT');
+  assert.equal(writes[0].data.has('tool_track'), false);
+});
+
+test('switching to a pending or missing trajectory never reuses a prior radius or legacy track', async t => {
+  const { state: s, writes } = setup(t, {
+    GetOldToolRecord: async id => ({ data: {
+      trajectory: id === 1
+        ? { status: 'CONFIRMED', radius_mm: 5910, display: 'R5910 mm' }
+        : id === 2 ? { status: 'PENDING_REVIEW', radius_mm: null, display: '待按最终图纸核对' } : null,
+      old_tool_record_data: { tool_track: '外周刀轨' },
+    } }),
+  });
+  await s.open({ id: 1, tool_parent_type: 'SCRAPER' });
+  assert.equal(s.trajectoryDisplay.value, 'R5910 mm');
+  for (const id of [2, 3]) {
+    await s.open({ id, tool_parent_type: 'SCRAPER' });
+    assert.equal(s.trajectoryDisplay.value, '待按最终图纸核对');
+    await s.save('SAVE_DRAFT');
+    assert.equal(writes.at(-1).data.has('tool_track'), false);
+  }
+});
+
+test('archived repair shows the position trajectory without writing the historical record', async t => {
+  const { state: s, writes } = setup(t, {
+    GetOldToolRecord: async () => ({ data: {
+      trajectory: { status: 'CONFIRMED', radius_mm: 1555, display: 'R1555 mm' },
+      old_tool_record_data: { tool_track: '中心刀轨', inspection_status: 'CLOSED' },
+    } }),
+  });
+  await s.open({ id: 13, tool_parent_type: 'DISC' }, { readOnly: true });
+  assert.equal(s.trajectoryDisplay.value, 'R1555 mm');
+  await s.save('SAVE_DRAFT');
+  assert.equal(writes.length, 0);
+});
+
+function setupPhoto(t, values = {}) {
+  const { descriptor } = parse(fs.readFileSync(path.resolve(__dirname, '../PhotoPreview.vue'), 'utf8'));
+  const script = compileScript(descriptor, { id: 'photo-preview-test' });
+  const context = { exports: {}, require(name) { assert.equal(name, 'vue'); return vue; } };
+  vm.runInNewContext(ts.transpileModule(script.content, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText, context);
+  const props = vue.reactive({ active: true, src: '/photo-a.png?signature=original', name: '测试照片', ...values });
+  const scope = vue.effectScope();
+  const state = scope.run(() => context.exports.default.setup(props, { expose() {} }));
+  t.after(() => scope.stop());
+  return { state, props, scope };
+}
+
+function selectedPhoto(name, type, size = 1024, uid = name) {
+  return { uid, name, status: 'ready', raw: { name, type, size } };
+}
+
+test('photo selection rejects unsupported types and over-30MB files without dropping valid selections', async t => {
+  const { state: s, notices, writes } = setup(t);
+  await s.open({ id: 1 });
+  const valid = selectedPhoto('valid.png', 'image/png');
+  const wrong = selectedPhoto('animation.gif', 'image/gif');
+  const large = selectedPhoto('large.jpg', 'image/jpeg', 30 * 1024 * 1024 + 1);
+  s.handlePhotoChange(valid, [valid]);
+  s.handlePhotoChange(wrong, [valid, wrong]);
+  assert.equal(s.fileList.value.length, 1);
+  s.handlePhotoChange(large, [valid, wrong, large]);
+  assert.equal(s.fileList.value.length, 1);
+  assert.equal(s.fileList.value[0].name, 'valid.png');
+  assert.match(notices[0].text, /animation.gif.*JPG \/ JPEG \/ PNG/);
+  assert.match(notices[1].text, /large.jpg.*30MB/);
+  assert.equal(writes.length, 0);
+});
+
+test('a mixed native selection cannot reintroduce an earlier rejected file', async t => {
+  const { state: s } = setup(t);
+  await s.open({ id: 1 });
+  const invalid = selectedPhoto('not-a-photo.pdf', 'application/pdf');
+  const valid = selectedPhoto('photo.png', 'image/png');
+  s.handlePhotoChange(invalid, [invalid]);
+  s.handlePhotoChange(valid, [invalid, valid]);
+  assert.equal(s.fileList.value.length, 1);
+  assert.equal(s.fileList.value[0].name, 'photo.png');
+});
+
+test('all server-supported MIME types accept the exact 30MB boundary', async t => {
+  const { state: s, notices } = setup(t);
+  await s.open({ id: 1 });
+  for (const type of ['image/jpeg', 'image/jpg', 'image/png']) {
+    const file = selectedPhoto('boundary-photo', type, 30 * 1024 * 1024);
+    s.handlePhotoChange(file, [file]);
+    assert.equal(s.fileList.value.length, 1);
+  }
+  assert.equal(notices.length, 0);
+});
+
+test('photo allowance includes pending files, recovers after removal and resets for another record', async t => {
+  const { state: s, notices } = setup(t, {
+    GetOldToolRecord: async id => ({ data: { old_tool_record_data: { photos: id === 1 ? [{ id: 1 }, { id: 2 }] : [] } } }),
+  });
+  await s.open({ id: 1 });
+  const files = ['a.png', 'b.png', 'c.png'].map(name => selectedPhoto(name, 'image/png'));
+  s.handlePhotoChange(files[2], files);
+  assert.equal(s.availablePhotoSlots.value, 0);
+  s.handlePhotoExceed();
+  assert.match(notices[0].text, /已保存 2 张、待保存 3 张.*再选 0 张/);
+  assert.equal(s.fileList.value.length, 3);
+  s.fileList.value.splice(1, 1);
+  assert.equal(s.availablePhotoSlots.value, 1);
+  await s.open({ id: 2 });
+  assert.equal(s.fileList.value.length, 0);
+  assert.equal(s.availablePhotoSlots.value, 5);
+});
+
+test('all save actions reject invalid or excessive pending photos before posting', async t => {
+  for (const action of ['SAVE_DRAFT', 'CONFIRM', 'CLOSE']) {
+    const { state: s, writes } = setup(t);
+    await s.open({ id: 1 });
+    s.form.disposition = 'SCRAP';
+    s.fileList.value = [selectedPhoto('bad.gif', 'image/gif')];
+    await s.save(action);
+    assert.equal(writes.length, 0);
+    s.fileList.value = Array.from({ length: 6 }, (_, i) => selectedPhoto(`${i}.png`, 'image/png'));
+    await s.save(action);
+    assert.equal(writes.length, 0);
+    assert.equal(s.saving.value, false);
+    assert.equal(s.visible.value, true);
+  }
+});
+
+test('photo failure retries the unchanged URL once and accepts the new load', t => {
+  const { state: s, props } = setupPhoto(t);
+  assert.equal(s.status.value, 'loading');
+  const first = s.imageRequest.value;
+  first.onError(); assert.equal(s.status.value, 'error');
+  s.retry(); const retried = s.imageRequest.value;
+  assert.notEqual(retried.id, first.id);
+  assert.equal(retried.src, props.src);
+  s.retry(); assert.equal(s.imageRequest.value, retried);
+  first.onLoad(); assert.equal(s.status.value, 'loading');
+  retried.onLoad(); assert.equal(s.status.value, 'loaded');
+});
+
+test('switching photos rejects both success and failure callbacks from the previous image', t => {
+  const { state: s, props } = setupPhoto(t);
+  const first = s.imageRequest.value;
+  props.src = '/photo-b.png';
+  const second = s.imageRequest.value;
+  first.onLoad(); assert.equal(s.status.value, 'loading');
+  second.onLoad(); first.onError();
+  assert.equal(s.status.value, 'loaded');
+  assert.equal(second.src, '/photo-b.png');
+});
+
+test('closing and reopening the same photo restarts loading and ignores late events', t => {
+  const { state: s, props } = setupPhoto(t);
+  const first = s.imageRequest.value;
+  props.active = false;
+  first.onError(); assert.equal(s.status.value, 'idle');
+  assert.equal(s.imageRequest.value, null);
+  props.active = true;
+  assert.equal(s.status.value, 'loading');
+  first.onLoad(); assert.equal(s.status.value, 'loading');
+  assert.notEqual(s.imageRequest.value.id, first.id);
+});
+
+test('unmounting a photo preview prevents callbacks from altering its state', t => {
+  const { state: s, scope } = setupPhoto(t);
+  const image = s.imageRequest.value;
+  scope.stop(); image.onLoad(); image.onError();
+  assert.equal(s.status.value, 'loading');
+});
+
+test('an inactive or empty photo source never creates an image request', t => {
+  const { state: s, props } = setupPhoto(t, { active: false });
+  assert.equal(s.imageRequest.value, null);
+  props.src = ''; props.active = true;
+  assert.equal(s.imageRequest.value, null);
+  assert.equal(s.status.value, 'idle');
 });
 
 test('loading blocks writes, including direct handler calls', async t => {

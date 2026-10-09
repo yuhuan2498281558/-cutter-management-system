@@ -33,7 +33,7 @@ const scraper = {
   '是否断裂': ['scraper_broken', false], '是否脱落': ['scraper_detached', false],
 };
 const common = {
-  '刀具轨迹': ['tool_track', 'R1955 mm'], '报废 / 可维修': ['disposition', 'SCRAP'],
+  '报废 / 可维修': ['disposition', 'SCRAP'],
   '厂家返修结果': ['repair_result', '厂家结果'], '维修价格': ['repair_price', 0], '补充说明': ['remark', '补充记录'],
 };
 
@@ -75,8 +75,9 @@ async function setup(t, config = {}) {
       if (config.failed) throw new Error('isolated load failure');
       if (request.url.endsWith('/field_options/')) return { data: options };
       assert.equal(request.url, '/api/shield/tool_change_detail/17/old_tool_record/');
-      return { data: { old_tool_record_data: {
+      return { data: { trajectory: { status: 'CONFIRMED', display: config.type === 'SCRAPER' ? 'R5910 mm' : 'R1955 mm', source: '图纸依据' }, old_tool_record_data: {
         old_tool_number: 'OLD-17', inspection_status: config.status || 'PENDING_VENDOR_FEEDBACK',
+        tool_track: '中心刀轨',
         photos: Array.from({ length: config.photos || 0 }, (_, id) => ({ id, name: `photo-${id}.png`, url: `/test-${id}.png` })),
       } } };
     } };
@@ -84,6 +85,7 @@ async function setup(t, config = {}) {
   const component = compile(script.content, name => {
     if (name === 'vue') return { ...vue, onUnmounted: callback => unmount.push(callback) };
     if (name === './api') return api;
+    if (name === './PhotoPreview.vue') return {};
     if (name === 'element-plus') return {
       ElMessage: { success() {}, warning() {}, error() {} },
       ElMessageBox: { confirm: async () => { confirmations++; } },
@@ -114,6 +116,10 @@ async function setup(t, config = {}) {
 for (const [type, visible, hidden] of [['DISC', disc, scraper], ['SCRAPER', scraper, disc]]) {
   test(`${type} rendered controls are exclusive and serialize actual v-model edits`, async t => {
     const h = await setup(t, { type });
+    const track = h.control('刀位轨迹');
+    assert.ok(track.props.readonly !== undefined && track.props.readonly !== false);
+    assert.equal(track.props['onUpdate:modelValue'], undefined);
+    assert.equal(track.props['model-value'], type === 'SCRAPER' ? 'R5910 mm' : 'R1955 mm');
     for (const label of Object.keys(hidden)) assert.equal(h.nodes().some(node => node.type?.name === 'el-form-item' && node.props?.label === label), false);
     const values = { ...visible, ...common };
     for (const [label, [, value]] of Object.entries(values)) {
@@ -126,9 +132,8 @@ for (const [type, visible, hidden] of [['DISC', disc, scraper], ['SCRAPER', scra
       node.props['onUpdate:modelValue'](value);
     }
     const upload = only(h.nodes(), node => node.type?.name === 'el-upload', 'photo upload');
-    const updateFiles = upload.props['onUpdate:fileList'] || upload.props['onUpdate:file-list'];
-    assert.equal(typeof updateFiles, 'function');
-    updateFiles([{ raw: new Blob(['isolated-photo'], { type: 'image/png' }) }]);
+    const photo = { uid: 1, name: 'isolated.png', status: 'ready', raw: new Blob(['isolated-photo'], { type: 'image/png' }) };
+    upload.props['on-change'](photo, [photo]);
     await h.button('保存草稿').props.onClick();
     assert.equal(h.requests.length, 1);
     const request = h.requests[0];
@@ -137,6 +142,7 @@ for (const [type, visible, hidden] of [['DISC', disc, scraper], ['SCRAPER', scra
     assert.equal(request.timeout, 60000);
     assert.equal(request.data.get('workflow_action'), 'SAVE_DRAFT');
     assert.equal(request.data.get('old_tool_number'), 'OLD-17');
+    assert.equal(request.data.has('tool_track'), false);
     for (const [, [key, value]] of Object.entries(values)) assert.equal(request.data.get(key), Array.isArray(value) ? JSON.stringify(value) : String(value), key);
     assert.equal(request.data.getAll('photos').length, 1);
     assert.equal(h.events.filter(([name]) => name === 'saved').length, 1);
@@ -186,9 +192,68 @@ test('upload retains manual image selection and the remaining five-photo allowan
     const upload = only(h.nodes(), node => node.type?.name === 'el-upload', 'photo upload');
     assert.equal(upload.props.limit, 5 - photos);
     assert.equal(upload.props['auto-upload'], false);
-    assert.equal(upload.props.accept, 'image/jpeg,image/png');
+    assert.equal(upload.props.accept, 'image/jpeg,image/jpg,image/png');
     const add = only(descendants(upload), node => node.type?.name === 'el-button', 'add photo');
     assert.equal(add.props.disabled, photos === 5);
     assert.equal(h.requests.length, 0);
   }
+});
+
+test('native selection and exceed handlers are wired and pending photos disable only the add button', async t => {
+  const h = await setup(t, { photos: 4 });
+  const upload = () => only(h.nodes(), node => node.type?.name === 'el-upload', 'photo upload');
+  const file = { uid: 1, name: 'selected.png', status: 'ready', raw: new Blob(['photo'], { type: 'image/png' }) };
+  upload().props['on-change'](file, [file]);
+  assert.equal(h.state.fileList.value.length, 1);
+  assert.equal(upload().props.disabled, false, 'pending files must remain removable at the limit');
+  assert.equal(only(descendants(upload()), node => node.type?.name === 'el-button', 'add photo').props.disabled, true);
+  assert.match(textOf(upload()), /待保存 1 张，还可选择 0 张/);
+  upload().props['on-exceed']();
+  assert.equal(h.state.fileList.value.length, 1);
+  assert.equal(h.requests.length, 0);
+  upload().props['on-remove'](file, []);
+  assert.equal(h.state.availablePhotoSlots.value, 1);
+  assert.equal(only(descendants(upload()), node => node.type?.name === 'el-button', 'add photo').props.disabled, false);
+});
+
+test('actual Element Plus file-list synchronization never restores rejected files and removal frees a slot', async t => {
+  const { useHandlers } = await import('element-plus/es/components/upload/src/use-handlers.mjs');
+  const h = await setup(t, { photos: 1 });
+  let driver;
+  const UploadDriver = {
+    props: ['fileList', 'onChange', 'onRemove', 'listType'],
+    setup(props) {
+      driver = useHandlers(props, vue.ref());
+      return () => null;
+    },
+  };
+  // No DOM is needed for the real upload state machine and its update events.
+  const renderer = vue.createRenderer({
+    createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
+    insert() {}, remove() {}, setText() {}, setElementText() {}, patchProp() {},
+    parentNode: () => null, nextSibling: () => null,
+  });
+  const app = renderer.createApp({ setup: () => () => {
+    const upload = only(h.nodes(), node => node.type?.name === 'el-upload', 'photo upload');
+    return vue.h(UploadDriver, { ...upload.props, listType: 'text' });
+  } });
+  app.mount({});
+  t.after(() => app.unmount());
+  driver.handleStart(new File(['unsupported'], 'bad.gif', { type: 'image/gif' }));
+  driver.handleStart(new File(['valid'], 'valid.png', { type: 'image/png' }));
+  await vue.nextTick();
+  assert.equal(h.state.fileList.value.length, 1);
+  assert.equal(driver.uploadFiles.value.length, 1);
+  assert.equal(driver.uploadFiles.value[0].name, 'valid.png');
+  const large = new File(['large'], 'large.png', { type: 'image/png' });
+  Object.defineProperty(large, 'size', { value: 30 * 1024 * 1024 + 1 });
+  driver.handleStart(large);
+  await vue.nextTick();
+  assert.equal(h.state.fileList.value.length, 1);
+  assert.equal(driver.uploadFiles.value.length, 1);
+  await driver.handleRemove(driver.uploadFiles.value[0]);
+  await vue.nextTick();
+  assert.equal(h.state.fileList.value.length, 0);
+  assert.equal(h.state.availablePhotoSlots.value, 4);
+  assert.equal(h.requests.length, 0);
 });
