@@ -42,6 +42,8 @@ tmp/
 dxf_parse_changle/
 yachiyo-desktop-pet/
 .codex-runtime/
+.codex-tmp/
+.codex-tools/
 __pycache__/
 web/dist.zip
 ai_assistant_backup_*.zip
@@ -83,6 +85,8 @@ to_pdf.py
 
 # Local agent/project memory and working notes
 AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
 Prompt.md
 Plan.md
 Implement.md
@@ -116,6 +120,11 @@ web/src/theme/fa/fonts/fontawesome-webfont.svg
 backend/*.py
 !backend/main.py
 !backend/manage.py
+!backend/extract_pdf_stratum_ratios.py
+!backend/extract_stratum_area_ratios.py
+!backend/extract_longitudinal_ratios.py
+!backend/extract_six_class_ratios.py
+!backend/audit_stratum_ratio_source.py
 backend/*.md
 backend/*.jsonl
 backend/*.csv
@@ -127,5 +136,11 @@ backend/logs/
 backend/e1_recovery_*/
 backend/geology_profile_output/
 backend/dvadmin3_celery/
-backend/plugins/
-backend/util/
+backend/plugins/*
+!backend/plugins/__init__.py
+
+# Internal deliverables and working notes (not for the public repository)
+/deliverables/
+/pelican-bicycle.html
+/AI_ASSISTANT_*.md
+!/AI_ASSISTANT_HARDENING.md

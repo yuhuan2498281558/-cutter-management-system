@@ -41,11 +41,13 @@ if not SECRET_KEY:
 PLUGINS_PATH = os.path.join(BASE_DIR, "plugins")
 sys.path.insert(0, os.path.join(PLUGINS_PATH))
 
-[
-    sys.path.insert(0, os.path.join(PLUGINS_PATH, ele))
-    for ele in os.listdir(PLUGINS_PATH)
-    if os.path.isdir(os.path.join(PLUGINS_PATH, ele)) and not ele.startswith("__")
-]
+# plugins 为可选目录，公开仓库或全新检出中可能没有任何插件
+if os.path.isdir(PLUGINS_PATH):
+    [
+        sys.path.insert(0, os.path.join(PLUGINS_PATH, ele))
+        for ele in os.listdir(PLUGINS_PATH)
+        if os.path.isdir(os.path.join(PLUGINS_PATH, ele)) and not ele.startswith("__")
+    ]
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = locals().get("DEBUG", True)

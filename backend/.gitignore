@@ -95,6 +95,9 @@ ENV/
 **/migrations/*.py
 !**/migrations/__init__.py
 !application/ai_assistant/migrations/*.py
+!application/shield/migrations/0040_remove_unused_dictionaries.py
+!application/shield/migrations/0041_stratumbasicinfo_stratum_type_ratios.py
+!application/shield/migrations/0042_stratumbasicinfo_longitudinal_type_ratios.py
 !dvadmin/system/migrations/0001_initial.py
 *.pyc
 conf/*
@@ -110,3 +113,7 @@ gunicorn.pid
 ai_assistant_regression_*.json
 ai_assistant_benchmark_*.json
 ai_assistant_benchmark_*.csv
+!extract_stratum_area_ratios.py
+!extract_pdf_stratum_ratios.py
+!extract_longitudinal_ratios.py
+!audit_stratum_ratio_source.py
