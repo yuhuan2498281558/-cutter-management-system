@@ -59,6 +59,14 @@ for (const [label, options, pattern] of [
   });
 }
 
+test('sends explicit context controls and preserves an empty effective scope', async () => {
+  const h = setup({ payload: 'data: {"type":"memory","slot_names":["tool_type"],"active_slots":{},"context_mode":"new"}\n\ndata: {"type":"done"}\n\n' });
+  await h.api.chatStream({ query: '换刀统计', context_mode: 'new', clear_slots: ['tool_type'] }, h.callbacks);
+  assert.deepEqual(JSON.parse(h.requests[0].options.body), { query: '换刀统计', context_mode: 'new', clear_slots: ['tool_type'] });
+  assert.deepEqual(Object.keys(h.events[0][1].activeSlots), []);
+  assert.equal(h.events[0][1].contextMode, 'new');
+});
+
 test('terminal event stops callbacks and cancels/releases an open reader', async () => {
   let cancelled = 0;
   const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"done"}\n\ndata: {"type":"chunk","content":"late"}\n\n')); }, cancel() { cancelled++; } });

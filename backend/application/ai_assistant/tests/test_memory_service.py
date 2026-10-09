@@ -1,10 +1,14 @@
+import json
 import os
 import tempfile
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
-from application.ai_assistant.memory_service import MemoryService, estimate_tokens
+from application.ai_assistant.memory_service import (
+    MemoryService, MemorySnapshot, StoredMessage, estimate_tokens,
+    serialize_messages,
+)
 
 
 class MemoryServiceTests(TestCase):
@@ -36,7 +40,35 @@ class MemoryServiceTests(TestCase):
         messages = self.service.context_messages(snapshot, recent_turns=3, budget=20)
         self.assertLessEqual(sum(item.token_count for item in messages), 20)
         self.assertTrue(messages)
-        self.assertEqual(messages[-1].content, "新回答")
+        self.assertEqual([item.content for item in messages], ["新问题", "新回答"])
+
+    def test_django_metadata_round_trip_keeps_content_and_public_history_unchanged(self):
+        metadata = {"query_intent": {"intent": "change_trend", "interval": 100}}
+        snapshot = self.service.append_turn("experiment:metadata", "那全部刀具呢", "查询结果", metadata=metadata)
+        self.assertEqual([item.metadata for item in snapshot.messages], [metadata, metadata])
+        history = self.service.history_page(snapshot.scope_key)["messages"]
+        self.assertEqual([item.metadata for item in history], [metadata, metadata])
+        self.assertEqual([item.content for item in self.service.context_messages(snapshot)], ["那全部刀具呢", "查询结果"])
+        self.assertTrue(all(set(item) == {"sequence", "role", "content", "token_count"}
+                            for item in serialize_messages(history)))
+        old = self.service.append_turn("experiment:old-metadata", "旧问题", "旧回答")
+        self.assertEqual([item.metadata for item in old.messages], [{}, {}])
+
+    def test_legacy_metadata_round_trip_and_absent_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="ai-memory-metadata-") as directory:
+            legacy = MemoryService(backend="legacy")
+            legacy.history_db_url = "sqlite:///" + os.path.join(directory, "history.sqlite3")
+            try:
+                metadata = {"query_intent": {"intent": "change_trend", "interval": 100}}
+                snapshot = legacy.append_turn("experiment:metadata", "那全部刀具呢", "查询结果", metadata=metadata)
+                self.assertEqual([item.metadata for item in snapshot.messages], [metadata, metadata])
+                history = legacy.history_page(snapshot.scope_key)["messages"]
+                self.assertEqual([item.metadata for item in history], [metadata, metadata])
+                self.assertEqual([item.content for item in history], ["那全部刀具呢", "查询结果"])
+                old = legacy.append_turn("experiment:no-metadata", "旧问题", "旧回答")
+                self.assertEqual([item.metadata for item in old.messages], [{}, {}])
+            finally:
+                legacy.close()
 
     def test_summary_compare_and_swap(self):
         snapshot = self.service.append_turn("experiment:summary", "问题", "回答")
@@ -102,8 +134,28 @@ class MemoryServiceTests(TestCase):
         for index in range(5):
             snapshot = self.service.append_turn("experiment:budget-source", "问题" * 10, "回答" * 10)
         with patch.dict(os.environ, {"AI_MEMORY_SUMMARY_SOURCE_TOKEN_BUDGET": "40"}):
-            self.assertEqual(self.service.summary_source(snapshot), [])
+            source = self.service.summary_source(snapshot)
+            self.assertEqual([item.role for item in source], ["human", "ai"])
+            self.assertEqual(source[-1].sequence, 2)
+            self.assertLessEqual(sum(item.token_count for item in source), 40)
+            self.assertTrue(snapshot.summary_source_truncated)
+            self.assertTrue(self.service.summary_due(snapshot))
         self.assertEqual(self.service.load(snapshot.scope_key).summary_through_sequence, 0)
+
+    def test_oversized_turn_summary_advances_without_changing_original_history(self):
+        original = "完整历史" * 10000
+        snapshot = self.service.append_turn("experiment:huge-source", original, original)
+        for index in range(5):
+            snapshot = self.service.append_turn(snapshot.scope_key, f"question{index}", f"answer{index}")
+        source = self.service.summary_source(snapshot)
+        self.assertEqual([item.sequence for item in source], [1, 2])
+        self.assertTrue(all("[不完整摘录]" in item.content for item in source))
+        self.assertLessEqual(sum(estimate_tokens(item.content) for item in source), 6000)
+        self.assertTrue(self.service.save_summary(snapshot.scope_key, "有界摘要", 2, snapshot.revision))
+        updated = self.service.load(snapshot.scope_key)
+        self.assertEqual([item.sequence for item in self.service.summary_source(updated)], [3, 4, 5, 6])
+        history = self.service.history_page(snapshot.scope_key)["messages"]
+        self.assertEqual([item.content for item in history[:2]], [original, original])
 
     def test_summary_after_reset_cannot_read_new_generation(self):
         for index in range(5):
@@ -113,6 +165,17 @@ class MemoryServiceTests(TestCase):
             self.service.append_turn(old.scope_key, "new question", "new answer")
         self.assertEqual(self.service.summary_source(old), [])
         self.assertFalse(self.service.save_summary(old.scope_key, "old summary", 4, old.revision))
+
+    def test_reset_rejects_already_cached_summary_source(self):
+        for index in range(5):
+            old = self.service.append_turn("experiment:cached-reset", "question", "answer")
+        source = self.service.summary_source(old)
+        self.assertTrue(source)
+        self.service.reset(old.scope_key)
+        self.assertFalse(self.service.save_summary(
+            old.scope_key, "late summary", source[-1].sequence, old.revision,
+        ))
+        self.assertEqual(self.service.load(old.scope_key).summary, "")
 
     def test_dual_write_preserves_slots_in_both_directions_and_reset(self):
         with tempfile.TemporaryDirectory(prefix="ai-dual-write-") as directory:
@@ -141,3 +204,87 @@ class MemoryServiceTests(TestCase):
                                           expected_generation=snapshot.generation)
         self.assertEqual(result.message_count, 0)
         self.assertGreater(result.generation, snapshot.generation)
+
+
+class MemoryBudgetTests(SimpleTestCase):
+    def setUp(self):
+        self.service = MemoryService(backend="django")
+
+    @staticmethod
+    def snapshot(contents):
+        return MemorySnapshot(scope_key="experiment:budget-unit", messages=[
+            StoredMessage(index, role, content, estimate_tokens(content))
+            for index, (role, content) in enumerate(contents, start=1)
+        ])
+
+    def test_context_never_leaves_answer_when_question_exceeds_budget(self):
+        snapshot = self.snapshot([("human", "问" * 100), ("ai", "短答")])
+        self.assertEqual(self.service.context_messages(snapshot, budget=20), [])
+
+    def test_legacy_records_without_new_metadata_remain_readable(self):
+        rows = [{"id": index, "message": json.dumps({"type": role, "data": {
+            "content": content, "additional_kwargs": additional_kwargs,
+        }})} for index, role, content, additional_kwargs in [
+            (1, "human", "旧问题", {"memory_slots": {"tool_type": "DISC"}}),
+            (2, "ai", "旧回答", {}),
+            (3, "human", "坏元数据不影响正文", {"memory_metadata": ["invalid"]}),
+        ]]
+        messages, slots = self.service._decode_legacy_rows(rows)
+        self.assertEqual(len(messages), 3)
+        self.assertEqual([item.metadata for item in messages], [{}, {}, {}])
+        self.assertEqual(slots, {"tool_type": "DISC"})
+        self.assertEqual(messages[0].content, "旧问题")
+
+    def test_stored_message_metadata_default_is_not_shared(self):
+        first = StoredMessage(1, "human", "one", 1)
+        second = StoredMessage(2, "ai", "two", 1)
+        first.metadata["query_intent"] = {"intent": "change_trend"}
+        self.assertEqual(second.metadata, {})
+
+    def test_context_discards_orphans_and_keeps_recent_complete_turn(self):
+        snapshot = self.snapshot([
+            ("ai", "孤立回答"), ("human", "未完成问题"), ("human", "完整问题"),
+            ("ai", "完整回答"), ("human", "末尾未完成"),
+        ])
+        messages = self.service.context_messages(snapshot, budget=100)
+        self.assertEqual([item.content for item in messages], ["完整问题", "完整回答"])
+        snapshot.summary_through_sequence = 3
+        self.assertEqual(self.service.context_messages(snapshot, budget=100), [])
+
+    def test_context_zero_token_metadata_still_honors_budget(self):
+        snapshot = MemorySnapshot(scope_key="experiment:no-token", messages=[
+            StoredMessage(1, "human", "问" * 100), StoredMessage(2, "ai", "回答"),
+        ])
+        self.assertEqual(self.service.context_messages(snapshot, budget=20), [])
+
+    def test_summary_caps_200_messages_even_for_in_memory_snapshot(self):
+        snapshot = self.snapshot([("human", "q"), ("ai", "a")] * 110)
+        source = self.service.summary_source(snapshot)
+        self.assertEqual(len(source), 200)
+        self.assertEqual(source[-1].sequence, 200)
+
+    def test_default_summary_budget_stops_at_complete_turn(self):
+        snapshot = self.snapshot([("human", "问" * 100), ("ai", "答" * 100)] * 110)
+        with patch.dict(os.environ, {"AI_MEMORY_SUMMARY_SOURCE_TOKEN_BUDGET": "6000"}):
+            source = self.service.summary_source(snapshot)
+        self.assertEqual(len(source), 40)
+        self.assertEqual(sum(item.token_count for item in source), 6000)
+        self.assertEqual([item.role for item in source], ["human", "ai"] * 20)
+
+    def test_oversized_question_or_answer_remains_paired_and_bounded(self):
+        for question, answer in [("问" * 20000, "短答"), ("短问", "答" * 20000)]:
+            with self.subTest(question_size=len(question)):
+                snapshot = self.snapshot([("human", question), ("ai", answer)] + [
+                    ("human", "q"), ("ai", "a"),
+                ] * 3)
+                source = self.service.summary_source(snapshot)
+                self.assertEqual([item.sequence for item in source], [1, 2])
+                self.assertLessEqual(sum(estimate_tokens(item.content) for item in source), 6000)
+                self.assertTrue(any("[不完整摘录]" in item.content for item in source))
+                self.assertEqual(snapshot.messages[0].content, question)
+                self.assertEqual(snapshot.messages[1].content, answer)
+
+    def test_impossibly_small_budget_does_not_emit_unmarked_partial_source(self):
+        snapshot = self.snapshot([("human", "问" * 100), ("ai", "答" * 100)] * 4)
+        with patch.dict(os.environ, {"AI_MEMORY_SUMMARY_SOURCE_TOKEN_BUDGET": "1"}):
+            self.assertEqual(self.service.summary_source(snapshot), [])

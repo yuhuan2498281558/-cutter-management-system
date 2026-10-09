@@ -41,6 +41,7 @@
             <AnalysisMessage
               v-if="msg.role === 'assistant'"
               :content="msg.content"
+              :streaming="msg.streaming"
             />
             <template v-else>{{ msg.content }}</template>
           </div>
@@ -58,7 +59,7 @@
               type="button"
               class="meta-btn"
               title="复制内容"
-              @click="handleCopy(msg.content)"
+              @click="handleCopy(msg)"
             >
               <el-icon :size="12"><DocumentCopy /></el-icon>
               复制
@@ -211,7 +212,15 @@ const restoreScrollPosition = (position: { top: number; height: number }) => {
   handleScroll();
 };
 
-const handleCopy = async (text: string) => {
+const copyMessageText = (message: Message) => {
+  const notes: string[] = [];
+  if (message.aborted) notes.push('回答已中止，内容不完整');
+  if (message.rawError) notes.push('查询未完成或失败，以下内容仅供核对');
+  return notes.length ? `${notes.join('；')}\n\n${message.content}` : message.content;
+};
+
+const handleCopy = async (message: Message) => {
+  const text = copyMessageText(message);
   try {
     if (navigator.clipboard) {
       await navigator.clipboard.writeText(text);
@@ -257,17 +266,15 @@ defineExpose({
   flex: 1;
   overflow-y: auto;
   padding: 14px 16px;
-  background: #f7f9fc;
+  background: var(--el-bg-color);
 }
 
-// 宽屏下限制内容列宽，保持行长可读
+// 使用消息区可用宽度，避免工程表格被固定阅读栏挤窄
 .messages-inner {
   width: 100%;
-  max-width: 1440px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 24px;
 }
 
 .welcome-message {
@@ -423,7 +430,8 @@ defineExpose({
   &.assistant {
     align-self: flex-start;
     // 助手消息占满内容列，分析卡片和表格不再缩在左侧
-    width: 92%;
+    width: 100%;
+    max-width: 100%;
 
     .message-content {
       flex: 1;
@@ -435,17 +443,20 @@ defineExpose({
     }
 
     .message-avatar {
-      background: #e1f3d8;
-      color: #67c23a;
+      background: var(--el-fill-color);
+      color: var(--el-text-color-secondary);
+      border-radius: 8px;
     }
 
     .message-text {
-      background: #fff;
-      border: 1px solid #e5e9f0;
-      border-radius: 2px 10px 10px 10px;
-      color: #303133;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      padding: 4px 0 10px;
+      color: var(--el-text-color-primary);
 
       &.error {
+        padding: 10px 14px;
         background: #fef0f0;
         border-color: #fab6b6;
         color: #c45656;

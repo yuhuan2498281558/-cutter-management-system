@@ -278,8 +278,6 @@ const handleEnterKey = (event: Event) => {
   // 与消息区内容列同宽对齐
   .input-inner {
     width: 100%;
-    max-width: 1440px;
-    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 10px;

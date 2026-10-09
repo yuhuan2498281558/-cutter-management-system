@@ -47,6 +47,10 @@ export interface MemoryMetadata {
   summary_revision?: number;
   slots?: string[];
   scope?: string;
+  activeSlots?: Partial<Record<QuerySlot, string | number | number[]>>;
+  contextMode?: Exclude<ContextMode, 'auto'>;
 }
 
 export type RouteMode = 'rule' | 'agent';
+export type ContextMode = 'auto' | 'new' | 'continue';
+export type QuerySlot = 'ring_range' | 'tool_type' | 'cutter_position_no';

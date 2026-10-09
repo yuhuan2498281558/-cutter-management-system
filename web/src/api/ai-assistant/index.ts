@@ -45,18 +45,27 @@ export interface ChatStreamCallbacks {
 	onAnswer?: (text: string) => void;
 }
 
+export interface ChatRequest {
+	query: string;
+	project_id?: string;
+	ring_range?: number[];
+	route_mode?: 'rule' | 'agent';
+	context_mode?: 'auto' | 'new' | 'continue';
+	clear_slots?: Array<'ring_range' | 'tool_type' | 'cutter_position_no'>;
+}
+
 /**
  * AI助手API接口
  */
 export function useAiAssistantApi() {
 	return {
 		// 发送消息（普通）
-		chat: (data: { query: string; project_id?: string; ring_range?: number[]; route_mode?: 'rule' | 'agent' }) => {
+		chat: (data: ChatRequest) => {
 			return aiService.post('/api/ai/chat/', data).then(unwrapResponse);
 		},
 		// 流式发送消息，逐 token 回调
 		chatStream: async (
-			data: { query: string; project_id?: string; ring_range?: number[]; route_mode?: 'rule' | 'agent' },
+			data: ChatRequest,
 			callbacks: ChatStreamCallbacks,
 			signal?: AbortSignal
 		) => {
@@ -110,6 +119,8 @@ export function useAiAssistantApi() {
 							message_count: evt.message_count,
 							summary_revision: evt.summary_revision,
 							slots: evt.slot_names,
+							activeSlots: evt.active_slots,
+							contextMode: evt.context_mode,
 						});
 					} else if (evt.type === 'done') {
 						finished = true;

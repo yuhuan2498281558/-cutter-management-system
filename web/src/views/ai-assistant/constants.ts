@@ -79,7 +79,7 @@ export const quickQuestionGroups: QuickQuestionGroup[] = [
     desc: '检查数、更换数、旧刀补录磨损类型和高频刀位',
     items: [
       { label: '近{n}环统计', query: '统计最近{n}环的换刀情况，列出检查数、更换数、更换率、主要磨损类型和高频刀位', numKey: 'ringWindow', min: 20, max: 500, step: 10 },
-      { label: '换刀汇总', query: '统计当前项目换刀情况，列出检查数、更换数、更换率和主要磨损类型' },
+      { label: '换刀汇总', query: '统计当前项目全部刀具换刀情况，列出检查数、更换数、更换率和主要磨损类型' },
       { label: '异常磨损', query: '统计异常磨损记录，列出异常类型、数量和占比' },
       { label: '更换率', query: '统计换刀更换率，并列出主要更换刀位' },
       { label: '滚刀统计', query: '统计滚刀换刀情况，列出检查数、更换数和主要磨损类型' },

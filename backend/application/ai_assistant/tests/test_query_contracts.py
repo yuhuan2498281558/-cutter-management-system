@@ -44,6 +44,23 @@ class QueryContractTests(TestCase):
         self.assertEqual(tools.normalize_wear_condition('其他'), 'unknown')
         self.assertEqual(tools.normalize_wear_condition(''), 'unknown')
 
+    def test_manufacturer_missing_evidence_is_not_zero_risk_and_zero_price_survives(self):
+        opening = self.opening(100)
+        self.detail(opening, '1', is_checked=True, is_replaced=True,
+                    manufacturer='Unknown', wear_condition='待核实')
+        self.detail(opening, '2', is_checked=True, is_replaced=True,
+                    manufacturer='Known', wear_condition='无异常', price=0)
+        result = self.query(tools.compare_manufacturer_performance)
+        known, unknown = result['manufacturers']
+        self.assertEqual(known['manufacturer'], 'Known')
+        self.assertEqual(known['abnormal_rate_pct'], 0)
+        self.assertEqual(known['abnormal_rate_denominator'], 1)
+        self.assertEqual(known['avg_cost_per_change_yuan'], 0)
+        self.assertEqual(unknown['manufacturer'], 'Unknown')
+        self.assertIsNone(unknown['abnormal_rate_pct'])
+        self.assertEqual(unknown['unclassified_wear_count'], 1)
+        self.assertNotIn('质量最好', result['note'])
+
     def test_invalid_historical_positions_and_type_mismatches_are_excluded(self):
         opening = self.opening(100)
         for position, tool_type in [("1", "DISC"), ("s1l", "SCRAPER"), ("G1R", "DISC"),

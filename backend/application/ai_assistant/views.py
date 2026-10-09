@@ -4,10 +4,12 @@ Django视图 - 提供HTTP接口
 
 import json
 import logging
+import re
 import time
 from contextlib import aclosing
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -17,6 +19,8 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from .llm_service import get_assistant
 
 logger = logging.getLogger(__name__)
+
+_GUEST_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
 def _resolve_request_project_id(project_id=None) -> str:
@@ -97,9 +101,25 @@ def _build_project_snapshot(project_id: str) -> dict:
         return {}
 
 
-def _context_for_user(user, body) -> dict:
+def _memory_user_id(user, token=None) -> str | int:
+    """Keep shared web-guest conversations isolated by login session."""
+    if user.username != settings.WEB_GUEST_USERNAME:
+        return user.id
+
+    payload = getattr(token, "payload", token)
+    get_claim = getattr(payload, "get", None)
+    session_id = get_claim(settings.WEB_GUEST_SESSION_CLAIM) if get_claim else None
+    if not session_id and get_claim:
+        session_id = get_claim("jti")
+    session_id = str(session_id or "")
+    if not _GUEST_SESSION_RE.fullmatch(session_id):
+        raise ValueError("游客会话标识无效，请重新登录")
+    return f"guest-session-{user.id}-{session_id}"
+
+
+def _context_for_user(user, body, token=None) -> dict:
     ctx = {
-        "user_id": user.id,
+        "user_id": _memory_user_id(user, token),
         "username": user.username,
         "require_project": True,
     }
@@ -113,11 +133,13 @@ def _context_for_user(user, body) -> dict:
         ctx["ring_range"] = body["ring_range"]
     if body.get("route_mode"):
         ctx["route_mode"] = body["route_mode"]
+    ctx["context_mode"] = body.get("context_mode", "auto")
+    ctx["clear_slots"] = list(body.get("clear_slots", []))
     return ctx
 
 
 def _build_context(request) -> dict:
-    return _context_for_user(request.user, request.data)
+    return _context_for_user(request.user, request.data, request.auth)
 
 
 def _validate_body(body):
@@ -132,6 +154,14 @@ def _validate_body(body):
         return "项目编号格式错误"
     if body.get('route_mode') is not None and body['route_mode'] not in ('rule', 'agent', 'hybrid'):
         return "查询模式格式错误"
+    if body.get('context_mode', 'auto') not in ('auto', 'new', 'continue'):
+        return "上下文模式必须为 auto、new 或 continue"
+    clear_slots = body.get('clear_slots', [])
+    if (not isinstance(clear_slots, list) or len(clear_slots) > 3
+            or any(not isinstance(slot, str) or slot not in (
+                'ring_range', 'tool_type', 'cutter_position_no',
+            ) for slot in clear_slots)):
+        return "只能清除环号范围、刀具类型或刀位条件"
     rings = body.get('ring_range')
     if rings:
         if not isinstance(rings, list) or len(rings) != 2 or any(type(value) is not int or value < 1 for value in rings) or rings[0] > rings[1]:
@@ -149,6 +179,7 @@ def _auth_user(request):
         raw_token = auth_header.split(" ", 1)[1]
         auth = JWTAuthentication()
         validated = auth.get_validated_token(raw_token)
+        request.ai_validated_token = validated
         return auth.get_user(validated)
     except Exception as e:
         logger.warning(f"stream auth 失败：{e}")
@@ -223,7 +254,11 @@ async def chat_stream(request):
     user_query = body['query'].strip()
 
     started_at = time.perf_counter()
-    context = await sync_to_async(_context_for_user)(user, body)
+    context = await sync_to_async(_context_for_user)(
+        user,
+        body,
+        getattr(request, "ai_validated_token", None),
+    )
 
     context_ready_ms = (time.perf_counter() - started_at) * 1000
     assistant = await sync_to_async(get_assistant)()
@@ -301,7 +336,8 @@ def conversation_history(request):
                 raise ValueError
         except (TypeError, ValueError):
             return error('历史分页参数格式错误')
-        return success(assistant.get_history(str(request.user.id), before_sequence=before, limit=limit))
+        memory_user_id = _memory_user_id(request.user, request.auth)
+        return success(assistant.get_history(str(memory_user_id), before_sequence=before, limit=limit))
     except Exception as e:
         logger.error(f"获取对话历史失败：{e}")
         return error(f"获取历史失败：{str(e)}")
@@ -312,7 +348,8 @@ def conversation_history(request):
 def reset_conversation(request):
     try:
         assistant = get_assistant()
-        assistant.reset_memory(user_id=str(request.user.id))
+        memory_user_id = _memory_user_id(request.user, request.auth)
+        assistant.reset_memory(user_id=str(memory_user_id))
         return success({"message": "对话已重置"})
     except Exception as e:
         logger.error(f"重置对话失败：{e}")

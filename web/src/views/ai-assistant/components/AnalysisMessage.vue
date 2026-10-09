@@ -10,25 +10,41 @@
       <p
         v-else-if="block.type === 'paragraph'"
         class="markdown-paragraph"
+        :class="{ 'answer-note': /^(统计口径|分析范围|开仓数量为|提示：)/.test(block.text) }"
         v-html="renderInline(block.text)"
       ></p>
       <component
         :is="block.ordered ? 'ol' : 'ul'"
         v-else-if="block.type === 'list'"
+        :start="block.ordered ? block.start : undefined"
         class="markdown-list"
       >
         <li v-for="(item, itemIndex) in block.items" :key="itemIndex" v-html="renderInline(item)"></li>
       </component>
-      <div v-else-if="block.type === 'table'" class="markdown-table-wrap">
-        <table class="markdown-table">
+      <div v-else-if="block.type === 'raw'" class="markdown-original">
+        <p v-if="block.note" class="format-note">{{ block.note }}</p>
+        <pre>{{ block.text }}</pre>
+      </div>
+      <div
+        v-else-if="block.type === 'table'"
+        class="markdown-table-wrap"
+        :style="{ width: `${tableMinWidth(block.headers) + 2}px` }"
+        tabindex="0"
+        role="region"
+        aria-label="回答数据表，可横向滚动"
+      >
+        <table class="markdown-table" :style="{ minWidth: `${tableMinWidth(block.headers)}px` }">
+          <colgroup>
+            <col v-for="(cell, cellIndex) in block.headers" :key="cellIndex" :style="tableColumnStyle(block.headers, cellIndex)" />
+          </colgroup>
           <thead>
             <tr>
-              <th v-for="(cell, cellIndex) in block.headers" :key="cellIndex" v-html="renderInline(cell)"></th>
+              <th v-for="(cell, cellIndex) in block.headers" :key="cellIndex" :class="{ numeric: isNumericColumn(cell) }" scope="col" v-html="renderInline(cell)"></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
-              <td v-for="(cell, cellIndex) in row" :key="cellIndex" v-html="renderInline(cell)"></td>
+              <td v-for="(cell, cellIndex) in row" :key="cellIndex" :class="{ numeric: isNumericColumn(block.headers[cellIndex]) }" v-html="renderInline(cell)"></td>
             </tr>
           </tbody>
         </table>
@@ -47,7 +63,6 @@
       :class="['analysis-section', section.kind]"
     >
       <div class="analysis-section-title">
-        <span class="section-badge"></span>
         {{ section.title }}
       </div>
       <ul v-if="section.items.length > 1" class="section-list">
@@ -67,12 +82,14 @@ import { SECTION_TITLES } from '../constants';
 
 const props = defineProps<{
   content: string;
+  streaming?: boolean;
 }>();
 
 type MarkdownBlock =
   | { type: 'heading'; level: number; text: string }
   | { type: 'paragraph'; text: string }
-  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'list'; ordered: boolean; items: string[]; start?: number }
+  | { type: 'raw'; text: string; note?: string }
   | { type: 'table'; headers: string[]; rows: string[][] }
   | { type: 'divider' };
 
@@ -103,7 +120,42 @@ const isTableSeparator = (line: string) => {
 };
 
 const parseTableRow = (line: string) => {
-  return line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim());
+  const row = line.trim().replace(/^\||\|$/g, '');
+  const cells: string[] = [];
+  let cell = '';
+  for (let index = 0; index < row.length; index += 1) {
+    if (row[index] === '\\' && /[\\|]/.test(row[index + 1] || '')) {
+      cell += row[++index];
+    } else if (row[index] === '|') {
+      cells.push(cell.trim());
+      cell = '';
+    } else cell += row[index];
+  }
+  cells.push(cell.trim());
+  return cells;
+};
+
+const isNumericColumn = (header: string) => {
+  const label = header || '';
+  if (/来源|名称|类型|环段|范围|各地层关联次数|最短\s*\/\s*最长/.test(label)) return false;
+  return /次数|记录数|观测数|数量|安装数|服役数|在役数|服役（|检查（|更换（|更换率|异常率|间隔|时长|占比|环数|寿命|推进|距离|推力|扭矩|转速|贯入|成本|费用|价格|单价|金额|样本数|样本量|采样点数|异常数/.test(label)
+    || /^(均值|平均值?|最小值?|最大值?|中位数)([（(]|$)/.test(label);
+};
+
+// 列宽只依赖表头，后续行追加长值时不会重新分配已显示列的宽度。
+const tableColumnWidth = (header: string) => {
+  if (/各地层关联次数/.test(header)) return 600;
+  if (/主要磨损|说明|备注|依据|限制|详情|建议/.test(header)) return 400;
+  if (isNumericColumn(header)) return Math.max(112, Math.min(168, header.length * 13 + 24));
+  if (/^(刀位|序号|排名)$/.test(header)) return 72;
+  if (/^(刀具类型|刀型|磨损状态|状态|地层类型)$/.test(header)) return 128;
+  return 180;
+};
+
+const tableMinWidth = (headers: string[]) => headers.reduce((width, header) => width + tableColumnWidth(header), 0);
+
+const tableColumnStyle = (headers: string[], index: number) => {
+  return { width: `${tableColumnWidth(headers[index])}px` };
 };
 
 const startsBlock = (lines: string[], index: number) => {
@@ -119,7 +171,7 @@ const startsBlock = (lines: string[], index: number) => {
   );
 };
 
-const parseMarkdown = (content: string): MarkdownBlock[] => {
+const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const blocks: MarkdownBlock[] = [];
   let index = 0;
@@ -144,34 +196,67 @@ const parseMarkdown = (content: string): MarkdownBlock[] => {
       continue;
     }
 
-    if (line.includes('|') && isTableSeparator(lines[index + 1] || '')) {
+    if (line.includes('|') && isTableSeparator(lines[index + 1] || '') && (!streaming || index + 1 < lines.length - 1)) {
+      const tableStart = index;
       const headers = parseTableRow(line);
       const rows: string[][] = [];
+      let malformed = parseTableRow(lines[index + 1]).length !== headers.length;
       index += 2;
-      while (index < lines.length && lines[index].trim().includes('|')) {
+      while (index < lines.length) {
+        // 最后一行仍可能继续收到单元格或分隔符。等换行/结束再提交该行，
+        // 避免每次追加字符都在 table/raw 之间切换并销毁整张表。
+        if (streaming && index === lines.length - 1) {
+          index += 1;
+          break;
+        }
+        if (!lines[index].trim().includes('|')) break;
         const row = parseTableRow(lines[index]);
-        rows.push(headers.map((_header, cellIndex) => row[cellIndex] || ''));
+        if (row.length !== headers.length) malformed = true;
+        rows.push(row);
         index += 1;
       }
-      blocks.push({ type: 'table', headers, rows });
+      if (malformed) {
+        blocks.push({
+          type: 'raw',
+          text: lines.slice(tableStart, index).join('\n'),
+          note: streaming ? undefined : '表格列数不一致，已保留原文。',
+        });
+      } else blocks.push({ type: 'table', headers, rows });
       continue;
     }
 
     const unordered = line.match(/^[-*+]\s+(.+)$/);
     const ordered = line.match(/^\d+[.)]\s+(.+)$/);
     if (unordered || ordered) {
+      const listStart = index;
       const isOrdered = Boolean(ordered);
       const items: string[] = [];
+      const indentOf = (text: string) => (text.match(/^\s*/)?.[0] || '').replace(/\t/g, '    ').length;
+      const baseIndent = indentOf(lines[index]);
+      let unsupported = baseIndent > 0;
       while (index < lines.length) {
         const itemLine = lines[index].trim();
+        if (!itemLine && index + 1 < lines.length && (/^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[index + 1]) || indentOf(lines[index + 1]) > baseIndent)) {
+          index += 1;
+          continue;
+        }
         const match = isOrdered
           ? itemLine.match(/^\d+[.)]\s+(.+)$/)
           : itemLine.match(/^[-*+]\s+(.+)$/);
-        if (!match) break;
+        const anyListItem = /^(?:[-*+]|\d+[.)])\s+/.test(itemLine);
+        if (!match || indentOf(lines[index]) !== baseIndent) {
+          if (anyListItem || (itemLine && indentOf(lines[index]) > baseIndent)) {
+            unsupported = true;
+            index += 1;
+            continue;
+          }
+          break;
+        }
         items.push(match[1].trim());
         index += 1;
       }
-      blocks.push({ type: 'list', ordered: isOrdered, items });
+      if (unsupported) blocks.push({ type: 'raw', text: lines.slice(listStart, index).join('\n') });
+      else blocks.push({ type: 'list', ordered: isOrdered, items, ...(isOrdered ? { start: Number.parseInt(line, 10) } : {}) });
       continue;
     }
 
@@ -187,7 +272,7 @@ const parseMarkdown = (content: string): MarkdownBlock[] => {
   return blocks;
 };
 
-const markdownBlocks = computed(() => parseMarkdown(props.content));
+const markdownBlocks = computed(() => parseMarkdown(props.content, props.streaming));
 
 const hasMarkdown = computed(() => (
   markdownBlocks.value.some((block) => block.type !== 'paragraph')
@@ -263,16 +348,35 @@ const parsed = computed(() => parseAnalysisMessage(props.content));
 <style scoped lang="scss">
 .plain-answer {
   white-space: pre-wrap;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 .markdown-answer {
   line-height: 1.65;
-  color: #303133;
+  color: var(--el-text-color-regular);
+
+  .markdown-original {
+    margin: 8px 0;
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: inherit;
+      tab-size: 4;
+    }
+
+    .format-note {
+      margin: 0 0 4px;
+      color: var(--el-text-color-secondary);
+      font-size: 12px;
+    }
+  }
+  font-variant-numeric: tabular-nums;
 
   .markdown-heading {
-    margin: 14px 0 8px;
-    color: #1f2937;
+    margin: 20px 0 8px;
+    color: var(--el-text-color-primary);
     line-height: 1.4;
 
     &:first-child {
@@ -281,8 +385,9 @@ const parsed = computed(() => parseAnalysisMessage(props.content));
 
     &.level-1,
     &.level-2 {
-      font-size: 16px;
-      font-weight: 700;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
     }
 
     &.level-3,
@@ -290,80 +395,97 @@ const parsed = computed(() => parseAnalysisMessage(props.content));
     &.level-5,
     &.level-6 {
       font-size: 14px;
-      font-weight: 650;
+      font-weight: 600;
     }
   }
 
   .markdown-paragraph {
-    margin: 6px 0;
+    margin: 8px 0;
     white-space: pre-wrap;
+
+    &.answer-note {
+      color: var(--el-text-color-secondary);
+      font-size: 12px;
+    }
   }
 
   .markdown-list {
-    margin: 6px 0;
-    padding-left: 22px;
+    margin: 10px 0;
+    padding-left: 20px;
 
     li + li {
-      margin-top: 3px;
+      margin-top: 5px;
     }
   }
 
   .markdown-table-wrap {
-    margin: 8px 0 12px;
+    margin: 10px 0 8px;
+    box-sizing: border-box;
     max-width: 100%;
     overflow-x: auto;
-    border: 1px solid #dcdfe6;
-    border-radius: 6px;
-    background: #fff;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 4px;
+
+    &:focus-visible {
+      outline: 2px solid var(--el-color-primary);
+      outline-offset: 2px;
+    }
   }
 
   .markdown-table {
     width: 100%;
-    min-width: 480px;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 13px;
+    line-height: 1.55;
 
     th,
     td {
       padding: 7px 10px;
-      border-right: 1px solid #ebeef5;
-      border-bottom: 1px solid #ebeef5;
-      text-align: left;
-      white-space: nowrap;
+      border-bottom: 1px solid var(--el-border-color-lighter);
+      text-align: center;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: normal;
+      vertical-align: middle;
     }
 
     th {
-      background: #eef2f6;
-      color: #303133;
+      background: var(--el-fill-color-light);
+      color: var(--el-text-color-primary);
       font-weight: 600;
+      vertical-align: middle;
+    }
+
+    tbody tr:nth-child(even) {
+      background: var(--el-fill-color-lighter);
     }
 
     tr:last-child td {
       border-bottom: none;
     }
 
-    th:last-child,
-    td:last-child {
-      border-right: none;
+    tbody tr:hover {
+      background: var(--el-fill-color-lighter);
     }
   }
 
   .markdown-divider {
     margin: 12px 0;
     border: 0;
-    border-top: 1px solid #dcdfe6;
+    border-top: 1px solid var(--el-border-color-lighter);
   }
 
   :deep(strong) {
-    font-weight: 700;
-    color: #1f2937;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
   }
 
   :deep(code) {
     padding: 1px 4px;
     border-radius: 3px;
-    background: #e9eef5;
-    color: #c45656;
+    background: var(--el-fill-color);
+    color: var(--el-text-color-primary);
     font-family: Consolas, monospace;
     font-size: 0.92em;
   }
@@ -372,36 +494,26 @@ const parsed = computed(() => parseAnalysisMessage(props.content));
 .analysis-answer {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 20px;
 
   .analysis-lead {
     font-size: 14px;
     line-height: 1.6;
-    color: #2c3e50;
+    color: var(--el-text-color-regular);
     margin: 0;
   }
 
   .analysis-section {
-    padding: 10px 14px;
-    border-radius: 6px;
-    border-left: 3px solid #dcdfe6;
-    background: #fafafa;
+    padding: 0;
 
     .analysis-section-title {
-      font-size: 13px;
+      font-size: 14px;
+      color: var(--el-text-color-primary);
       font-weight: 600;
       margin-bottom: 6px;
       display: flex;
       align-items: center;
       gap: 6px;
-    }
-
-    .section-badge {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: currentColor;
     }
 
     .section-list {
@@ -410,7 +522,7 @@ const parsed = computed(() => parseAnalysisMessage(props.content));
       li {
         font-size: 13px;
         line-height: 1.6;
-        color: #4a5568;
+        color: var(--el-text-color-regular);
       }
     }
 
@@ -418,33 +530,10 @@ const parsed = computed(() => parseAnalysisMessage(props.content));
       margin: 0;
       font-size: 13px;
       line-height: 1.6;
-      color: #4a5568;
+      color: var(--el-text-color-regular);
       white-space: pre-wrap;
     }
 
-    &.conclusion {
-      background: #f0f9eb;
-      border-left-color: #67c23a;
-      .analysis-section-title { color: #529b2e; }
-    }
-
-    &.evidence {
-      background: #ecf5ff;
-      border-left-color: #409eff;
-      .analysis-section-title { color: #337ecc; }
-    }
-
-    &.warning {
-      background: #fdf6ec;
-      border-left-color: #e6a23c;
-      .analysis-section-title { color: #b88230; }
-    }
-
-    &.suggestion {
-      background: #f4f4f5;
-      border-left-color: #909399;
-      .analysis-section-title { color: #73767a; }
-    }
   }
 }
 </style>

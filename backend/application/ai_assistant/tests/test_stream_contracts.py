@@ -136,6 +136,57 @@ class StreamContractTests(SimpleTestCase):
         self.assertEqual(json.loads(query.call_args.args[0])['project_id'], 'TEST')
         self.assertEqual(assistant._store_turn_and_summarize.call_args.args[2], '实际查询到3条记录。')
 
+    async def test_actual_executor_recovers_invalid_arguments_before_querying(self):
+        class ToolModel(FakeMessagesListChatModel):
+            def bind_tools(self, tools, **kwargs):
+                return self
+
+        assistant = ToolAssistant()
+        assistant._llm = ToolModel(responses=[
+            AIMessage(content='', tool_calls=[{
+                'name': 'tool_query_tool_change_data',
+                'args': {'ring_range': [200, 100]}, 'id': 'invalid',
+            }]),
+            AIMessage(content='', tool_calls=[{
+                'name': 'tool_query_tool_change_data',
+                'args': {'ring_range': [100, 200]}, 'id': 'corrected',
+            }]),
+            AIMessage(content='100至200环共3条记录。'),
+        ])
+        snapshot = MemorySnapshot(scope_key='user:1', backend='legacy')
+        assistant._load_memory = Mock(return_value=snapshot)
+        assistant._store_turn_and_summarize = Mock(return_value=snapshot)
+        with patch('application.ai_assistant.llm_service.query_tool_change_data',
+                   return_value=json.dumps({'total_records': 3})) as query:
+            events = [event async for event in assistant.chat_stream(
+                '查询100至200环换刀记录',
+                {'user_id': 1, 'project_id': 'TEST', 'route_mode': 'agent'},
+            )]
+        self.assertEqual(events[-1]['type'], 'done', events)
+        query.assert_called_once()
+        params = json.loads(query.call_args.args[0])
+        self.assertEqual(params['project_id'], 'TEST')
+        self.assertEqual(params['ring_range'], [100, 200])
+        assistant._store_turn_and_summarize.assert_called_once()
+        self.assertEqual(assistant._store_turn_and_summarize.call_args.args[2],
+                         '100至200环共3条记录。')
+
+    async def test_capability_explanation_completes_without_tools(self):
+        assistant = ToolAssistant()
+        assistant._llm = FakeMessagesListChatModel(responses=[
+            AIMessage(content='当前未接入实际支出台账，无法给出项目实际总支出。'),
+        ])
+        snapshot = MemorySnapshot(scope_key='user:1', backend='legacy')
+        assistant._load_memory = Mock(return_value=snapshot)
+        assistant._store_turn_and_summarize = Mock(return_value=snapshot)
+        assistant._get_executor_for_query = Mock(side_effect=AssertionError('Unnecessary tool request'))
+        events = [event async for event in assistant.chat_stream(
+            '项目实际总支出', {'user_id': 1, 'route_mode': 'agent', 'require_project': True},
+        )]
+        self.assertEqual(events[-1]['type'], 'done', events)
+        assistant._get_executor_for_query.assert_not_called()
+        assistant._store_turn_and_summarize.assert_called_once()
+
     async def test_close_rule_stream_before_completion_does_not_save_turn(self):
         assistant = self.make_assistant()
         assistant._direct_route.return_value = {'type': 'analysis', 'rule_branch': 'test', 'answer': '规则回答'}

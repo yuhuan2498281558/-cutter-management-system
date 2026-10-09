@@ -21,11 +21,56 @@ function setup() {
     if (name.endsWith('.vue') || name === '@element-plus/icons-vue') return {};
     throw new Error(`Unexpected import: ${name}`);
   };
-  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef };';
+  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, setContextMode, toggleClearSlot };';
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, context);
   return { ...context.exports.page, api, history, reset, streams, notices, frames, mount: () => mounted(), unmount: () => unmounted(), frame() { const callbacks = [...frames.values()]; frames.clear(); clock += 16; callbacks.forEach(callback => callback(clock)); } };
 }
 const historyResponse = { data: { messages: [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }], memory: { message_count: 2, slot_names: ['ring_range'] } } };
+
+test('individual clears are queued, sent once and retain other confirmed values until response', () => {
+  const h = setup();
+  h.memoryInfo.value = { activeSlots: { ring_range: [100, 300], tool_type: 'DISC' } };
+  h.toggleClearSlot('tool_type');
+  assert.equal(h.contextMode.value, 'continue');
+  assert.equal(h.memoryInfo.value.activeSlots.tool_type, 'DISC');
+  h.sendQuery('同样范围换刀统计');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.streams[0].data)), { query: '同样范围换刀统计', route_mode: 'rule', context_mode: 'continue', clear_slots: ['tool_type'] });
+  h.toggleClearSlot('ring_range'); h.setContextMode('new');
+  assert.equal(h.contextMode.value, 'continue');
+  assert.deepEqual(Array.from(h.pendingClears.value), ['tool_type']);
+  h.streams[0].callbacks.onMemory({ activeSlots: { ring_range: [100, 300] }, contextMode: 'continue' });
+  h.streams[0].callbacks.onDone();
+  assert.equal(h.memoryInfo.value.activeSlots.tool_type, undefined);
+  assert.equal(h.pendingClears.value.length, 0);
+  assert.equal(h.contextMode.value, 'auto');
+});
+
+test('failed requests preserve pending controls for retry, while new query keeps history', () => {
+  const h = setup(); h.toggleClearSlot('tool_type'); h.sendQuery('换刀统计');
+  h.streams[0].callbacks.onError('失败');
+  assert.deepEqual(Array.from(h.pendingClears.value), ['tool_type']);
+  h.setContextMode('new');
+  assert.equal(h.pendingClears.value.length, 0);
+  assert.equal(h.messages.value.length, 2);
+  h.sendQuery('开仓记录');
+  assert.equal(h.streams[1].data.context_mode, 'new');
+  h.streams[1].callbacks.onMemory({ activeSlots: {} }); h.streams[1].callbacks.onDone();
+  assert.deepEqual(Object.keys(h.memoryInfo.value.activeSlots), []);
+  assert.equal(h.messages.value.length, 4);
+});
+
+test('history loads actual values and successful reset clears controls', async () => {
+  const h = setup(), loaded = h.mount();
+  h.history.resolve({ data: { ...historyResponse.data, memory: { active_slots: { tool_type: 'DISC' }, message_count: 2 } } });
+  await loaded;
+  assert.equal(h.memoryInfo.value.activeSlots.tool_type, 'DISC');
+  h.toggleClearSlot('tool_type'); h.toggleClearSlot('tool_type');
+  assert.equal(h.pendingClears.value.length, 0);
+  h.toggleClearSlot('tool_type');
+  const reset = h.handleReset(); h.reset.resolve({ data: {} }); await reset;
+  assert.equal(h.pendingClears.value.length, 0);
+  assert.equal(h.contextMode.value, 'auto');
+});
 
 test('late initial history cannot overwrite a new question or mix old and new answers', async () => {
   const h = setup(), pending = h.mount(); h.sendQuery('新的问题');

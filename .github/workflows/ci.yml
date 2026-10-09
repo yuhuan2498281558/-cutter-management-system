@@ -83,7 +83,7 @@ jobs:
         run: npm run build
       - name: AI assistant interaction and protocol tests
         working-directory: web
-        run: node --test src/views/ai-assistant/__tests__/chat-session.test.cjs src/views/ai-assistant/__tests__/message-presentation.test.cjs src/api/ai-assistant/__tests__/stream-protocol.test.cjs
+        run: node --test src/views/ai-assistant/__tests__/chat-session.test.cjs src/views/ai-assistant/__tests__/message-presentation.test.cjs src/views/ai-assistant/__tests__/memory-controls.test.cjs src/api/ai-assistant/__tests__/stream-protocol.test.cjs
 
   hygiene:
     runs-on: ubuntu-latest

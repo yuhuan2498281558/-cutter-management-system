@@ -88,6 +88,7 @@ class StoredMessage:
     role: str
     content: str
     token_count: int = 0
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +105,7 @@ class MemorySnapshot:
     message_count: int | None = None
     latest_sequence: int = 0
     summary_messages: list[StoredMessage] | None = field(default=None, repr=False)
+    summary_source_truncated: bool = field(default=False, repr=False)
 
     @property
     def last_sequence(self) -> int:
@@ -215,15 +217,21 @@ class MemoryService:
                 saved_slots = metadata.get("memory_slots")
                 if role == "human" and isinstance(saved_slots, dict):
                     slots = dict(saved_slots)
-                messages.append(StoredMessage(row["id"], role, content, estimate_tokens(content)))
+                memory_metadata = metadata.get("memory_metadata")
+                messages.append(StoredMessage(
+                    row["id"], role, content, estimate_tokens(content),
+                    dict(memory_metadata) if isinstance(memory_metadata, dict) else {},
+                ))
             except (ValueError, TypeError, AttributeError):
                 logger.warning("跳过损坏的 AI 历史记录 id=%s", row["id"])
         return messages, slots
 
     @staticmethod
     def _stored_rows(rows):
-        return [StoredMessage(row.sequence, row.role, row.content,
-                              row.token_count or estimate_tokens(row.content)) for row in rows]
+        return [StoredMessage(
+            row.sequence, row.role, row.content, row.token_count or estimate_tokens(row.content),
+            dict(row.metadata) if isinstance(row.metadata, dict) else {},
+        ) for row in rows]
 
     @staticmethod
     def _context_limit():
@@ -317,7 +325,7 @@ class MemoryService:
         recent_turns: int | None = None,
         budget: int | None = None,
     ) -> list[StoredMessage]:
-        """Return only recent, unsummarized messages inside the memory budget."""
+        """Return recent, unsummarized complete turns inside the memory budget."""
 
         recent_turns = recent_turns or _int_setting("AI_MEMORY_RECENT_TURNS", 3)
         budget = budget or _int_setting("AI_MEMORY_CONTEXT_TOKEN_BUDGET", 1200)
@@ -326,12 +334,46 @@ class MemoryService:
             for item in snapshot.messages
             if item.sequence > snapshot.summary_through_sequence
         ]
-        max_messages = recent_turns * 2
-        eligible = eligible[-max_messages:]
+        turns = self._complete_turns(eligible)[-recent_turns:]
+        while turns and sum(self._message_tokens(item) for turn in turns for item in turn) > budget:
+            turns.pop(0)
+        return [item for turn in turns for item in turn]
 
-        while eligible and sum(item.token_count for item in eligible) > budget:
-            eligible.pop(0)
-        return eligible
+    @staticmethod
+    def _complete_turns(messages):
+        turns = []
+        question = None
+        for item in messages:
+            if item.role == "human":
+                question = item
+            elif item.role == "ai" and question is not None:
+                turns.append((question, item))
+                question = None
+            else:
+                question = None
+        return turns
+
+    @staticmethod
+    def _message_tokens(item):
+        return item.token_count or estimate_tokens(item.content)
+
+    @staticmethod
+    def _summary_excerpt(item, budget):
+        marker = "\n[不完整摘录]"
+        if estimate_tokens(item.content) <= budget:
+            return item
+        if estimate_tokens(marker) > budget:
+            return None
+        # Binary search keeps work bounded even for a multi-megabyte answer.
+        low, high = 0, len(item.content)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if estimate_tokens(item.content[:middle] + marker) <= budget:
+                low = middle
+            else:
+                high = middle - 1
+        content = item.content[:low] + marker
+        return StoredMessage(item.sequence, item.role, content, estimate_tokens(content))
 
     def summary_source(self, snapshot: MemorySnapshot, recent_turns: int | None = None) -> list[StoredMessage]:
         recent_turns = recent_turns or _int_setting("AI_MEMORY_RECENT_TURNS", 3)
@@ -340,7 +382,7 @@ class MemoryService:
             return snapshot.summary_messages
         if snapshot.message_count is None:
             candidates = [item for item in snapshot.messages
-                          if snapshot.summary_through_sequence < item.sequence <= cutoff]
+                          if snapshot.summary_through_sequence < item.sequence <= cutoff][:200]
         elif self.backend == "django" and cutoff > snapshot.summary_through_sequence:
             # Read an incremental batch independently of the six-message chat
             # window. A reset changes generation and makes this batch empty.
@@ -353,14 +395,24 @@ class MemoryService:
         budget = min(12000, _int_setting("AI_MEMORY_SUMMARY_SOURCE_TOKEN_BUDGET", 6000))
         selected = []
         used = 0
-        for item in candidates:
-            if used + item.token_count > budget:
+        for turn in self._complete_turns(candidates):
+            tokens = sum(self._message_tokens(item) for item in turn)
+            if used + tokens > budget:
+                if not selected:
+                    # A single oversized turn must not block the watermark
+                    # forever. Only derived input is shortened; history stays
+                    # authoritative and the model sees the omission marker.
+                    question_budget = min(self._message_tokens(turn[0]), budget // 2)
+                    question = self._summary_excerpt(turn[0], question_budget)
+                    answer = self._summary_excerpt(
+                        turn[1], budget - self._message_tokens(question),
+                    ) if question is not None else None
+                    if question is not None and answer is not None:
+                        selected.extend((question, answer))
+                        snapshot.summary_source_truncated = True
                 break
-            selected.append(item)
-            used += item.token_count
-        # Advance a summary watermark only through a complete response.
-        while selected and selected[-1].role != "ai":
-            selected.pop()
+            selected.extend(turn)
+            used += tokens
         snapshot.summary_messages = selected
         return selected
 
@@ -372,7 +424,7 @@ class MemoryService:
             return False
         pending_tokens = sum(item.token_count for item in source)
         trigger = _int_setting("AI_MEMORY_SUMMARY_TRIGGER_TOKENS", 1800)
-        return pending_tokens >= trigger
+        return snapshot.summary_source_truncated or pending_tokens >= trigger
 
     @staticmethod
     def format_slots(slots: dict) -> str:
@@ -467,7 +519,10 @@ class MemoryService:
                     current_slots = saved_slots or {}
             messages = [HumanMessage(content=user_content, additional_kwargs={
                 "memory_slots": dict(current_slots),
-            }), AIMessage(content=ai_content)]
+                "memory_metadata": dict(metadata or {}),
+            }), AIMessage(content=ai_content, additional_kwargs={
+                "memory_metadata": dict(metadata or {}),
+            })]
             # One transaction owns both inserts and slots, including rollback
             # when the second insert fails. No SQLChat per-message commits.
             connection.execute(insert(_legacy_messages), [{

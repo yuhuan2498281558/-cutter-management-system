@@ -18,7 +18,14 @@
 
       <div class="chat-content">
         <!-- 记忆槽位状态栏 -->
-        <MemorySlotBadge :memory-info="memoryInfo" />
+        <MemorySlotBadge
+          :memory-info="memoryInfo"
+          :context-mode="contextMode"
+          :pending-clears="pendingClears"
+          :disabled="loading || resetting"
+          @update:context-mode="setContextMode"
+          @toggle-clear="toggleClearSlot"
+        />
 
         <!-- 消息历史与流式展示列表 -->
         <ChatMessageList
@@ -50,7 +57,7 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound, RefreshRight } from '@element-plus/icons-vue';
 import { useAiAssistantApi } from '/@/api/ai-assistant';
-import { MemoryMetadata, Message, RouteMode } from './types';
+import { ContextMode, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
 import ChatMessageList from './components/ChatMessageList.vue';
 import ChatInputArea from './components/ChatInputArea.vue';
 import MemorySlotBadge from './components/MemorySlotBadge.vue';
@@ -65,6 +72,8 @@ const hasMoreHistory = ref(false);
 const nextHistoryCursor = ref<number>();
 const routeMode = ref<RouteMode>('rule');
 const memoryInfo = ref<MemoryMetadata>();
+const contextMode = ref<ContextMode>('auto');
+const pendingClears = ref<QuerySlot[]>([]);
 const chatListRef = ref<InstanceType<typeof ChatMessageList>>();
 
 let abortController: AbortController | null = null;
@@ -73,6 +82,20 @@ let operationVersion = 0;
 let messageSequence = 0;
 let disposed = false;
 const nextMessageId = () => `message-${++messageSequence}`;
+
+const setContextMode = (mode: ContextMode) => {
+  if (loading.value || resetting.value || disposed) return;
+  contextMode.value = mode;
+  if (mode === 'new') pendingClears.value = [];
+};
+
+const toggleClearSlot = (slot: QuerySlot) => {
+  if (loading.value || resetting.value || disposed) return;
+  pendingClears.value = pendingClears.value.includes(slot)
+    ? pendingClears.value.filter((item) => item !== slot)
+    : [...pendingClears.value, slot];
+  contextMode.value = 'continue';
+};
 
 // 单次规则回答由后端整段返回；限制展示速率可保留流式观感，
 // 但首批字符立即落屏，避免旧实现固定等待造成首问卡顿。
@@ -147,6 +170,8 @@ const loadHistory = async (older = false) => {
         message_count: data.memory.message_count,
         summary_revision: data.memory.summary_revision,
         slots: data.memory.slot_names,
+        activeSlots: data.memory.active_slots,
+        contextMode: data.memory.context_mode,
       };
     }
   } catch (error: any) {
@@ -175,6 +200,7 @@ const handleRegenerate = () => {
 
 const runStream = async (query: string) => {
   const version = ++operationVersion;
+  const requestControls = { context_mode: contextMode.value, clear_slots: [...pendingClears.value] };
   loading.value = true;
 
   const assistantMsg: Message = { id: nextMessageId(), role: 'assistant', content: '', time: getCurrentTime(), streaming: true };
@@ -261,7 +287,7 @@ const runStream = async (query: string) => {
   };
 
   await api.chatStream(
-    { query, route_mode: routeMode.value },
+    { query, route_mode: routeMode.value, ...requestControls },
     {
       onChunk: (text) => {
         if (!hasFinalAnswer) enqueueText(text);
@@ -289,6 +315,8 @@ const runStream = async (query: string) => {
       },
       onDone: () => {
         if (!isCurrent()) return;
+        pendingClears.value = [];
+        contextMode.value = 'auto';
         streamFinished = true;
         finishIfReady();
       },
@@ -330,6 +358,8 @@ const handleReset = async () => {
     if (disposed || version !== operationVersion) return;
     messages.value = [];
     memoryInfo.value = undefined;
+    contextMode.value = 'auto';
+    pendingClears.value = [];
     hasMoreHistory.value = false;
     nextHistoryCursor.value = undefined;
     ElMessage.success(response.data?.message || '对话已重置');

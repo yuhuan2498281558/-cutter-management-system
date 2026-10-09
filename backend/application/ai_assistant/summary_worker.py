@@ -31,9 +31,11 @@ def schedule_summary(key, callback):
         except Exception:
             logger.exception("AI background summary failed")
         finally:
-            close_old_connections()
-            with _lock:
-                _pending.discard(key)
+            try:
+                close_old_connections()
+            finally:
+                with _lock:
+                    _pending.discard(key)
 
     try:
         _executor.submit(run)

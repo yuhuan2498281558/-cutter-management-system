@@ -12,6 +12,7 @@ from django.db.models import Count, Avg, Q, Sum, Max, Min, Case, When, F, CharFi
 from django.db.models.functions import Cast, Upper, Trim
 from django.db.models import IntegerField
 from application.shield.cutter_position_scope import ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no
+from application.shield.wear import normalize_wear
 import json
 import logging
 from datetime import datetime
@@ -93,30 +94,10 @@ def _pct_to_float(value):
 # 统一到下面的归一化函数，中英文两套取值都能正确分类，无法识别的取值归入
 # 'unknown' 并单独计数，不再被静默算作异常。
 # ---------------------------------------------------------------------------
-_WEAR_NORMAL_TOKENS = {
-    'GOOD', 'NORMAL',
-    '正常', '完好', '良好', '正常磨损', '轻微磨损', '未见异常',
-}
-
-_WEAR_ABNORMAL_TOKENS = {
-    'MODERATE', 'SEVERE', 'ABNORMAL', 'CHIP',
-    '偏磨', '刀圈崩刃', '崩刃', '崩口', '刀圈脱落', '脱落', '漏油', '轴承损坏',
-    '断裂', '异常磨损', '严重磨损', '中度磨损', '刀圈磨平', '刀体磨损',
-}
-
-
 def normalize_wear_condition(value) -> str:
-    """把 wear_condition 归一为 'normal' / 'abnormal' / 'unknown'。"""
-    if value is None:
-        return 'unknown'
-    token = str(value).strip()
-    if not token:
-        return 'unknown'
-    if token in _WEAR_NORMAL_TOKENS or token.upper() in _WEAR_NORMAL_TOKENS:
-        return 'normal'
-    if token in _WEAR_ABNORMAL_TOKENS or token.upper() in _WEAR_ABNORMAL_TOKENS:
-        return 'abnormal'
-    return 'unknown'
+    """沿用共享业务口径，保留助手原有三分类返回格式。"""
+    state = normalize_wear(value)
+    return state.lower() if state else 'unknown'
 
 
 def is_abnormal_wear(value) -> bool:
@@ -197,20 +178,11 @@ def _enrich_manufacturer_result(result: dict) -> dict:
     ]
     highlights = []
     warnings = []
-    if manufacturers:
-        best = manufacturers[0]
-        worst = manufacturers[-1]
-        highlights.append(
-            f"{best.get('manufacturer')} 异常磨损率最低，为 {best.get('abnormal_rate_pct')}%"
-        )
-        if len(manufacturers) > 1:
-            highlights.append(
-                f"{worst.get('manufacturer')} 异常磨损率最高，为 {worst.get('abnormal_rate_pct')}%"
-            )
-        for item in manufacturers[:5]:
-            facts.append(
-                f"{item.get('manufacturer')}：更换 {item.get('replaced_count')} 次，异常磨损 {item.get('abnormal_wear_count')} 次，异常磨损率 {item.get('abnormal_rate_pct')}%"
-            )
+    for item in manufacturers[:5]:
+        denominator = item.get('abnormal_rate_denominator')
+        rate = item.get('abnormal_rate_pct')
+        rate_text = f"{rate}%（已分类样本{denominator}条）" if denominator and rate is not None else "暂无（无已分类样本）"
+        facts.append(f"{item.get('manufacturer')}：更换 {item.get('replaced_count')} 次，异常磨损率 {rate_text}")
     if total < 20:
         warnings.append("厂家对比样本量偏少，建议结合更多换刀记录复核")
     return _merge_analysis(
@@ -219,7 +191,7 @@ def _enrich_manufacturer_result(result: dict) -> dict:
         facts=facts,
         highlights=highlights,
         warnings=warnings,
-        conclusion_hint="厂家排序应优先参考异常磨损率，同时结合更换次数和成本，避免只看单次价格。",
+        conclusion_hint="异常率排序不等于质量或性价比排序，需复核样本量、刀型、地层和服役条件。",
     )
 
 
@@ -259,8 +231,9 @@ def _enrich_opening_result(result: dict) -> dict:
     ]
     highlights = []
     warnings = []
-    if records:
-        highest = max(records, key=lambda item: _pct_to_float(item.get("abnormal_rate")))
+    comparable = [item for item in records if (item.get('abnormal_rate_denominator') or 0) > 0 and item.get('abnormal_rate') is not None]
+    if comparable:
+        highest = max(comparable, key=lambda item: _pct_to_float(item.get("abnormal_rate")))
         highlights.append(
             f"最近记录中环号 {highest.get('ring_no')} 的异常磨损率最高，为 {highest.get('abnormal_rate')}"
         )
@@ -1199,7 +1172,7 @@ def recommend_tools(params_str: str) -> str:
             "note": (
                 "recommendations 按所选范围内的平均服役环数由高到低排序。"
                 f"另有 {total_in_service} 把刀仍在役、尚未拆下，属于右删失样本，"
-                "未计入平均值，因此平均服役环数是对真实寿命的保守估计。"
+                "未计入已完成服役样本的平均值；该均值可能存在选择偏差，不能当作总体寿命或其确定下界。"
                 "该结果基于历史服役记录，不构成对在役刀具剩余寿命的预测。"
             ),
         }
@@ -1293,7 +1266,7 @@ def compare_manufacturer_performance(params_str: str) -> str:
             abnormal_count = wear_buckets['abnormal']
             unclassified_count = wear_buckets['unknown']
             classified_total = normal_count + abnormal_count
-            abnormal_rate_val = round(abnormal_count / classified_total * 100, 1) if classified_total else 0.0
+            abnormal_rate_val = round(abnormal_count / classified_total * 100, 1) if classified_total else None
 
             # 价格统计
             price_qs = query.filter(
@@ -1310,18 +1283,18 @@ def compare_manufacturer_performance(params_str: str) -> str:
                 "unclassified_wear_count": unclassified_count,
                 "abnormal_rate_pct": abnormal_rate_val,
                 "abnormal_rate_denominator": classified_total,
-                "total_cost_yuan": float(price_qs['total_cost']) if price_qs['total_cost'] else None,
-                "avg_cost_per_change_yuan": round(float(price_qs['avg_cost']), 0) if price_qs['avg_cost'] else None,
+                "total_cost_yuan": float(price_qs['total_cost']) if price_qs['total_cost'] is not None else None,
+                "avg_cost_per_change_yuan": round(float(price_qs['avg_cost']), 0) if price_qs['avg_cost'] is not None else None,
                 "wear_breakdown": wear_qs,
             })
 
-        result_list.sort(key=lambda x: x['abnormal_rate_pct'])
+        result_list.sort(key=lambda x: (x['abnormal_rate_pct'] is None, x['abnormal_rate_pct'] or 0, x['manufacturer']))
 
         logger.info(f"厂家对比成功，共{len(result_list)}家厂商")
         return json.dumps({
             "total_records": total,
             "manufacturer_count": len(result_list),
-            "note": "manufacturers已按abnormal_rate从低到高排序，排名第一的厂家质量最好",
+            "note": "按已分类异常率排序，缺少已分类样本的厂家置后；这不是质量或性价比排名。明细登记价格不等于实际采购加返修总支出。",
             "manufacturers": result_list
         }, ensure_ascii=False)
 
@@ -1482,7 +1455,7 @@ def analyze_stratum_wear_correlation(params_str: str) -> str:
         logger.info(f"地层磨损分析成功，共{len(result_list)}种地层")
         return json.dumps({
             "stratum_count": len(result_list),
-            "note": "replacement_rate越高说明该地层对刀具磨损越严重，需要更频繁更换刀具",
+            "note": "按开仓环号地层标签对照观察记录；更换率不是服役地层暴露量或面积占比，不能据此判定地层导致磨损。",
             # 地层表未覆盖到的换刀记录数：这些行归入"未知地层"，不再静默丢弃
             "unknown_stratum_records": unknown_stratum_records,
             "stratum_analysis": result_list
@@ -1666,7 +1639,7 @@ def query_cutter_position_stats(params_str: str) -> str:
             "total_records": total,
             "top_positions": position_stats,
             "replacement_by_type": type_summary,
-            "note": "replacement_count越高说明该刀位磨损越严重，需重点关注"
+            "note": "更换次数反映所选范围的记录数量，不等于磨损严重程度；需结合样本、服役距离和更换原因复核"
         }, ensure_ascii=False)
 
     except Exception as e:
@@ -2059,7 +2032,7 @@ def query_position_stratum_impact(params_str: str) -> str:
 
         return json.dumps({
             "INSTRUCTION": "以下是真实数据库数据，回答时必须原样使用这些数字",
-            "note": "total越高说明该刀位受地层影响越大，by_stratum显示各地层下的更换次数",
+            "note": "by_stratum按开仓点标签计数；一条记录可对应多个标签，total不可解释为独立更换总数或地层因果影响强度。",
             "top_positions": ranked,
         }, ensure_ascii=False)
 

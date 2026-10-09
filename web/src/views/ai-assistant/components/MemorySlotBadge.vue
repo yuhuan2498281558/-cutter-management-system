@@ -1,77 +1,86 @@
 <template>
-  <div v-if="hasMemoryInfo" class="memory-badge-bar">
-    <el-tooltip v-if="engineTip" :content="engineTip" placement="bottom">
-      <div class="memory-badge-item engine-item">
-        <el-icon class="badge-icon"><Cpu /></el-icon>
-        <span class="badge-label">对话记忆</span>
-      </div>
-    </el-tooltip>
-    <div v-else class="memory-badge-item">
-      <el-icon class="badge-icon"><Cpu /></el-icon>
-      <span class="badge-label">对话记忆</span>
+  <div class="memory-badge-bar">
+    <div class="memory-badge-item">
+      <span>本次提问</span>
+      <el-radio-group
+        :model-value="contextMode"
+        :disabled="disabled"
+        size="small"
+        aria-label="查询条件继承方式"
+        @update:model-value="emit('update:contextMode', $event)"
+      >
+        <el-radio-button value="auto">自动判断</el-radio-button>
+        <el-radio-button value="new">新查询</el-radio-button>
+        <el-radio-button value="continue">延续上问</el-radio-button>
+      </el-radio-group>
     </div>
-
-    <div v-if="memoryInfo?.message_count !== undefined" class="memory-badge-item">
-      <span class="badge-label">已记住:</span>
-      <span class="badge-value">{{ Math.floor((memoryInfo?.message_count || 0) / 2) }} 轮对话</span>
-    </div>
-
+    <span class="mode-hint">{{ modeHint }}</span>
     <div v-if="slotLabels.length" class="memory-badge-item slots-item">
-      <span class="badge-label">当前上下文:</span>
-      <div class="slots-container">
-        <el-tag
-          v-for="slot in slotLabels"
-          :key="slot"
-          size="small"
-          type="primary"
-          effect="light"
-          class="slot-tag"
-        >
-          {{ slot }}
-        </el-tag>
-      </div>
+      <span>上次条件</span>
+      <el-tag
+        v-for="slot in slotLabels"
+        :key="slot.key"
+        size="small"
+        :type="isPendingSlot(slot.key) ? 'warning' : 'info'"
+        :title="isLinkedClear(slot.key) ? '撤销刀型清除后可保留此刀位；本次问题明确指定的新刀位仍优先' : pendingClears.includes(slot.key) ? '点击关闭按钮撤销清除' : slot.key === 'tool_type' ? '下次清除刀型及其旧刀位条件，保留环号范围' : '下次提问清除此条件，保留其他条件'"
+      >
+        {{ isLinkedClear(slot.key) ? '随刀型清除 · ' : isPendingSlot(slot.key) ? '待清除 · ' : '' }}{{ slot.label }}
+        <button
+          v-if="!isLinkedClear(slot.key)"
+          type="button"
+          class="slot-clear"
+          :disabled="disabled"
+          :aria-label="`${isPendingSlot(slot.key) ? '撤销清除' : '清除'}${slot.label}`"
+          @click="emit('toggleClear', slot.key)"
+        >×</button>
+      </el-tag>
     </div>
+    <span v-else-if="memoryInfo?.activeSlots !== undefined" class="scope-empty">上次无附加筛选</span>
+    <el-tooltip v-if="memoryInfo?.message_count !== undefined" content="已保存的历史轮数；每次回答只使用与问题相关且在长度限制内的上下文。新查询保留历史，不沿用上一问的筛选条件。" placement="bottom">
+      <span class="saved-count">已保存 {{ Math.floor((memoryInfo.message_count || 0) / 2) }} 轮</span>
+    </el-tooltip>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Cpu } from '@element-plus/icons-vue';
-import { MemoryMetadata } from '../types';
+import { ContextMode, MemoryMetadata, QuerySlot } from '../types';
 
 const props = defineProps<{
   memoryInfo?: MemoryMetadata;
+  contextMode: ContextMode;
+  pendingClears: QuerySlot[];
+  disabled?: boolean;
+}>();
+const emit = defineEmits<{
+  (event: 'update:contextMode', mode: ContextMode): void;
+  (event: 'toggleClear', slot: QuerySlot): void;
 }>();
 
-const SLOT_NAME_MAP: Record<string, string> = {
-  ring_range: '环号范围',
-  tool_type: '刀具类型',
-  cutter_position_no: '刀位号',
-};
-
-const hasMemoryInfo = computed(() => {
-  return !!props.memoryInfo && (
-    !!props.memoryInfo.backend ||
-    (props.memoryInfo.slots && props.memoryInfo.slots.length > 0) ||
-    props.memoryInfo.message_count !== undefined
-  );
-});
+const names: Record<QuerySlot, string> = { ring_range: '环号范围', tool_type: '刀具类型', cutter_position_no: '刀位号' };
+const toolNames: Record<string, string> = { DISC: '滚刀', SCRAPER: '刮刀', RIPPER: '撕裂刀' };
+const isLinkedClear = (slot: QuerySlot) => slot === 'cutter_position_no' && props.pendingClears.includes('tool_type') && !props.pendingClears.includes(slot);
+const isPendingSlot = (slot: QuerySlot) => props.pendingClears.includes(slot) || isLinkedClear(slot);
+const modeHint = computed(() => ({
+  auto: '独立问题重新查询，追问沿用条件',
+  new: '按本次问题重新确定条件',
+  continue: '沿用上问条件，本次指定优先',
+}[props.contextMode]));
 
 const slotLabels = computed(() => {
-  if (!props.memoryInfo?.slots) return [];
-  return props.memoryInfo.slots.map((s) => SLOT_NAME_MAP[s] || s);
-});
-
-// 引擎与摘要版本属于技术细节，收进悬浮提示，不占据状态栏
-const engineTip = computed(() => {
-  const parts: string[] = [];
-  if (props.memoryInfo?.backend) {
-    parts.push(`记忆引擎：${props.memoryInfo.backend === 'django' ? 'Django 持久化' : 'Legacy 会话'}`);
-  }
-  if (props.memoryInfo?.summary_revision) {
-    parts.push(`摘要版本：v${props.memoryInfo.summary_revision}`);
-  }
-  return parts.join(' · ');
+  const values = props.memoryInfo?.activeSlots;
+  // 空对象代表确实没有条件，不能退回旧版本的名称列表。
+  const keys = values !== undefined ? Object.keys(values) : props.memoryInfo?.slots || [];
+  return keys.filter((key): key is QuerySlot => key in names).map((key) => {
+    const value = values?.[key];
+    let label = `${names[key]}（值未提供）`;
+    if (value !== undefined && value !== null) {
+      if (key === 'ring_range' && Array.isArray(value)) label = `${value[0]}–${value[1]} 环`;
+      else if (key === 'tool_type') label = toolNames[String(value)] || String(value);
+      else label = `刀位 ${value}`;
+    }
+    return { key, label };
+  });
 });
 </script>
 
@@ -80,48 +89,31 @@ const engineTip = computed(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 6px 14px;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  flex-shrink: 0;
   background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
   font-size: 12px;
   color: #64748b;
-
-  .memory-badge-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-
-    &.engine-item {
-      cursor: help;
-    }
-
-    .badge-icon {
-      font-size: 14px;
-      color: #3b82f6;
-    }
-
-    .badge-label {
-      color: #94a3b8;
-    }
-
-    .badge-value {
-      font-weight: 500;
-      color: #334155;
-    }
-  }
-
-  .slots-item {
-    .slots-container {
-      display: inline-flex;
-      gap: 4px;
-    }
-    .slot-tag {
-      font-size: 11px;
-      padding: 0 6px;
-      height: 20px;
-      line-height: 18px;
-    }
-  }
+}
+.memory-badge-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mode-hint, .scope-empty { color: #64748b; }
+.saved-count { margin-left: auto; white-space: nowrap; cursor: help; }
+.slot-clear {
+  margin-left: 4px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  &:focus-visible { outline: 2px solid #409eff; outline-offset: 1px; }
+  &:disabled { opacity: 0.5; cursor: default; }
 }
 </style>
