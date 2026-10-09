@@ -12,6 +12,7 @@ from collections import OrderedDict
 from functools import reduce
 
 import six
+from django.conf import settings as django_settings
 from django.db import models
 from django.db.models import Q, F
 from django.db.models.constants import LOOKUP_SEP
@@ -76,6 +77,18 @@ def get_dept(dept_id: int, dept_all_list=None, dept_list=None):
     return list(set(dept_list))
 
 
+def is_web_guest_full_read(request):
+    """Grant full data scope only for the guest's explicitly allowed read APIs."""
+    return (
+        request.method == "GET"
+        and getattr(request.user, "username", None) == django_settings.WEB_GUEST_USERNAME
+        and any(
+            request.path.startswith(prefix)
+            for prefix in django_settings.WEB_GUEST_READ_API_PREFIXES
+        )
+    )
+
+
 class DataLevelPermissionsFilter(BaseFilterBackend):
     """
     数据 级权限过滤器
@@ -93,6 +106,8 @@ class DataLevelPermissionsFilter(BaseFilterBackend):
         """
         接口白名单是否认证数据权限
         """
+        if is_web_guest_full_read(request):
+            return queryset
         api = request.path  # 当前请求接口
         method = request.method  # 当前请求方法
         methodList = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]

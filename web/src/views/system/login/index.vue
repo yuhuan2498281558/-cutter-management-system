@@ -88,6 +88,7 @@ onMounted(() => {
 .login-page {
 	position: relative;
 	isolation: isolate;
+	height: 100dvh;
 	min-height: 100dvh;
 	overflow-x: hidden;
 	overflow-y: auto;
@@ -307,6 +308,63 @@ onMounted(() => {
 
 .login-authorization a:hover {
 	color: #f0f3f4;
+}
+
+@media (min-width: 521px) and (max-height: 820px) {
+	.login-page__content {
+		align-items: flex-start;
+		padding-top: 18px;
+		padding-bottom: 58px;
+	}
+
+	.login-panel {
+		padding: 24px 36px 22px;
+	}
+
+	.login-panel__header {
+		gap: 18px;
+	}
+
+	.login-panel h1 {
+		font-size: 28px;
+	}
+
+	.login-panel__header p {
+		margin-top: 3px;
+	}
+
+	.login-panel__divider {
+		margin: 16px 0 14px;
+	}
+
+	.login-panel__form {
+		margin-top: 12px;
+	}
+
+	.login-panel :deep(.el-form-item) {
+		margin-bottom: 10px;
+	}
+
+	.login-panel :deep(.login-submit-item),
+	.login-panel :deep(.login-guest-item) {
+		margin-bottom: 0;
+	}
+
+	.login-panel :deep(.el-form-item__label) {
+		padding-bottom: 5px;
+	}
+
+	.login-panel :deep(.el-input__wrapper) {
+		min-height: 42px;
+	}
+
+	.login-panel__footer {
+		display: none;
+	}
+
+	.login-authorization {
+		display: none;
+	}
 }
 
 @media (max-width: 1180px) {

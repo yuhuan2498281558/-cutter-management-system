@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import secrets
 from datetime import datetime, timedelta
 from captcha.views import CaptchaStore, captcha_image
 from django.contrib import auth
@@ -9,12 +10,13 @@ from django.db.models import Q
 from django.shortcuts import redirect
 from django.utils.translation import gettext_lazy as _
 from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
+from drf_yasg.utils import no_body, swagger_auto_schema
 from rest_framework import serializers
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.conf import settings
 from application import dispatch
@@ -207,6 +209,63 @@ class LoginView(TokenObtainPairView):
     #     request.user = user
     #     save_login_log(request=request)
     #     return DetailResponse(data=result,msg="获取成功")
+
+
+class GuestLoginView(APIView):
+    """Issue a token for the configured read-only web guest without a captcha."""
+
+    authentication_classes = []
+    permission_classes = []
+
+    @swagger_auto_schema(
+        request_body=no_body,
+        responses={"200": openapi.Response("游客登录成功")},
+        security=[],
+        operation_id="guest-login",
+        operation_description="以只读游客身份登录",
+    )
+    def post(self, request):
+        user = (
+            Users.objects
+            .filter(
+                username=settings.WEB_GUEST_USERNAME,
+                is_active=True,
+                is_superuser=False,
+                role__key=settings.WEB_GUEST_ROLE_KEY,
+                role__status=True,
+            )
+            .distinct()
+            .first()
+        )
+        if user is None or user.is_staff:
+            return ErrorResponse(
+                msg="游客账号暂不可用，请联系管理员",
+                code=4000,
+                status=503,
+            )
+
+        refresh = RefreshToken.for_user(user)
+        refresh[settings.WEB_GUEST_SESSION_CLAIM] = secrets.token_urlsafe(24)
+        access = refresh.access_token
+        data = {
+            "refresh": str(refresh),
+            "access": str(access),
+            "username": user.username,
+            "name": user.name,
+            "userId": user.id,
+            "avatar": user.avatar,
+            "user_type": user.user_type,
+            "pwd_change_count": user.pwd_change_count,
+            "role_info": list(user.role.values("id", "name", "key")),
+        }
+        if user.dept:
+            data["dept_info"] = {
+                "dept_id": user.dept_id,
+                "dept_name": user.dept.name,
+            }
+        request.user = user
+        save_login_log(request=request)
+        return DetailResponse(data=data, msg="游客登录成功")
 
 
 class LoginTokenSerializer(TokenObtainPairSerializer):

@@ -91,21 +91,16 @@ router.beforeEach(async (to, from, next) => {
 
     const token = Session.get('token');
     const isMobileRoute = to.path.startsWith('/mobile');
+    const hasVerifiedMobileAccess = Boolean(token && Session.get('mobileAccessVerified') === true);
 
-    if (isMobileRoute && !token && to.path !== '/mobile/login') {
-        next({path: '/mobile/login', query: {redirect: to.fullPath}, replace: true});
-        NProgress.done();
-        return;
-    }
-
-    if (isMobileRoute && token && to.path === '/mobile/login') {
-        next({path: '/mobile/tasks', replace: true});
-        NProgress.done();
-        return;
-    }
-
-    if (isMobileRoute && token) {
-        next();
+    if (isMobileRoute) {
+        if (to.path === '/mobile/login') {
+            next(hasVerifiedMobileAccess ? {path: '/mobile/tasks', replace: true} : undefined);
+        } else if (!hasVerifiedMobileAccess) {
+            next({path: '/mobile/login', query: {redirect: to.fullPath}, replace: true});
+        } else {
+            next();
+        }
         NProgress.done();
         return;
     }

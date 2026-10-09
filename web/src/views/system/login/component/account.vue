@@ -38,10 +38,24 @@
 			<span>忘记密码请联系管理员</span>
 		</div>
 		<el-form-item class="login-animation4 login-submit-item">
-			<el-button type="primary" class="login-content-submit" @click="loginClick" :loading="loading.signIn">
+			<el-button type="primary" class="login-content-submit" @click="loginClick" :loading="loading.signIn" :disabled="loading.guest">
 				<span>{{ $t('message.account.accountBtnText') }}</span>
 			</el-button>
 		</el-form-item>
+		<div class="login-guest-divider login-animation4" aria-hidden="true"><span>或</span></div>
+		<el-form-item class="login-animation4 login-guest-item">
+			<el-button
+				class="login-guest-submit"
+				native-type="button"
+				:loading="loading.guest"
+				:disabled="loading.signIn"
+				@click="guestLoginClick"
+			>
+				<span>游客登录</span>
+				<span class="login-guest-badge">仅查看</span>
+			</el-button>
+		</el-form-item>
+		<p class="login-guest-help login-animation4">无需账号和验证码，不能新增、编辑或删除数据</p>
 	</el-form>
 </template>
 
@@ -87,6 +101,7 @@ export default defineComponent({
 			},
 			loading: {
 				signIn: false,
+				guest: false,
 			},
 		});
 		const rules = reactive<FormRules>({
@@ -132,29 +147,34 @@ export default defineComponent({
 				state.ruleForm.captchaKey = ret.data.key;
 			});
 		};
+		const applyLoginResponse = async (res: any, rememberAccount: boolean) => {
+			if (res.code !== 2000) return;
+			if (rememberAccount) {
+				if (state.rememberUsername) {
+					localStorage.setItem(rememberedUsernameKey, state.ruleForm.username);
+				} else {
+					localStorage.removeItem(rememberedUsernameKey);
+				}
+			}
+			Session.remove('mobileAccessVerified');
+			Session.set('token', res.data.access);
+			Cookies.set('username', res.data.name);
+			if (!themeConfig.value.isRequestRoutes) {
+				// 前端控制路由，2、请注意执行顺序
+				initFrontEndControlRoutes();
+				loginSuccess();
+			} else {
+				// 后端动态路由由全局路由守卫统一初始化，避免这里和守卫重复请求。
+				await loginSuccess();
+			}
+		};
 		const loginClick = async () => {
 			if (!formRef.value) return
 			await formRef.value.validate((valid: any) => {
 				if (valid) {
 					state.loading.signIn = true;
 					loginApi.login({ ...state.ruleForm, password: Md5.hashStr(state.ruleForm.password) }).then(async (res: any) => {
-						if (res.code === 2000) {
-							if (state.rememberUsername) {
-								localStorage.setItem(rememberedUsernameKey, state.ruleForm.username);
-							} else {
-								localStorage.removeItem(rememberedUsernameKey);
-							}
-							Session.set('token', res.data.access);
-							Cookies.set('username', res.data.name);
-							if (!themeConfig.value.isRequestRoutes) {
-								// 前端控制路由，2、请注意执行顺序
-								initFrontEndControlRoutes();
-								loginSuccess();
-							} else {
-								// 后端动态路由由全局路由守卫统一初始化，避免这里和守卫重复请求。
-								await loginSuccess();
-							}
-						}
+						await applyLoginResponse(res, true);
 					}).catch(() => {
             // 登录错误之后，刷新验证码
             refreshCaptcha();
@@ -166,6 +186,16 @@ export default defineComponent({
 				}
 			})
 
+		};
+		const guestLoginClick = async () => {
+			if (state.loading.signIn || state.loading.guest) return;
+			state.loading.guest = true;
+			try {
+				const res = await loginApi.guestLogin();
+				await applyLoginResponse(res, false);
+			} finally {
+				state.loading.guest = false;
+			}
 		};
 		const getUserInfo = () => {
 			useUserInfo().setUserInfos();
@@ -214,6 +244,7 @@ export default defineComponent({
 		return {
 			refreshCaptcha,
 			loginClick,
+			guestLoginClick,
 			loginSuccess,
 			isShowCaptcha,
 			state,
@@ -355,6 +386,67 @@ export default defineComponent({
 		&:active {
 			transform: translateY(1px);
 		}
+	}
+
+	.login-guest-divider {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin: 15px 0 13px;
+		font-size: 11px;
+		line-height: 1;
+		color: #78858d;
+
+		&::before,
+		&::after {
+			content: '';
+			flex: 1;
+			height: 1px;
+			background: rgba(177, 190, 199, 0.18);
+		}
+	}
+
+	.login-guest-item {
+		margin-bottom: 0;
+	}
+
+	.login-guest-submit {
+		width: 100%;
+		height: 44px;
+		border: 1px solid #53616a;
+		border-radius: 8px;
+		background: #1c2328;
+		color: #dce2e5;
+		font-weight: 600;
+		letter-spacing: 1px;
+		transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+
+		&:hover,
+		&:focus-visible {
+			border-color: #87959d;
+			background: #242c31;
+			color: #f2f5f6;
+		}
+	}
+
+	.login-guest-badge {
+		margin-left: 9px;
+		padding: 2px 6px;
+		border: 1px solid rgba(177, 190, 199, 0.34);
+		border-radius: 4px;
+		font-size: 10px;
+		font-weight: 500;
+		line-height: 1.2;
+		letter-spacing: 0;
+		color: #aeb8be;
+	}
+
+	.login-guest-help {
+		margin: 7px 0 0;
+		text-align: center;
+		font-size: 11px;
+		line-height: 1.5;
+		color: #7f8c94;
 	}
 }
 

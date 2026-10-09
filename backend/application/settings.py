@@ -53,6 +53,27 @@ if os.path.isdir(PLUGINS_PATH):
 DEBUG = locals().get("DEBUG", True)
 ALLOWED_HOSTS = locals().get("ALLOWED_HOSTS", ["*"])
 
+# Public web guest identity. Authentication is issued only by GuestLoginView;
+# the reserved username is also enforced by GuestReadOnlyMiddleware.
+WEB_GUEST_USERNAME = "web_guest"
+WEB_GUEST_ROLE_KEY = "readonly_guest"
+WEB_GUEST_SESSION_CLAIM = "guest_session"
+WEB_GUEST_READ_API_PREFIXES = (
+    "/api/shield/project/",
+    "/api/shield/stratum_basic_info/",
+    "/api/shield/shield_machine_basic_info/",
+    "/api/shield/cutter_position_info/",
+    "/api/shield/tool_info/",
+    "/api/shield/tool_category/",
+    "/api/shield/warehouse_opening/",
+    "/api/shield/tool_change_detail/",
+    "/api/shield/tool_cost/",
+    "/api/shield/analysis/",
+    "/api/shield/tool_life_prediction/",
+    "/api/shield/tunneling_data/",
+    "/api/shield/mobile/tool_lifecycle/",
+)
+
 # 列权限需要排除的App应用
 COLUMN_EXCLUDE_APPS = ['channels', 'captcha'] + locals().get("COLUMN_EXCLUDE_APPS", [])
 
@@ -85,6 +106,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "dvadmin.utils.middleware.GuestReadOnlyMiddleware",
     "dvadmin.utils.middleware.ApiLoggingMiddleware",
 ]
 

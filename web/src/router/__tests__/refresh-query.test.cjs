@@ -9,7 +9,7 @@ const ts = require('typescript');
 const vue = require('vue');
 const vueRouter = require('vue-router');
 
-function setup(t, { authenticated = true, backend = true, initialized = false, initFails = false } = {}) {
+function setup(t, { authenticated = true, mobileVerified = false, backend = true, initialized = false, initFails = false } = {}) {
   const routesStore = vue.reactive({ routesList: initialized ? [{}] : [] });
   const themeStore = vue.reactive({ themeConfig: { isRequestRoutes: backend } });
   let initializationCount = 0;
@@ -25,6 +25,7 @@ function setup(t, { authenticated = true, backend = true, initialized = false, i
   const staticRoutes = [
     { path: '/login', name: 'login', component: {} },
     { path: '/mobile/login', name: 'mobileLogin', component: {} },
+    { path: '/mobile/tasks', name: 'mobileTasks', component: {} },
     { path: '/mobile/tasks/:id', name: 'mobileDetail', component: {} },
   ];
   context.require = name => {
@@ -37,7 +38,12 @@ function setup(t, { authenticated = true, backend = true, initialized = false, i
     if (name === '/@/stores/routesList') return { useRoutesList: () => routesStore };
     if (name === '/@/stores/themeConfig') return { useThemeConfig: () => themeStore };
     if (name === '/@/stores/keepAliveNames') return { useKeepALiveNames: () => ({ setCacheKeepAlive() {} }) };
-    if (name === '/@/utils/storage') return { Session: { get: () => authenticated ? 'test-session' : null, clear() {} } };
+    if (name === '/@/utils/storage') return {
+      Session: {
+        get: key => key === 'token' ? (authenticated ? 'test-session' : null) : (key === 'mobileAccessVerified' ? mobileVerified : null),
+        clear() {},
+      },
+    };
     if (name === '/@/router/backEnd') return { initBackEndControlRoutes: initialize };
     if (name === '/@/router/frontEnd') return { initFrontEndControlRoutes: initialize };
     if (name === '/@/router/route') return {
@@ -109,4 +115,36 @@ test('mobile auth guard still preserves the complete requested route', async t =
   assert.equal(router.currentRoute.value.name, 'mobileLogin');
   assert.equal(router.currentRoute.value.query.redirect, '/mobile/tasks/12?filter=pending');
   assert.equal(initializationCount(), 0);
+});
+
+test('desktop or guest token cannot skip the dedicated mobile login', async t => {
+  const direct = setup(t, { authenticated: true, mobileVerified: false });
+  await direct.router.push('/mobile/login');
+  assert.equal(direct.router.currentRoute.value.name, 'mobileLogin');
+
+  const protectedRoute = setup(t, { authenticated: true, mobileVerified: false });
+  await protectedRoute.router.push('/mobile/tasks/12?filter=pending');
+  assert.equal(protectedRoute.router.currentRoute.value.name, 'mobileLogin');
+  assert.equal(protectedRoute.router.currentRoute.value.query.redirect, '/mobile/tasks/12?filter=pending');
+});
+
+test('only a verified mobile session enters tasks and skips repeat login', async t => {
+  const direct = setup(t, { authenticated: true, mobileVerified: true });
+  await direct.router.push('/mobile/tasks/12');
+  assert.equal(direct.router.currentRoute.value.name, 'mobileDetail');
+
+  const repeatLogin = setup(t, { authenticated: true, mobileVerified: true });
+  await repeatLogin.router.push('/mobile/login');
+  assert.equal(repeatLogin.router.currentRoute.value.name, 'mobileTasks');
+});
+
+test('login boundaries set and clear the verified mobile-session marker', () => {
+  const mobileLoginSource = fs.readFileSync(path.resolve(__dirname, '../../views/mobile/login.vue'), 'utf8');
+  const desktopLoginSource = fs.readFileSync(path.resolve(__dirname, '../../views/system/login/component/account.vue'), 'utf8');
+  assert.match(mobileLoginSource, /Session\.set\(['"]mobileAccessVerified['"],\s*true\)/);
+  assert.match(
+    mobileLoginSource,
+    /onMounted\(\(\) => \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*Session\.remove\(['"]mobileAccessVerified['"]\);\s*Session\.remove\(['"]token['"]\);\s*refreshCaptcha\(\);/,
+  );
+  assert.match(desktopLoginSource, /Session\.remove\(['"]mobileAccessVerified['"]\)/);
 });

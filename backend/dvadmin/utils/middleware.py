@@ -6,12 +6,76 @@ import logging
 
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
-from django.http import HttpResponse, HttpResponseServerError
+from django.http import HttpResponse, HttpResponseServerError, JsonResponse
 from django.utils.deprecation import MiddlewareMixin
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from dvadmin.system.models import OperationLog
 from dvadmin.utils.request_util import get_request_user, get_request_ip, get_request_data, get_request_path, get_os, \
     get_browser, get_verbose_name
+
+
+class GuestReadOnlyMiddleware:
+    """Enforce the web guest's read-only boundary before API view dispatch."""
+
+    SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+    SAFE_POST_PATHS = {
+        "/api/guest-login/",
+        "/api/logout/",
+        "/api/ai/chat/",
+        "/api/ai/chat/stream/",
+        "/api/ai/reset/",
+    }
+    BLOCKED_PATH_PREFIXES = ("/api/shield/mobile/",)
+    SAFE_MOBILE_READ_PREFIXES = ("/api/shield/mobile/tool_lifecycle/",)
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    @staticmethod
+    def _is_web_guest(request):
+        try:
+            authentication = JWTAuthentication().authenticate(request)
+        except AuthenticationFailed:
+            # Invalid/expired credentials remain the responsibility of DRF.
+            return False
+        if authentication is None:
+            return False
+        user, _ = authentication
+        return user.username == settings.WEB_GUEST_USERNAME
+
+    @staticmethod
+    def _denied(message):
+        return JsonResponse(
+            {"code": 4000, "data": None, "msg": message},
+            status=403,
+        )
+
+    def __call__(self, request):
+        is_allowed_mobile_read = (
+            request.method in self.SAFE_METHODS
+            and request.path.startswith(self.SAFE_MOBILE_READ_PREFIXES)
+        )
+        is_allowed_post = (
+            request.method == "POST"
+            and request.path in self.SAFE_POST_PATHS
+        )
+        should_check = (
+            (
+                request.path.startswith(self.BLOCKED_PATH_PREFIXES)
+                and not is_allowed_mobile_read
+            )
+            or (
+                request.method not in self.SAFE_METHODS
+                and not is_allowed_post
+            )
+        )
+        if should_check and self._is_web_guest(request):
+            if request.path.startswith(self.BLOCKED_PATH_PREFIXES):
+                return self._denied("游客账号不可访问移动作业接口")
+            return self._denied("游客账号仅支持查看，不能修改数据")
+        return self.get_response(request)
 
 
 class ApiLoggingMiddleware(MiddlewareMixin):
