@@ -26,6 +26,13 @@ export interface WarehouseOpeningBasicInfoType {
   update_datetime?: string;
   creator_name?: string;
   modifier_name?: string;
+  supplement_ready?: boolean;
+  supplement_missing_fields?: string[];
+  summary_status?: 'DRAFT' | 'CONFIRMED';
+  summary_confirmed_at?: string;
+  summary_confirmed_by?: number;
+  summary_withdrawn_at?: string;
+  summary_withdrawn_by?: number;
 }
 
 /**

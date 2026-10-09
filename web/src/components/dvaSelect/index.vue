@@ -77,7 +77,6 @@ watch(
         }
       }).then(res => {
         const dataList = res.data
-        console.log(dataList)
         if (dataList && dataList.length === 1) {
           data.value = dataList[0][selectProps.value.label]
         }else{

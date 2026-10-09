@@ -12,8 +12,13 @@ from rest_framework.decorators import action
 from rest_framework.permissions import BasePermission, IsAuthenticated
 
 from dvadmin.utils.json_response import SuccessResponse, ErrorResponse
-from application.shield.cutter_position_scope import sort_cutter_position_items, sort_cutter_position_values
+from application.shield.cutter_position_scope import (
+    is_active_cutter_position,
+    sort_cutter_position_items,
+    sort_cutter_position_values,
+)
 from application.shield.trajectory import get_tool_trajectory
+from application.shield.tool_identity import resolve_removed_tool_identity
 from application.shield.models import (
     MobileToolChangeTask,
     ToolChangeDetail,
@@ -89,7 +94,19 @@ def resolve_task_positions(warehouse, scope_type, tool_types=None, position_nos=
         queryset = queryset.filter(tool_parent_type__in=tool_types or [])
     elif scope_type == "POSITION_LIST":
         queryset = queryset.filter(cutter_position_no__in=position_nos or [])
+    queryset = active_detail_queryset(queryset)
     return set(queryset.exclude(cutter_position_no__isnull=True).exclude(cutter_position_no="").values_list("cutter_position_no", flat=True))
+
+
+def active_detail_queryset(queryset):
+    active_ids = [
+        detail_id
+        for detail_id, position, tool_parent_type in queryset.values_list(
+            "id", "cutter_position_no", "tool_parent_type"
+        )
+        if is_active_cutter_position(position, tool_parent_type)
+    ]
+    return queryset.filter(id__in=active_ids)
 
 
 def mobile_recorder_options():
@@ -130,6 +147,7 @@ class AdminMobileTaskViewSet(CustomModelViewSet):
         details = ToolChangeDetail.objects.none()
         if warehouse_id:
             details = ToolChangeDetail.objects.filter(warehouse_id=warehouse_id).exclude(cutter_position_no__isnull=True).exclude(cutter_position_no="")
+            details = active_detail_queryset(details)
 
         tool_type_map = {"DISC": "滚刀", "RIPPER": "撕裂刀", "SCRAPER": "刮刀"}
         tool_types = []
@@ -346,6 +364,15 @@ class MobileToolChangeDetailSerializer(serializers.ModelSerializer):
             return None
         return {
             "id": record.id,
+            "old_tool_number": record.old_tool_number or "",
+            "suggested_tool_number": (
+                record.suggested_tool_instance.display_tool_no
+                if record.suggested_tool_instance_id else ""
+            ),
+            "confirmed_tool_number": (
+                record.confirmed_tool_instance.display_tool_no
+                if record.confirmed_tool_instance_id else ""
+            ),
             "ring_wear_amount": record.ring_wear_amount,
             "bias_wear_amount": record.bias_wear_amount,
             "tool_track": record.tool_track or "",
@@ -449,8 +476,10 @@ def scoped_details(task):
         "warehouse",
         "cutter_position",
         "cutter_position__tool_info",
+        "new_tool_record__tool_instance",
+        "old_tool_record__confirmed_tool_instance",
+        "old_tool_record__suggested_tool_instance",
     ).prefetch_related(
-        "new_tool_record",
         "old_tool_record__photos",
         Prefetch(
             "cutter_position__tool_info__cost_records",
@@ -463,6 +492,7 @@ def scoped_details(task):
         queryset = queryset.filter(tool_parent_type__in=task.tool_types)
     elif task.scope_type == "POSITION_LIST" and task.position_nos:
         queryset = queryset.filter(cutter_position_no__in=task.position_nos)
+    queryset = active_detail_queryset(queryset)
     return queryset.order_by("cutter_position_no", "id")
 
 
@@ -531,6 +561,7 @@ def _discard_replacement_artifacts(detail):
 
     只回收本明细自己生成、且未被他处确认引用的实例，已确认配对的不动。
     """
+    removed_instance, removed_tool_number = resolve_removed_tool_identity(detail)
     new_record = getattr(detail, "new_tool_record", None)
     instance = getattr(new_record, "tool_instance", None) if new_record else None
     old_record = getattr(detail, "old_tool_record", None)
@@ -546,50 +577,27 @@ def _discard_replacement_artifacts(detail):
         )
         if not still_referenced:
             instance.delete()
-    detail.tool_number = ""
+    if removed_instance and removed_instance.status == "REMOVED_PENDING_INSPECTION":
+        still_removed = OldToolRecord.objects.filter(
+            Q(confirmed_tool_instance=removed_instance)
+            | Q(suggested_tool_instance=removed_instance)
+        ).exists()
+        if not still_removed:
+            removed_instance.status = "INSTALLED"
+            removed_instance.save(update_fields=["status", "update_datetime"])
+    # 撤销一次误录换刀后，刀位上仍是原刀，编号必须恢复而不是清空。
+    detail.tool_number = removed_tool_number
 
 
 def refresh_warehouse_check_counts(warehouse_id):
     details = ToolChangeDetail.objects.filter(warehouse_id=warehouse_id)
-    WarehouseOpeningBasicInfo.objects.filter(pk=warehouse_id).update(
+    WarehouseOpeningBasicInfo.objects.filter(
+        pk=warehouse_id,
+        summary_status=WarehouseOpeningBasicInfo.SUMMARY_STATUS_DRAFT,
+    ).update(
         checked_tool_count=details.filter(is_checked=True).count(),
         replaced_tool_count=details.filter(is_replaced=True).count(),
     )
-
-
-def suggested_old_tool(detail):
-    try:
-        current_ring = int(detail.warehouse.ring_no)
-    except (TypeError, ValueError):
-        return None
-    candidates = (
-        NewToolRecord.objects
-        .filter(
-            tool_change_detail__warehouse__project=detail.warehouse.project,
-            tool_change_detail__warehouse__shield_model=detail.warehouse.shield_model,
-            tool_change_detail__cutter_position_no=detail.cutter_position_no,
-        )
-        .exclude(tool_change_detail=detail)
-        .select_related("tool_instance", "tool_change_detail__warehouse")
-        .filter(tool_change_detail__warehouse__ring_no__regex=r"^\d+$")
-        .annotate(ring_int=Cast("tool_change_detail__warehouse__ring_no", output_field=IntegerField()))
-        # 与 next_replacement_detail 对称：同环第二次开仓时不能漏掉同环较早那次，
-        # 否则会跨过刚装的刀去配更早的刀，产生确定性错配。
-        .filter(
-            Q(ring_int__lt=current_ring)
-            | (
-                Q(ring_int=current_ring)
-                & Q(tool_change_detail__warehouse__open_time__lt=detail.warehouse.open_time)
-            )
-        )
-        .order_by("-ring_int", "-tool_change_detail__warehouse__open_time")
-    )
-    used_ids = OldToolRecord.objects.exclude(confirmed_tool_instance=None).values_list("confirmed_tool_instance_id", flat=True)
-    # 原写法用 candidates.exists()（过滤前）判空，却对 .exclude(...).first()（过滤后）
-    # 取属性：候选存在但都已被占用时 first() 是 None，直接 AttributeError → 500，
-    # 且记录员此后再也打不开这个刀位。
-    record = candidates.exclude(tool_instance_id__in=used_ids).first()
-    return record.tool_instance if record else None
 
 
 def validate_photo(file_obj):
@@ -693,7 +701,16 @@ class MobileTaskViewSet(viewsets.ViewSet):
                 task = queryset.select_for_update(of=("self",)).filter(pk=pk).first()
                 if not task or not user_can_open_task(request.user, task):
                     return None
-                if task.recorder_id is None:
+                # 与撤回、保存一致：先锁任务，再锁开仓。关联查询的快照
+                # 可能早于桌面确认，认领和提交都必须使用锁定后的最新状态。
+                task.warehouse = WarehouseOpeningBasicInfo.objects.select_for_update().get(
+                    pk=task.warehouse_id
+                )
+                if (
+                    task.recorder_id is None
+                    and task.warehouse.summary_status
+                    != WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED
+                ):
                     task.recorder = request.user
                     if task.status == "UNASSIGNED":
                         task.status = "PENDING"
@@ -709,6 +726,12 @@ class MobileTaskViewSet(viewsets.ViewSet):
         task = self._get_task(request, pk, claim=True)
         if not task:
             return ErrorResponse(msg="任务不存在或无权访问")
+        opening = WarehouseOpeningBasicInfo.objects.select_for_update().get(
+            pk=task.warehouse_id
+        )
+        task.warehouse = opening
+        if opening.summary_status == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+            return ErrorResponse(msg="开仓汇总已确认，移动端不可继续修改；请先由桌面端撤回确认")
         if task.status in {"COMPLETED", "CANCELLED"}:
             return ErrorResponse(msg="当前任务已完成或取消，不可编辑")
         detail_id = request.data.get("detail_id")
@@ -734,6 +757,8 @@ class MobileTaskViewSet(viewsets.ViewSet):
                 return ErrorResponse(msg="刀刃磨损量必须是数字")
 
         if is_replaced:
+            # 在 detail.tool_number 被新刀编号覆盖前快照换下刀具身份。
+            removed_instance, removed_tool_number = resolve_removed_tool_identity(detail)
             photos = request.FILES.getlist("old_photos") or request.FILES.getlist("photos")
             old_record = getattr(detail, "old_tool_record", None)
             old_photo_ids_supplied = "old_photo_ids" in request.data
@@ -848,7 +873,6 @@ class MobileTaskViewSet(viewsets.ViewSet):
                     creator=request.user,
                     dept_belong_id=getattr(request.user, "dept_id", None),
                 )
-                detail.tool_number = instance.display_tool_no
                 detail.tool_parent_type = tool_info.tool_parent_type
             else:
                 changed_fields = []
@@ -859,14 +883,33 @@ class MobileTaskViewSet(viewsets.ViewSet):
                             changed_fields.append(field)
                 if changed_fields:
                     new_record.save(update_fields=changed_fields + ["update_datetime"])
+            # detail.tool_number 始终表示本次换刀后安装在刀位上的刀具编号。
+            detail.tool_number = new_record.tool_instance.display_tool_no
             old_record, _ = OldToolRecord.objects.get_or_create(
                 tool_change_detail=detail,
                 defaults={
-                    "suggested_tool_instance": suggested_old_tool(detail),
+                    "suggested_tool_instance": removed_instance,
+                    "old_tool_number": removed_tool_number,
                     "creator": request.user,
                     "dept_belong_id": getattr(request.user, "dept_id", None),
                 },
             )
+            identity_fields = []
+            if not old_record.suggested_tool_instance_id and removed_instance is not None:
+                old_record.suggested_tool_instance = removed_instance
+                identity_fields.append("suggested_tool_instance")
+            if not str(old_record.old_tool_number or "").strip() and removed_tool_number:
+                old_record.old_tool_number = removed_tool_number
+                identity_fields.append("old_tool_number")
+            if identity_fields:
+                old_record.save(update_fields=identity_fields + ["update_datetime"])
+            if (
+                removed_instance is not None
+                and old_record.inspection_status == "PENDING_VENDOR_FEEDBACK"
+                and removed_instance.status in {"PENDING_VERIFY", "INSTALLED"}
+            ):
+                removed_instance.status = "REMOVED_PENDING_INSPECTION"
+                removed_instance.save(update_fields=["status", "update_datetime"])
             if retained_photo_ids is not None:
                 delete_old_tool_photos(old_record.photos.exclude(id__in=retained_photo_ids))
             for photo in photos:
@@ -885,6 +928,9 @@ class MobileTaskViewSet(viewsets.ViewSet):
             detail.manufacturer = None
             detail.brand = None
             detail.price = None
+            old_record = getattr(detail, "old_tool_record", None)
+            if old_record and old_record.inspection_status != "PENDING_VENDOR_FEEDBACK":
+                return ErrorResponse(msg="旧刀厂家反馈已确认，不可在移动端撤销换刀")
             # 把"已更换"改回"未更换"时必须回收此前生成的新刀实例与配对记录，
             # 否则会留下一把永远拆不掉的幽灵刀：既虚增在役库存，又会在下次
             # 真换刀时被 suggested_old_tool 当成换下的旧刀，造成错误配对。
@@ -910,6 +956,8 @@ class MobileTaskViewSet(viewsets.ViewSet):
         task = self._get_task(request, pk, claim=True)
         if not task:
             return ErrorResponse(msg="任务不存在或无权访问")
+        if task.warehouse.summary_status == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+            return ErrorResponse(msg="开仓汇总已确认，移动端不可继续提交；请先由桌面端撤回确认")
         if task.status in {"SUBMITTED", "COMPLETED", "CANCELLED"}:
             return ErrorResponse(msg="当前任务不可提交")
         details = list(scoped_details(task))
@@ -1143,6 +1191,30 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
     # ------------------------------------------------------------------
     # 批量预计算
     # ------------------------------------------------------------------
+    @action(detail=False, methods=["get"])
+    def scopes(self, request):
+        rows = ToolChangeDetail.objects.order_by(
+            "warehouse__project_id", "warehouse__shield_model_id"
+        ).values("warehouse__project_id", "warehouse__project__project_name",
+                 "warehouse__shield_model_id", "warehouse__shield_model__shield_model").distinct()
+        return SuccessResponse(data=[{
+            "project": row["warehouse__project_id"],
+            "project_name": row["warehouse__project__project_name"],
+            "shield_machine": row["warehouse__shield_model_id"],
+            "machine_name": row["warehouse__shield_model__shield_model"],
+        } for row in rows], msg="success")
+
+    @action(detail=False, methods=["get"])
+    def position_history(self, request):
+        from application.shield.cutter_position_scope import normalize_cutter_position_no
+        from application.shield.lifecycle_history import build_position_history
+        project = str(request.query_params.get("project") or "")
+        machine = str(request.query_params.get("shield_machine") or "")
+        position = normalize_cutter_position_no(request.query_params.get("position"))
+        if not project.isdigit() or not machine.isdigit() or not is_active_cutter_position(position):
+            return ErrorResponse(msg="请选择项目、盾构机和有效刀位")
+        return SuccessResponse(data=build_position_history(project, machine, position), msg="success")
+
     @staticmethod
     def _replacement_ring_map(project=None, shield_machine=None):
         """{(project_id, shield_id, 刀位编号): [已换刀环号升序]}
@@ -1185,6 +1257,7 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
             .values(
                 "id", "confirmed_tool_instance_id", "suggested_tool_instance_id",
                 "tool_change_detail_id", "tool_change_detail__warehouse__ring_no",
+                "inspection_status", "disposition",
             )
         )
         for row in rows:
@@ -1192,6 +1265,8 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
                 "record_id": row["id"],
                 "detail_id": row["tool_change_detail_id"],
                 "ring_no": row["tool_change_detail__warehouse__ring_no"],
+                "inspection_status": row["inspection_status"],
+                "disposition": row["disposition"],
             }
             cid = row["confirmed_tool_instance_id"]
             sid = row["suggested_tool_instance_id"]
@@ -1205,6 +1280,21 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
         for instance_id, payload in suggested.items():
             merged.setdefault(instance_id, {**payload, "confirmed": False})
         return merged
+
+    @staticmethod
+    def _instance_lifecycle_status(instance_status, pairing):
+        if not pairing:
+            return instance_status
+        if instance_status in {"REPAIRED_CLOSED", "SCRAPPED"}:
+            return instance_status
+        inspection_status = pairing.get("inspection_status")
+        if inspection_status == "CLOSED":
+            return "SCRAPPED" if pairing.get("disposition") == "SCRAP" else "REPAIRED_CLOSED"
+        if inspection_status == "CONFIRMED":
+            return "INSPECTED"
+        if inspection_status == "PENDING_VENDOR_FEEDBACK":
+            return "REMOVED_PENDING_INSPECTION"
+        return "REMOVED"
 
     @staticmethod
     def _install_detail_map(instance_ids):
@@ -1334,7 +1424,9 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
         ):
             if row.get("display_tool_no"):
                 seen_numbers.add(row["display_tool_no"])
-            derived_status = "REMOVED" if removal_map.get(row["id"]) else row["status"]
+            derived_status = self._instance_lifecycle_status(
+                row["status"], removal_map.get(row["id"])
+            )
             if status and derived_status != status:
                 continue
             candidates.append({"kind": "instance", "key": row["id"]})
@@ -1675,7 +1767,7 @@ class ToolLifecycleViewSet(viewsets.ViewSet):
             "tool_type_name": instance.tool_type_name,
             **cost_info,
             **self._life_payload(install_ring_no, remove_ring_no),
-            "status": "REMOVED" if pairing else instance.status,
+            "status": self._instance_lifecycle_status(instance.status, pairing),
             # pairing_confirmed=false 表示"已拆下"是由 suggested_tool_instance 推断的，
             # 尚未经人工确认，服役环数据此计算，前端应给出待确认标识。
             "pairing_confirmed": pairing_confirmed,

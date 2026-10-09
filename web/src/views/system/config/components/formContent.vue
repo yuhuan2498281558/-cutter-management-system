@@ -301,11 +301,8 @@ const getInit = () => {
         }
       }
       if (item.form_item_type_label === 'array') {
-        console.log('test');
         nextTick(() => {
-          const tableName = 'xTable_' + key;
-          const tabelRef = ref<TableInstance>();
-          console.log(tabelRef);
+          // const tableName = 'xTable_' + key;
           // const $table = this.$refs[tableName][0];
           // $table.loadData(item.chinldern);
         });
@@ -374,7 +371,6 @@ const onSubmit = (formEl: FormInstance | undefined) => {
         refreshView&&refreshView();
       });
     } else {
-      console.log('error submit!!');
       return false;
     }
   });
@@ -382,26 +378,10 @@ const onSubmit = (formEl: FormInstance | undefined) => {
 
 // 追加
 const onAppend = (tableName: any) => {
-  // const $table = this.$refs[tableName][0];
-  // const { tableData } = $table.getTableData();
-  // const tableLength = tableData.length;
-  // if (tableLength === 0) {
-  // 	const { row: newRow } = $table.insert();
-  // 	console.log(newRow);
-  // } else {
-  // 	const errMap = $table.validate().catch((errMap: any) => errMap);
-  // 	if (errMap) {
-  // 		errorMessage('校验不通过!');
-  // 	} else {
-  // 		const { row: newRow } = $table.insert();
-  // 		console.log(newRow);
-  // 	}
-  // }
 };
 
 // 子表删除
 const onRemoveChild = (row: any, index: any, refName: any) => {
-  console.log(row, index);
   if (row.id) {
     api.DelObj(row.id).then((res: any) => {
       // this.refreshView();

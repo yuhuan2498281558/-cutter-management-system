@@ -56,10 +56,7 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
           successMessage('新增成功');
           refreshView()
         }
-
 			});
-		} else {
-			console.log('error submit!', fields);
 		}
 	});
 };

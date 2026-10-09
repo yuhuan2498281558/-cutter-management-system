@@ -2,11 +2,14 @@ import json
 import os
 import csv
 import time
+import uuid
+from datetime import datetime, timezone
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from application.ai_assistant.llm_provider import get_llm_config
 from application.ai_assistant.llm_service import get_assistant
+from application.ai_assistant.views import _build_project_snapshot
 
 
 DEFAULT_QUESTIONS = [
@@ -25,6 +28,8 @@ class Command(BaseCommand):
     help = "Benchmark AI assistant response time and success rate for paper experiments."
 
     def add_arguments(self, parser):
+        parser.add_argument("--project-id", default="", help="Required project ID for every measured case.")
+        parser.add_argument("--route-mode", choices=["rule", "hybrid", "agent"], default=None)
         parser.add_argument(
             "--output",
             default="ai_assistant_benchmark.json",
@@ -47,10 +52,13 @@ class Command(BaseCommand):
         parser.add_argument(
             "--user-id",
             default="benchmark",
-            help="Session/user id for chat history.",
+            help="Experiment label; every run and question receives an isolated scope.",
         )
 
     def handle(self, *args, **options):
+        project_id = str(options.get("project_id") or "").strip()
+        if not project_id:
+            raise CommandError("--project-id is required; benchmarks never fall back to a demo project.")
         questions = list(options["questions"] or [])
         if options.get("question_file"):
             with open(options["question_file"], "r", encoding="utf-8") as f:
@@ -59,17 +67,22 @@ class Command(BaseCommand):
             questions = DEFAULT_QUESTIONS
         output = options["output"]
         csv_output = options.get("csv_output")
-        user_id = options["user_id"]
+        run_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc).isoformat()
+        scope_prefix = f"benchmark:{str(options['user_id'])[:80]}:{run_id}"
 
         config = get_llm_config()
         assistant = get_assistant()
-        route_mode = os.environ.get("AI_ASSISTANT_ROUTE_MODE", "hybrid")
+        route_mode = options.get("route_mode") or os.environ.get("AI_ASSISTANT_ROUTE_MODE", "hybrid")
+        context = {"project_id": project_id, "require_project": True, "route_mode": route_mode,
+                   **_build_project_snapshot(project_id)}
 
         rows = []
         started = time.perf_counter()
-        for question in questions:
+        for index, question in enumerate(questions, start=1):
             item_started = time.perf_counter()
-            result = assistant.chat(question, {"user_id": user_id, "username": "benchmark"})
+            result = assistant.chat(question, {**context, "user_id": f"{scope_prefix}:{index}",
+                                               "username": "benchmark"})
             elapsed_ms = round((time.perf_counter() - item_started) * 1000, 2)
             answer = result.get("answer") or result.get("error") or ""
             row = {
@@ -87,6 +100,11 @@ class Command(BaseCommand):
 
         total_ms = round((time.perf_counter() - started) * 1000, 2)
         summary = {
+            "run_id": run_id,
+            "started_at": started_at,
+            "project_id": project_id,
+            "scope_policy": "isolated_per_case",
+            "measurement_path": "synchronous_service; excludes HTTP/SSE transport",
             "provider": config.provider,
             "model": config.model,
             "base_url": config.base_url,

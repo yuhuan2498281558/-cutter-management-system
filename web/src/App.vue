@@ -94,7 +94,7 @@ watch(
       try {
         websocket.init(wsReceive)
       } catch (e) {
-        console.log('websocket错误');
+        // 静默处理 WebSocket 初始化异常
       }
     }
 	},

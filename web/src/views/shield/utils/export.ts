@@ -4,6 +4,8 @@ export interface ExportColumn {
   key: string;
   title: string;
   formatter?: (row: any, index: number) => any;
+  /** Relative column width for PDF; does not change Excel or CSV. */
+  printWidth?: number;
 }
 
 export interface ExportMetaItem {
@@ -97,13 +99,18 @@ function buildMetaRows(meta: ExportMetaItem[] = [], columnCount: number) {
 
   return `
     <tr class="meta-title"><th colspan="${columnCount}">开仓基本信息</th></tr>
-    ${rows}
+    ${rows.join('')}
     <tr class="table-spacer"><td colspan="${columnCount}"></td></tr>
   `;
 }
 
 function buildHtmlTable(options: ExportOptions) {
   const columnCount = Math.max(options.columns.length, 1);
+  const isPrint = options.format === 'pdf';
+  const paperSize = columnCount >= 12 ? 'A3 landscape' : columnCount >= 8 ? 'A4 landscape' : 'A4 portrait';
+  const printWidths = options.columns.map(column => Math.max(column.printWidth || 1, 1));
+  const totalPrintWidth = printWidths.reduce((total, width) => total + width, 0);
+  const printColumns = `<colgroup>${printWidths.map(width => `<col style="width:${width / totalPrintWidth * 100}%">`).join('')}</colgroup>`;
   const metaRows = buildMetaRows(options.meta || [], columnCount);
   const headers = options.columns.map(column => `<th>${escapeHtml(column.title)}</th>`).join('');
   const rows = options.rows.map((row, index) => {
@@ -129,11 +136,29 @@ th{background:#f2f3f5;font-weight:600;}
 .meta-row .meta-value{background:#fff;}
 .table-spacer td{height:12px;border-left:none;border-right:none;background:#fff;padding:0;}
 .detail-header th{background:#f2f3f5;white-space:nowrap;}
+${isPrint ? `
+@page{size:${paperSize};margin:10mm;}
+body{margin:0;font-size:12px;line-height:1.45;}
+h1{margin-bottom:10px;}
+table{font-size:12px;}
+.export-meta{table-layout:fixed;margin-bottom:10px;}
+.export-meta .meta-label{white-space:normal;}
+.export-meta .meta-value{white-space:pre-line;overflow-wrap:anywhere;}
+.export-meta .table-spacer{display:none;}
+.export-table{table-layout:fixed;}
+.export-table th,.export-table td{padding:4px;white-space:pre-line;overflow-wrap:anywhere;}
+thead{display:table-header-group;}
+tr{break-inside:avoid;page-break-inside:avoid;}
+.meta-title{break-after:avoid;}
+@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+` : ''}
 </style>
 </head>
 <body>
 <h1>${escapeHtml(options.title)}</h1>
-<table class="export-table"><tbody>${metaRows}<tr class="detail-header">${headers}</tr>${rows}</tbody></table>
+${isPrint
+  ? `${metaRows ? `<table class="export-meta"><tbody>${metaRows}</tbody></table>` : ''}<table class="export-table">${printColumns}<thead><tr class="detail-header">${headers}</tr></thead><tbody>${rows}</tbody></table>`
+  : `<table class="export-table"><tbody>${metaRows}<tr class="detail-header">${headers}</tr>${rows}</tbody></table>`}
 </body>
 </html>`;
 }

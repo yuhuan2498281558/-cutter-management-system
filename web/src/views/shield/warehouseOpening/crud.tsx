@@ -1,10 +1,11 @@
 import * as api from './api';
-import { UserPageQuery, AddReq, EditReq, CreateCrudOptionsRet, dict } from '@fast-crud/fast-crud';
+import { UserPageQuery, AddReq, EditReq, CreateCrudOptionsRet, compute, dict } from '@fast-crud/fast-crud';
 import { useRouter } from 'vue-router';
+import { ref, onDeactivated, onScopeDispose } from 'vue';
 import AutoStratumDisplay from './AutoStratumDisplay.vue';
 import { createIndexFormatter } from '../crudUtils';
 
-export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptionsRet {
+export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdraw, withdrawingId }: any): CreateCrudOptionsRet {
 	const router = useRouter();
 
 	const pageRequest = async (query: UserPageQuery) => {
@@ -23,49 +24,75 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 
 	let previewTimer: ReturnType<typeof setTimeout> | undefined;
 	let previewRequestId = 0;
+	let previewForm: any = null;
+	const previewState = ref<'waiting' | 'loading' | 'ready' | 'error'>('waiting');
+	const cancelAutoStratumPreview = () => {
+		if (previewTimer) clearTimeout(previewTimer);
+		previewTimer = undefined;
+		previewRequestId += 1;
+		previewForm = null;
+		previewState.value = 'waiting';
+	};
+	onDeactivated(cancelAutoStratumPreview);
+	onScopeDispose(cancelAutoStratumPreview);
 	const clearAutoStratum = (form: any) => {
 		form.last_ring_no = undefined;
 		form.rings_between_openings = undefined;
+		form.usage_distance = undefined;
 		form.stratum_info_between_list = [];
 		form.geological_conditions = '';
 	};
-	const queueAutoStratumPreview = (form: any) => {
+	const queueAutoStratumPreview = (form: any, immediate = false) => {
+		if (!form || form !== previewForm) return;
 		if (previewTimer) clearTimeout(previewTimer);
+		previewTimer = undefined;
+		const requestId = ++previewRequestId;
 		const project = form?.project;
 		const ringNo = form?.ring_no;
+		clearAutoStratum(form);
 		if (!project || ringNo === undefined || ringNo === null || String(ringNo).trim() === '') {
-			previewRequestId += 1;
-			clearAutoStratum(form);
+			previewState.value = 'waiting';
 			return;
 		}
-		const requestId = ++previewRequestId;
+		previewState.value = 'loading';
+		const params = {
+			project,
+			ring_no: ringNo,
+			shield_model: form.shield_model || undefined,
+			opening_id: form.id || undefined,
+		};
 		previewTimer = setTimeout(async () => {
+			previewTimer = undefined;
 			try {
-				const response = await api.GetAutoStratumPreview({
-					project,
-					ring_no: ringNo,
-					shield_model: form.shield_model || undefined,
-					opening_id: form.id || undefined,
-				});
-				if (requestId !== previewRequestId) return;
+				const response = await api.GetAutoStratumPreview(params);
+				if (requestId !== previewRequestId || form !== previewForm) return;
 				const data = response.data as api.OpeningStratumPreview;
 				form.last_ring_no = data.last_ring_no || undefined;
 				form.rings_between_openings = data.rings_between_openings;
+				form.usage_distance = data.usage_distance;
 				form.stratum_info_between_list = data.stratum_info_between_list || [];
 				form.geological_conditions = data.geological_conditions || '';
+				previewState.value = 'ready';
 			} catch {
-				if (requestId === previewRequestId) clearAutoStratum(form);
+				if (requestId === previewRequestId && form === previewForm) {
+					clearAutoStratum(form);
+					previewState.value = 'error';
+				}
 			}
-		}, 280);
+		}, immediate ? 0 : 280);
+	};
+	const retryAutoStratumPreview = () => {
+		if (previewState.value === 'error') queueAutoStratumPreview(previewForm, true);
 	};
 
 	// 跳转到换刀明细页面
-	const goToToolChangeDetail = (row: any) => {
+	const goToToolChangeDetail = (row: any, mode: 'view' | 'supplement') => {
 		router.push({
 			path: '/shield/toolChangeDetail',
 			query: {
 				warehouse_id: row.id,
 				warehouse_code: row.warehouse_id,
+				mode,
 			},
 		});
 	};
@@ -89,10 +116,16 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 			},
 			rowHandle: {
 				fixed: 'right',
-				width: 360,
+				width: 240,
+				dropdown: {
+					trigger: 'click',
+					more: { text: '更多', type: 'primary', link: true, iconRight: 'ArrowDown' },
+				},
 				buttons: {
 					view: { show: false },
+					copy: { dropdown: true },
 					edit: {
+						dropdown: true,
 						show: true,
 						text: '编辑',
 						iconRight: 'Edit',
@@ -100,31 +133,61 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 						link: true,
 					},
 					remove: {
+						dropdown: true,
 						show: true,
 						text: '删除',
 						iconRight: 'Delete',
 						type: 'danger',
 						link: true,
 					},
-					toolChangeDetail: {
-						text: '换刀明细',
+					viewToolChangeDetail: {
+						text: '查看明细',
 						type: 'success',
 						link: true,
-						iconRight: 'List',
 						click: ({ row }: any) => {
-							goToToolChangeDetail(row);
+							goToToolChangeDetail(row, 'view');
 						},
+					},
+					supplementToolChangeDetail: {
+						text: '补录明细',
+						type: 'warning',
+						link: true,
+						click: ({ row }: any) => {
+							if (row.supplement_ready) goToToolChangeDetail(row, 'supplement');
+							else onSupplement(row);
+						},
+					},
+					withdrawSummary: {
+						dropdown: true,
+						text: '撤回汇总',
+						type: 'danger',
+						link: true,
+						iconRight: 'RefreshLeft',
+						show: compute(({ row }: any) => row.summary_status === 'CONFIRMED'),
+						loading: compute(({ row }: any) => withdrawingId.value === row.id),
+						disabled: compute(() => withdrawingId.value !== null),
+						click: ({ row }: any) => onWithdraw(row),
 					},
 				},
 			},
 			form: {
-				col: { span: 12 },
+				doReset: ({ form }: any) => queueAutoStratumPreview(form),
+				col: { span: 12, xs: 24 },
 				labelWidth: '156px',
 				row: { gutter: 20 },
 				wrapper: {
 					is: 'el-dialog',
-					width: '980px',
-					onOpened: ({ form }: any) => queueAutoStratumPreview(form),
+					width: 'min(980px, calc(100vw - 32px))',
+					class: 'warehouse-opening-form-dialog',
+					top: '5vh',
+					onOpen: cancelAutoStratumPreview,
+					onOpened: ({ form }: any) => {
+						previewForm = form;
+						queueAutoStratumPreview(form);
+					},
+					onClosed: ({ form }: any) => {
+						if (form === previewForm) cancelAutoStratumPreview();
+					},
 				},
 			},
 			columns: {
@@ -140,7 +203,7 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 				ring_no: {
 					title: '换刀环号',
 					type: 'input',
-					search: { show: true },
+					search: { show: true, order: 2, component: { clearable: true } },
 					column: { minWidth: 120, sortable: true },
 					form: {
 						rules: [{ required: true, message: '请输入换刀环号' }],
@@ -152,6 +215,11 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 				project: {
 					title: '项目',
 					type: 'dict-select',
+					search: {
+						show: true,
+						order: 0,
+						component: { placeholder: '全部项目', filterable: true, clearable: true },
+					},
 					column: { show: false },
 					dict: dict({
 						url: '/api/shield/project/',
@@ -210,6 +278,11 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 				shield_model: {
 					title: '盾构机编号',
 					type: 'dict-select',
+					search: {
+						show: true,
+						order: 1,
+						component: { placeholder: '全部盾构机', filterable: true, clearable: true },
+					},
 					column: { show: false },
 					dict: dict({
 						url: '/api/shield/shield_machine_basic_info/',
@@ -236,30 +309,32 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 					title: '持续开仓时间（小时）',
 					type: 'number',
 					column: { minWidth: 140 },
-					form: {
-						component: {
-							placeholder: '请输入持续开仓时间（小时）',
-							min: 0,
-							precision: 2,
-						},
-						order: 6,
-					},
+					form: { show: false },
 				},
 				tool_change_duration: {
 					title: '换刀总时长（小时）',
 					type: 'number',
 					column: { minWidth: 140 },
-					form: {
-						component: { placeholder: '请输入换刀总时长（小时）', min: 0, precision: 2 },
-						order: 7,
-					},
+					form: { show: false },
+				},
+				summary_status: {
+					title: '汇总状态',
+					type: 'dict-select',
+					dict: dict({
+						data: [
+							{ value: 'DRAFT', label: '待确认', color: 'warning' },
+							{ value: 'CONFIRMED', label: '已确认', color: 'success' },
+						],
+					}),
+					column: { minWidth: 100 },
+					form: { show: false },
 				},
 				usage_distance: {
 					title: '本次使用距离（m）',
 					type: 'number',
 					column: { minWidth: 130 },
 					form: {
-						component: { placeholder: '请输入本次使用距离（m）', min: 0, precision: 2 },
+						component: { placeholder: '按掘进环数自动计算', disabled: true, precision: 2 },
 						order: 8,
 					},
 				},
@@ -267,27 +342,13 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 					title: '检查刀具数量（把）',
 					type: 'number',
 					column: { minWidth: 130 },
-					form: {
-						component: {
-							placeholder: '请输入检查刀具数量（把）',
-							min: 0,
-							precision: 0,
-						},
-						order: 9,
-					},
+					form: { show: false },
 				},
 				replaced_tool_count: {
 					title: '更换刀具数量（把）',
 					type: 'number',
 					column: { minWidth: 130 },
-					form: {
-						component: {
-							placeholder: '请输入更换刀具数量（把）',
-							min: 0,
-							precision: 0,
-						},
-						order: 10,
-					},
+					form: { show: false },
 				},
 				last_ring_no: {
 					title: '上次换刀环号',
@@ -333,6 +394,10 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 						component: {
 							name: AutoStratumDisplay,
 							kind: 'between',
+							placeholder: '自动获取',
+							status: compute(() => previewState.value),
+							firstOpening: compute(({ form }: any) => previewState.value === 'ready' && !form.last_ring_no),
+							onRetry: retryAutoStratumPreview,
 						},
 					},
 				},
@@ -348,6 +413,9 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 						component: {
 							name: AutoStratumDisplay,
 							kind: 'position',
+							placeholder: '自动获取',
+							status: compute(() => previewState.value),
+							onRetry: retryAutoStratumPreview,
 						},
 						order: 14,
 					},
@@ -355,7 +423,11 @@ export const createCrudOptions = function ({ crudExpose }: any): CreateCrudOptio
 				warehouse_id: {
 					title: '开仓编号',
 					type: 'input',
-					search: { show: true },
+					search: {
+						show: true,
+						order: 3,
+						component: { placeholder: '请输入开仓编号', disabled: false, clearable: true },
+					},
 					column: { minWidth: 150, sortable: true },
 					form: {
 						show: true,

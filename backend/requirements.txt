@@ -9,6 +9,8 @@ django-simple-captcha==0.6.0
 django-timezone-field==7.0
 djangorestframework_simplejwt==5.4.0
 drf-yasg==1.21.7
+# drf-yasg 1.21.7 imports pkg_resources, which setuptools removed in 81
+setuptools<81
 pypinyin==0.51.0
 ua-parser==0.18.0
 pyparsing==3.1.2
@@ -19,6 +21,8 @@ langchain-community==0.3.24
 langchain-core==0.3.65
 langchain-ollama==0.2.3
 langchain-openai==0.3.24
+# langchain_community SQLChatMessageHistory imports SQLAlchemy asyncio, which requires greenlet
+greenlet==3.2.4
 typing-extensions==4.12.2
 tzlocal==5.2
 channels==4.1.0

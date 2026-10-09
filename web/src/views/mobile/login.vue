@@ -50,6 +50,7 @@ async function onSubmit() {
       captcha: form.captcha,
       captchaKey: form.captchaKey,
     });
+    Session.remove('mobileAccessVerified');
     Session.set('token', res.data.access);
     const me: any = await getMobileMe();
     if (!me.data?.has_mobile_access) {
@@ -57,6 +58,7 @@ async function onSubmit() {
       showToast('当前账号没有移动端录入权限');
       return;
     }
+    Session.set('mobileAccessVerified', true);
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '';
     // 只允许回到移动端页面，避免外部/后台路径把登录流程带进另一套路由守卫。
     const target = redirect.startsWith('/mobile/') && redirect !== '/mobile/login' ? redirect : '/mobile/tasks';
@@ -71,6 +73,10 @@ async function onSubmit() {
 }
 
 onMounted(() => {
+  // 移动端必须重新登录并校验移动权限；否则桌面游客令牌会让登录 POST
+  // 被只读中间件提前拒绝，尚未轮到新账号完成认证。
+  Session.remove('mobileAccessVerified');
+  Session.remove('token');
   refreshCaptcha();
 });
 </script>

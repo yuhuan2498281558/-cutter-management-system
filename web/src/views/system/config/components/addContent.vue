@@ -130,8 +130,6 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
           refreshView()
         }
 			});
-		} else {
-			console.log('error submit!', fields);
 		}
 	});
 };

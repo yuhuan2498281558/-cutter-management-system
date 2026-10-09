@@ -4,18 +4,46 @@
 
 from application.shield.models import (
     ToolChangeDetail, StratumBasicInfo,
-    ToolInfo, ToolCost, ToolInstance, NewToolRecord,
+    ToolInfo, ToolCost, ToolInstance, NewToolRecord, OldToolRecord,
     ProjectInfo, WarehouseOpeningBasicInfo,
     ShieldTunnelingData,
 )
-from django.db.models import Count, Avg, Q, Sum, Max, Min
-from django.db.models.functions import Cast
+from django.db.models import Count, Avg, Q, Sum, Max, Min, Case, When, F, CharField
+from django.db.models.functions import Cast, Upper, Trim
 from django.db.models import IntegerField
+from application.shield.cutter_position_scope import ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no
+from application.shield.wear import normalize_wear
 import json
 import logging
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+def _active_detail_query(params=None, *, checked_only=True):
+    """Use the same normalized 122-position/type contract as field recording.
+
+    A legacy replacement is itself inspection evidence even if is_checked was
+    not backfilled. Empty precreated rows are never statistical observations.
+    """
+    params = params or {}
+    query = ToolChangeDetail.objects.annotate(
+        _ai_position=Upper(Trim('cutter_position_no')),
+        _ai_type=Upper(Trim('tool_parent_type')),
+    ).annotate(_ai_position=Case(
+        When(_ai_position__regex=r'^0*([1-9]|[1-7][0-9])$', then=Cast(Cast('_ai_position', IntegerField()), CharField())),
+        default=F('_ai_position'), output_field=CharField(),
+    )).filter(
+        Q(_ai_position__in=[code for code in ACTIVE_CUTTER_POSITION_CODES if code.startswith('S')], _ai_type='SCRAPER')
+        | Q(_ai_position__in=[code for code in ACTIVE_CUTTER_POSITION_CODES if not code.startswith('S')], _ai_type='DISC')
+    )
+    if params.get('project_id'):
+        query = query.filter(warehouse__project__project_id=params['project_id'])
+    if params.get('shield_machine_id'):
+        query = query.filter(warehouse__shield_model_id=params['shield_machine_id'])
+    if checked_only:
+        query = query.filter(Q(is_checked=True) | Q(is_replaced=True))
+    return query
 
 # 地层类型中文映射（与系统字典数据保持一致）
 STRATUM_TYPE_NAMES = {
@@ -57,8 +85,8 @@ def _pct_to_float(value):
 #
 # ToolChangeDetail.wear_condition 是自由 CharField。库中同时存在两类取值：
 #   1) models.ToolChangeDetail.WEAR_CONDITION_CHOICES 定义的英文枚举码
-#      （GOOD / NORMAL / MODERATE / SEVERE / ABNORMAL）——开仓时由 post_save
-#      信号自动建档写入 "NORMAL"（models.py 中 wear_condition="NORMAL"）；
+#      （GOOD / NORMAL / MODERATE / SEVERE / ABNORMAL），见历史记录；
+#      当前预建行磨损为空，不代表正常或完成检查。
 #   2) 人工/移动端录入的中文描述（正常、偏磨、刀圈崩刃 …）。
 #
 # 本模块此前在三处各用一套互不兼容的判定（== '正常' / 5 个中文枚举集合 /
@@ -66,30 +94,10 @@ def _pct_to_float(value):
 # 统一到下面的归一化函数，中英文两套取值都能正确分类，无法识别的取值归入
 # 'unknown' 并单独计数，不再被静默算作异常。
 # ---------------------------------------------------------------------------
-_WEAR_NORMAL_TOKENS = {
-    'GOOD', 'NORMAL',
-    '正常', '完好', '良好', '正常磨损', '轻微磨损', '未见异常',
-}
-
-_WEAR_ABNORMAL_TOKENS = {
-    'MODERATE', 'SEVERE', 'ABNORMAL',
-    '偏磨', '刀圈崩刃', '崩刃', '刀圈脱落', '脱落', '漏油', '轴承损坏',
-    '断裂', '异常磨损', '严重磨损', '中度磨损', '刀圈磨平', '刀体磨损',
-}
-
-
 def normalize_wear_condition(value) -> str:
-    """把 wear_condition 归一为 'normal' / 'abnormal' / 'unknown'。"""
-    if value is None:
-        return 'unknown'
-    token = str(value).strip()
-    if not token:
-        return 'unknown'
-    if token in _WEAR_NORMAL_TOKENS or token.upper() in _WEAR_NORMAL_TOKENS:
-        return 'normal'
-    if token in _WEAR_ABNORMAL_TOKENS or token.upper() in _WEAR_ABNORMAL_TOKENS:
-        return 'abnormal'
-    return 'unknown'
+    """沿用共享业务口径，保留助手原有三分类返回格式。"""
+    state = normalize_wear(value)
+    return state.lower() if state else 'unknown'
 
 
 def is_abnormal_wear(value) -> bool:
@@ -170,20 +178,11 @@ def _enrich_manufacturer_result(result: dict) -> dict:
     ]
     highlights = []
     warnings = []
-    if manufacturers:
-        best = manufacturers[0]
-        worst = manufacturers[-1]
-        highlights.append(
-            f"{best.get('manufacturer')} 异常磨损率最低，为 {best.get('abnormal_rate_pct')}%"
-        )
-        if len(manufacturers) > 1:
-            highlights.append(
-                f"{worst.get('manufacturer')} 异常磨损率最高，为 {worst.get('abnormal_rate_pct')}%"
-            )
-        for item in manufacturers[:5]:
-            facts.append(
-                f"{item.get('manufacturer')}：更换 {item.get('replaced_count')} 次，异常磨损 {item.get('abnormal_wear_count')} 次，异常磨损率 {item.get('abnormal_rate_pct')}%"
-            )
+    for item in manufacturers[:5]:
+        denominator = item.get('abnormal_rate_denominator')
+        rate = item.get('abnormal_rate_pct')
+        rate_text = f"{rate}%（已分类样本{denominator}条）" if denominator and rate is not None else "暂无（无已分类样本）"
+        facts.append(f"{item.get('manufacturer')}：更换 {item.get('replaced_count')} 次，异常磨损率 {rate_text}")
     if total < 20:
         warnings.append("厂家对比样本量偏少，建议结合更多换刀记录复核")
     return _merge_analysis(
@@ -192,7 +191,7 @@ def _enrich_manufacturer_result(result: dict) -> dict:
         facts=facts,
         highlights=highlights,
         warnings=warnings,
-        conclusion_hint="厂家排序应优先参考异常磨损率，同时结合更换次数和成本，避免只看单次价格。",
+        conclusion_hint="异常率排序不等于质量或性价比排序，需复核样本量、刀型、地层和服役条件。",
     )
 
 
@@ -232,8 +231,9 @@ def _enrich_opening_result(result: dict) -> dict:
     ]
     highlights = []
     warnings = []
-    if records:
-        highest = max(records, key=lambda item: _pct_to_float(item.get("abnormal_rate")))
+    comparable = [item for item in records if (item.get('abnormal_rate_denominator') or 0) > 0 and item.get('abnormal_rate') is not None]
+    if comparable:
+        highest = max(comparable, key=lambda item: _pct_to_float(item.get("abnormal_rate")))
         highlights.append(
             f"最近记录中环号 {highest.get('ring_no')} 的异常磨损率最高，为 {highest.get('abnormal_rate')}"
         )
@@ -344,8 +344,8 @@ def _summarize_tunneling_records(query):
     return {
         "total_records": total,
         "ring_range": [
-            query.aggregate(min_ring=Min('ring_no'))['min_ring'],
-            query.aggregate(max_ring=Max('ring_no'))['max_ring'],
+            query.aggregate(min_ring=Min(Cast('ring_no', IntegerField())))['min_ring'],
+            query.aggregate(max_ring=Max(Cast('ring_no', IntegerField())))['max_ring'],
         ],
         "metrics": metrics,
         "recent_records": recent,
@@ -483,7 +483,7 @@ def query_tool_change_data(params_str: str) -> str:
         cutter_position_no = params.get('cutter_position_no', '').strip()
 
         # 构建查询
-        query = ToolChangeDetail.objects.select_related(
+        query = _active_detail_query(params).select_related(
             'warehouse__project', 'cutter_position'
         )
 
@@ -497,7 +497,7 @@ def query_tool_change_data(params_str: str) -> str:
 
         # 特定刀位筛选
         if cutter_position_no:
-            query = query.filter(cutter_position_no=cutter_position_no)
+            query = query.filter(_ai_position=normalize_cutter_position_no(cutter_position_no))
 
         # 最近N次开仓：取最近N条开仓记录的环号范围
         if last_n_openings:
@@ -697,103 +697,100 @@ def calculate_tool_performance(params_str: str) -> str:
                          "若要按型号比较请用 recommend_tools。"
             })
 
-        rows_qs = ToolChangeDetail.objects.filter(
+        rows_qs = _active_detail_query(params).filter(
             tool_number__in=tool_numbers
-        ).select_related('warehouse')
+        ).select_related('warehouse', 'new_tool_record__tool_instance__tool_info')
         if project_id:
             rows_qs = rows_qs.filter(warehouse__project__project_id=project_id)
 
         rows_by_number = {}
-        for row in rows_qs.values(
-            'tool_number', 'cutter_position_no', 'tool_parent_type',
-            'warehouse__ring_no', 'wear_condition', 'is_replaced',
-            'is_checked', 'manufacturer', 'brand', 'price',
-        ):
-            ring = _ring_int(row.get('warehouse__ring_no'))
+        for row in rows_qs:
+            ring = _ring_int(row.warehouse.ring_no)
             if ring is None:
                 continue
-            row['ring'] = ring
-            rows_by_number.setdefault(row['tool_number'], []).append(row)
+            key = (row.tool_number, row.warehouse.project_id,
+                   row.warehouse.shield_model_id, row._ai_position)
+            rows_by_number.setdefault(key, []).append(row)
 
         removal_rings = _replacement_rings_by_position(project_id)
-
-        # 型号信息经 ToolInstance.display_tool_no 关联（tool_number 即实例编号）
-        instance_map = {}
-        for instance in (
-            ToolInstance.objects
-            .filter(display_tool_no__in=tool_numbers)
-            .select_related('tool_info')
-        ):
-            instance_map.setdefault(instance.display_tool_no, instance)
+        removal_records = _removal_records(project_id)
 
         tools, not_found = [], []
         for number in tool_numbers:
-            rows = sorted(rows_by_number.get(number, []), key=lambda r: r['ring'])
-            if not rows:
+            groups = [rows for key, rows in rows_by_number.items() if key[0] == number]
+            if not groups:
                 not_found.append(number)
                 continue
-
-            install_rows = [r for r in rows if r.get('is_replaced')]
-            install_inferred = not install_rows
-            install_row = install_rows[0] if install_rows else rows[0]
-            install_ring = install_row['ring']
-            position = install_row.get('cutter_position_no')
-
-            removal_ring = next(
-                (r for r in removal_rings.get(position, []) if r > install_ring),
-                None,
-            )
-            service_rings = (
-                removal_ring - install_ring
-                if removal_ring is not None and removal_ring >= install_ring
-                else None
-            )
-
-            instance = instance_map.get(number)
-            info = getattr(instance, 'tool_info', None)
-
-            inspections = [
-                {
-                    "ring_no": r['ring'],
-                    "wear_condition": r.get('wear_condition'),
-                    "wear_class": normalize_wear_condition(r.get('wear_condition')),
-                    "is_checked": bool(r.get('is_checked')),
-                    "is_replaced": bool(r.get('is_replaced')),
-                }
-                for r in rows
-            ]
-            abnormal_inspections = sum(
-                1 for item in inspections if item["wear_class"] == 'abnormal'
-            )
-
-            tools.append({
-                "tool_number": number,
-                "cutter_position_no": position,
-                "tool_parent_type": install_row.get('tool_parent_type')
-                                    or getattr(instance, 'tool_parent_type', None),
-                "tool_type_name": (info.tool_type_name if info else None)
-                                  or getattr(instance, 'tool_type_name', None),
-                "manufacturer": install_row.get('manufacturer'),
-                "brand": install_row.get('brand'),
-                "price_yuan": float(install_row['price']) if install_row.get('price') is not None else None,
-                "install_ring_no": install_ring,
-                "install_ring_inferred": install_inferred,
-                "removal_ring_no": removal_ring,
-                "service_rings": service_rings,
-                "status": "在役" if removal_ring is None else "已拆下",
-                "inspection_count": len(inspections),
-                "abnormal_inspection_count": abnormal_inspections,
-                "inspections": inspections[:20],
-            })
+            for group in groups:
+                rows = sorted(group, key=lambda r: (int(r.warehouse.ring_no), r.warehouse.open_time, r.pk))
+                # The installation relation is authoritative; display numbers
+                # are not unique across machines and never identify an instance alone.
+                install_rows = [r for r in rows if getattr(r, 'new_tool_record', None)]
+                if not install_rows:
+                    install_rows = [next((r for r in rows if r.is_replaced), rows[0])]
+                for install_row in install_rows:
+                    installation = getattr(install_row, 'new_tool_record', None)
+                    instance = installation.tool_instance if installation else None
+                    install_inferred = installation is None
+                    install_ring = int(install_row.warehouse.ring_no)
+                    removal_ring, removal_record, removal_inferred = _installation_removal(
+                        install_row, instance, removal_records, removal_rings,
+                    )
+                    info = getattr(instance, 'tool_info', None)
+                    inspection_rows = [r for r in rows if r.is_checked and not r.is_replaced
+                                       and int(r.warehouse.ring_no) >= install_ring
+                                       and (removal_ring is None or int(r.warehouse.ring_no) <= removal_ring)]
+                    inspections = [{
+                        'ring_no': int(r.warehouse.ring_no),
+                        'wear_condition': r.wear_condition,
+                        'wear_class': normalize_wear_condition(r.wear_condition),
+                        'is_checked': r.is_checked, 'is_replaced': False,
+                        'source': 'field_inspection',
+                    } for r in inspection_rows]
+                    # The wear entered on an installation row belongs to the old
+                    # removed tool, not the newly assigned detail.tool_number.
+                    if removal_record:
+                        removed = removal_record.tool_change_detail
+                        vendor_confirmed = removal_record.inspection_status in {'CONFIRMED', 'CLOSED'}
+                        wear = (removal_record.wear_condition if vendor_confirmed else None) or removed.wear_condition
+                        inspections.append({
+                            'ring_no': removal_ring, 'wear_condition': wear,
+                            'wear_class': normalize_wear_condition(wear),
+                            'is_checked': removed.is_checked, 'is_replaced': True,
+                            'source': 'vendor_feedback' if vendor_confirmed and removal_record.wear_condition else 'removed_field_inspection',
+                        })
+                    inspections.sort(key=lambda item: item['ring_no'])
+                    lifecycle_status = instance.status if instance else None
+                    removed_statuses = {'REMOVED_PENDING_INSPECTION', 'INSPECTED', 'REPAIRED_CLOSED', 'SCRAPPED'}
+                    status = '已拆下' if removal_ring is not None or lifecycle_status in removed_statuses else (
+                        '在役' if lifecycle_status == 'INSTALLED' else '状态待核实')
+                    tools.append({
+                        'tool_number': number, 'tool_uid': instance.tool_uid if instance else None,
+                        'shield_machine_id': install_row.warehouse.shield_model_id,
+                        'cutter_position_no': install_row._ai_position,
+                        'tool_parent_type': install_row.tool_parent_type,
+                        'tool_type_name': info.tool_type_name if info else getattr(instance, 'tool_type_name', None),
+                        'manufacturer': install_row.manufacturer, 'brand': install_row.brand,
+                        'price_yuan': float(install_row.price) if install_row.price is not None else None,
+                        'install_ring_no': install_ring, 'install_ring_inferred': install_inferred,
+                        'removal_ring_no': removal_ring, 'removal_inferred': removal_inferred,
+                        'service_rings': removal_ring - install_ring if removal_ring is not None and not install_inferred else None,
+                        'status': status, 'lifecycle_status': lifecycle_status,
+                        'inspection_status': removal_record.inspection_status if removal_record else None,
+                        'inspection_count': len(inspections),
+                        'abnormal_inspection_count': sum(item['wear_class'] == 'abnormal' for item in inspections),
+                        'inspections': inspections[:20],
+                    })
 
         result = {
             "tools": tools,
             "not_found": not_found,
             "note": (
-                "service_rings = 拆卸环号 − 安装环号。status 为“在役”表示该刀尚未被换下，"
-                "其服役环数只知道下界（右删失），因此不给出数值，不可与已拆下的刀直接比较。"
-                "install_ring_inferred=true 表示未找到该编号对应的换刀行，安装环号由最早一条"
-                "继承记录推断，可能偏晚。"
+                "服役环数按同项目、同盾构机、同刀位的安装与旧刀身份关系计算。"
+                "install_ring_inferred=true 表示缺少新刀安装关联，不能给出确定寿命；"
+                "removal_inferred=true 表示拆卸环号来自同范围下一次换刀的历史推断。"
+                "未找到拆卸环号不等于确认在役；实例状态与厂家返修状态分别展示。"
+                "安装当次磨损属于换下旧刀，不计入新刀检查历史。"
             ),
         }
         if not_found:
@@ -837,20 +834,54 @@ def _stratum_codes_by_ring(project_id=None) -> dict:
 
 
 def _replacement_rings_by_position(project_id=None) -> dict:
-    """返回 {刀位编号: [已换刀的环号(int) 升序]}，用于给每次安装配对拆卸环号。"""
-    qs = ToolChangeDetail.objects.filter(is_replaced=True).select_related('warehouse')
-    if project_id:
-        qs = qs.filter(warehouse__project__project_id=project_id)
+    """Historical fallback, scoped by project, machine and normalized position."""
+    qs = _active_detail_query({'project_id': project_id}).filter(is_replaced=True)
     buckets = {}
-    for row in qs.values('cutter_position_no', 'warehouse__ring_no'):
+    for row in qs.values('_ai_position', 'warehouse__project_id', 'warehouse__shield_model_id', 'warehouse__ring_no'):
         ring = _ring_int(row.get('warehouse__ring_no'))
-        position = row.get('cutter_position_no')
+        position = row.get('_ai_position')
         if ring is None or not position:
             continue
-        buckets.setdefault(position, []).append(ring)
+        key = (row['warehouse__project_id'], row['warehouse__shield_model_id'], position)
+        buckets.setdefault(key, []).append(ring)
     for rings in buckets.values():
         rings.sort()
     return buckets
+
+
+def _removal_records(project_id=None):
+    query = OldToolRecord.objects.filter(
+        tool_change_detail_id__in=_active_detail_query({'project_id': project_id}).filter(is_replaced=True).values('id'),
+    ).select_related('tool_change_detail__warehouse')
+    return list(query)
+
+
+def _installation_removal(detail, instance, records, fallback_rings):
+    """Prefer removed-instance links; inference may only use the same machine."""
+    start = _ring_int(detail.warehouse.ring_no)
+    key = (detail.warehouse.project_id, detail.warehouse.shield_model_id,
+           normalize_cutter_position_no(detail.cutter_position_no))
+    candidates = []
+    for record in records:
+        removed_detail = record.tool_change_detail
+        warehouse = removed_detail.warehouse
+        record_key = (warehouse.project_id, warehouse.shield_model_id,
+                      normalize_cutter_position_no(removed_detail.cutter_position_no))
+        ring = _ring_int(warehouse.ring_no)
+        if record_key != key or ring is None or start is None or ring < start:
+            continue
+        if ring == start and warehouse.open_time <= detail.warehouse.open_time:
+            continue
+        linked_id = record.confirmed_tool_instance_id or record.suggested_tool_instance_id
+        if instance is not None and linked_id == instance.pk:
+            candidates.append((ring, warehouse.open_time, record.pk, record))
+        elif linked_id is None and record.old_tool_number and record.old_tool_number == detail.tool_number:
+            candidates.append((ring, warehouse.open_time, record.pk, record))
+    if candidates:
+        record = min(candidates, key=lambda item: item[:3])[3]
+        return _ring_int(record.tool_change_detail.warehouse.ring_no), record, False
+    inferred_ring = next((ring for ring in fallback_rings.get(key, []) if start is not None and ring > start), None)
+    return inferred_ring, None, inferred_ring is not None
 
 
 def recommend_tools(params_str: str) -> str:
@@ -944,6 +975,7 @@ def recommend_tools(params_str: str) -> str:
         # 所有安装事件（每条 NewToolRecord = 一把物理刀装到某个刀位）
         installs = (
             NewToolRecord.objects
+            .filter(tool_change_detail_id__in=_active_detail_query(params).values('id'))
             .select_related(
                 'tool_instance', 'tool_instance__tool_info',
                 'tool_change_detail', 'tool_change_detail__warehouse',
@@ -971,6 +1003,7 @@ def recommend_tools(params_str: str) -> str:
             })
 
         removal_rings = _replacement_rings_by_position(project_id)
+        removal_records = _removal_records(project_id)
         stratum_map = _stratum_codes_by_ring(project_id) if stratum_types else {}
         max_known_ring = max(
             [r for rings in removal_rings.values() for r in rings] or [0]
@@ -994,12 +1027,12 @@ def recommend_tools(params_str: str) -> str:
                 skipped_range += 1
                 continue
 
-            # 配对拆卸环号：同刀位、环号大于安装环号的最近一次换刀
-            removal_ring = next(
-                (r for r in removal_rings.get(position, []) if r > install_ring),
-                None,
+            removal_ring, removal_record, removal_inferred = _installation_removal(
+                detail, record.tool_instance, removal_records, removal_rings,
             )
             service_rings = removal_ring - install_ring if removal_ring is not None else None
+            if removal_inferred:
+                warnings.append(f'{record.tool_instance.display_tool_no} 的拆卸环号由同机同刀位历史换刀推断')
 
             # 地层筛选：服役区间途经的地层与所选地层有交集才计入
             if stratum_types:
@@ -1139,7 +1172,7 @@ def recommend_tools(params_str: str) -> str:
             "note": (
                 "recommendations 按所选范围内的平均服役环数由高到低排序。"
                 f"另有 {total_in_service} 把刀仍在役、尚未拆下，属于右删失样本，"
-                "未计入平均值，因此平均服役环数是对真实寿命的保守估计。"
+                "未计入已完成服役样本的平均值；该均值可能存在选择偏差，不能当作总体寿命或其确定下界。"
                 "该结果基于历史服役记录，不构成对在役刀具剩余寿命的预测。"
             ),
         }
@@ -1179,7 +1212,7 @@ def compare_manufacturer_performance(params_str: str) -> str:
         tool_type = params.get('tool_type')
         ring_range = params.get('ring_range', [])
 
-        query = ToolChangeDetail.objects.select_related('warehouse__project')
+        query = _active_detail_query(params).select_related('warehouse__project')
 
         if project_id:
             query = query.filter(warehouse__project__project_id=project_id)
@@ -1233,7 +1266,7 @@ def compare_manufacturer_performance(params_str: str) -> str:
             abnormal_count = wear_buckets['abnormal']
             unclassified_count = wear_buckets['unknown']
             classified_total = normal_count + abnormal_count
-            abnormal_rate_val = round(abnormal_count / classified_total * 100, 1) if classified_total else 0.0
+            abnormal_rate_val = round(abnormal_count / classified_total * 100, 1) if classified_total else None
 
             # 价格统计
             price_qs = query.filter(
@@ -1250,18 +1283,18 @@ def compare_manufacturer_performance(params_str: str) -> str:
                 "unclassified_wear_count": unclassified_count,
                 "abnormal_rate_pct": abnormal_rate_val,
                 "abnormal_rate_denominator": classified_total,
-                "total_cost_yuan": float(price_qs['total_cost']) if price_qs['total_cost'] else None,
-                "avg_cost_per_change_yuan": round(float(price_qs['avg_cost']), 0) if price_qs['avg_cost'] else None,
+                "total_cost_yuan": float(price_qs['total_cost']) if price_qs['total_cost'] is not None else None,
+                "avg_cost_per_change_yuan": round(float(price_qs['avg_cost']), 0) if price_qs['avg_cost'] is not None else None,
                 "wear_breakdown": wear_qs,
             })
 
-        result_list.sort(key=lambda x: x['abnormal_rate_pct'])
+        result_list.sort(key=lambda x: (x['abnormal_rate_pct'] is None, x['abnormal_rate_pct'] or 0, x['manufacturer']))
 
         logger.info(f"厂家对比成功，共{len(result_list)}家厂商")
         return json.dumps({
             "total_records": total,
             "manufacturer_count": len(result_list),
-            "note": "manufacturers已按abnormal_rate从低到高排序，排名第一的厂家质量最好",
+            "note": "按已分类异常率排序，缺少已分类样本的厂家置后；这不是质量或性价比排名。明细登记价格不等于实际采购加返修总支出。",
             "manufacturers": result_list
         }, ensure_ascii=False)
 
@@ -1311,7 +1344,7 @@ def analyze_stratum_wear_correlation(params_str: str) -> str:
             ).filter(ring_int__gte=ring_range[0], ring_int__lte=ring_range[1])
 
         # 2. 获取换刀数据
-        change_query = ToolChangeDetail.objects.select_related('warehouse__project')
+        change_query = _active_detail_query(params).select_related('warehouse__project')
         if project_id:
             change_query = change_query.filter(warehouse__project__project_id=project_id)
         if tool_type:
@@ -1422,7 +1455,7 @@ def analyze_stratum_wear_correlation(params_str: str) -> str:
         logger.info(f"地层磨损分析成功，共{len(result_list)}种地层")
         return json.dumps({
             "stratum_count": len(result_list),
-            "note": "replacement_rate越高说明该地层对刀具磨损越严重，需要更频繁更换刀具",
+            "note": "按开仓环号地层标签对照观察记录；更换率不是服役地层暴露量或面积占比，不能据此判定地层导致磨损。",
             # 地层表未覆盖到的换刀记录数：这些行归入"未知地层"，不再静默丢弃
             "unknown_stratum_records": unknown_stratum_records,
             "stratum_analysis": result_list
@@ -1479,9 +1512,8 @@ def query_opening_records(params_str: str) -> str:
             query.order_by('-ring_int').values(
                 'id', 'ring_no', 'last_ring_no', 'rings_between_openings',
                 'open_time', 'opening_duration', 'geological_conditions',
-                # checked_tool_count / replaced_tool_count 是开仓表上的手填字段，
-                # 与真实明细行数长期不一致，不再透传给模型，改用下面按明细派生的
-                # tool_change_total / tool_change_replaced。
+                'summary_status', 'checked_tool_count', 'replaced_tool_count',
+                'shield_model_id',
             )[:limit]
         )
 
@@ -1490,12 +1522,24 @@ def query_opening_records(params_str: str) -> str:
         for r in recent_qs:
             if r['open_time']:
                 r['open_time'] = r['open_time'].strftime('%Y-%m-%d %H:%M')
-            changes = ToolChangeDetail.objects.filter(warehouse_id=r['id'])
-            total_c = changes.count()
-            replaced_c = changes.filter(is_replaced=True).count()
+            changes = _active_detail_query(params, checked_only=False).filter(warehouse_id=r['id'])
+            r['detail_record_count'] = changes.count()
+            r['detail_checked_count'] = changes.filter(is_checked=True).count()
+            r['detail_replaced_count'] = changes.filter(is_replaced=True).count()
+            confirmed = r['summary_status'] == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED
+            total_c = r['checked_tool_count'] if confirmed else r['detail_checked_count']
+            replaced_c = r['replaced_tool_count'] if confirmed else r['detail_replaced_count']
+            r['count_source'] = 'confirmed_summary' if confirmed else 'detail_draft'
             r['tool_change_total'] = total_c
             r['tool_change_replaced'] = replaced_c
-            r['replacement_rate'] = f"{replaced_c/total_c*100:.1f}%" if total_c else "0%"
+            valid_counts = total_c is not None and replaced_c is not None and 0 <= replaced_c <= total_c
+            r['replacement_rate'] = f"{replaced_c/total_c*100:.1f}%" if valid_counts and total_c else None
+            r['warnings'] = []
+            if not confirmed:
+                r['warnings'].append('开仓汇总尚未确认，当前明细统计可能继续变化')
+            if not valid_counts:
+                r['warnings'].append('检查数或更换数不完整或不一致，暂不计算更换率')
+            changes = changes.filter(Q(is_checked=True) | Q(is_replaced=True))
             # 磨损分布
             wear_dist = list(
                 changes.values('wear_condition').annotate(cnt=Count('id')).order_by('-cnt')
@@ -1507,7 +1551,8 @@ def query_opening_records(params_str: str) -> str:
             classified_c = wear_buckets['normal'] + wear_buckets['abnormal']
             r['abnormal_count'] = abnormal_c
             r['unclassified_wear_count'] = wear_buckets['unknown']
-            r['abnormal_rate'] = f"{abnormal_c/classified_c*100:.1f}%" if classified_c else "0%"
+            r['abnormal_rate_denominator'] = classified_c
+            r['abnormal_rate'] = f"{abnormal_c/classified_c*100:.1f}%" if classified_c else None
             # 高频更换刀位（前3）
             top_pos = list(
                 changes.filter(is_replaced=True)
@@ -1548,12 +1593,17 @@ def query_cutter_position_stats(params_str: str) -> str:
         project_id = params.get('project_id')
         tool_type = params.get('tool_type')
         top_n = params.get('top_n', 10)
+        ring_range = _parse_ring_range(params.get('ring_range'))
 
-        query = ToolChangeDetail.objects.select_related('warehouse__project')
+        query = _active_detail_query(params).select_related('warehouse__project')
         if project_id:
             query = query.filter(warehouse__project__project_id=project_id)
         if tool_type:
             query = query.filter(tool_parent_type=tool_type)
+        if ring_range:
+            query = query.annotate(ring_int=Cast('warehouse__ring_no', IntegerField())).filter(
+                ring_int__gte=ring_range[0], ring_int__lte=ring_range[1],
+            )
 
         total = query.count()
         if total == 0:
@@ -1589,7 +1639,7 @@ def query_cutter_position_stats(params_str: str) -> str:
             "total_records": total,
             "top_positions": position_stats,
             "replacement_by_type": type_summary,
-            "note": "replacement_count越高说明该刀位磨损越严重，需重点关注"
+            "note": "更换次数反映所选范围的记录数量，不等于磨损严重程度；需结合样本、服役距离和更换原因复核"
         }, ensure_ascii=False)
 
     except Exception as e:
@@ -1606,6 +1656,7 @@ def query_tool_change_trend(params_str: str) -> str:
             {
                 "project_id": "项目编号",
                 "tool_type": "DISC/RIPPER/SCRAPER",
+                "ring_range": [起始环号, 结束环号],
                 "interval": 每段环数（默认50）
             }
     """
@@ -1613,6 +1664,7 @@ def query_tool_change_trend(params_str: str) -> str:
         params = json.loads(params_str)
         project_id = params.get('project_id')
         tool_type = params.get('tool_type')
+        ring_range = _parse_ring_range(params.get('ring_range', []))
         # interval 必须为正整数：为 0 或负数会让下方的分段 while 循环
         # （seg_start += interval）永不递增，导致死循环与无界内存增长。
         # 与 query_tunneling_trend / query_tunneling_wear_correlation 保持一致的钳制范围。
@@ -1622,17 +1674,23 @@ def query_tool_change_trend(params_str: str) -> str:
             interval = 50
         interval = max(1, min(interval, 500))
 
-        query = ToolChangeDetail.objects.select_related('warehouse')
+        query = _active_detail_query(params).select_related('warehouse')
         if project_id:
             query = query.filter(warehouse__project__project_id=project_id)
         if tool_type:
             query = query.filter(tool_parent_type=tool_type)
 
-        # 获取所有记录的环号
+        # 获取筛选范围内的记录；环号是 CharField，必须显式按整数过滤。
+        query = query.annotate(
+            ring_int=Cast('warehouse__ring_no', output_field=IntegerField())
+        )
+        if ring_range:
+            query = query.filter(
+                ring_int__gte=ring_range[0],
+                ring_int__lte=ring_range[1],
+            )
         records = list(
-            query.annotate(
-                ring_int=Cast('warehouse__ring_no', output_field=IntegerField())
-            ).values('ring_int', 'is_replaced', 'wear_condition')
+            query.values('ring_int', 'is_replaced', 'wear_condition')
         )
 
         if not records:
@@ -1805,7 +1863,7 @@ def query_tunneling_wear_correlation(params_str: str) -> str:
         min_ring = ring_range[0] if ring_range else min(r['ring_int'] for r in tunneling_records)
         max_ring = ring_range[1] if ring_range else max(r['ring_int'] for r in tunneling_records)
 
-        change_qs = ToolChangeDetail.objects.select_related('warehouse__project')
+        change_qs = _active_detail_query(params).select_related('warehouse__project')
         stratum_qs = StratumBasicInfo.objects.select_related('project')
         if project_id:
             change_qs = change_qs.filter(warehouse__project__project_id=project_id)
@@ -1931,7 +1989,7 @@ def query_position_stratum_impact(params_str: str) -> str:
         ring_range = params.get('ring_range', [])
         top_n = params.get('top_n', 10)
 
-        change_query = ToolChangeDetail.objects.select_related('warehouse__project').filter(is_replaced=True)
+        change_query = _active_detail_query(params).select_related('warehouse__project').filter(is_replaced=True)
         if project_id:
             change_query = change_query.filter(warehouse__project__project_id=project_id)
         if tool_type:
@@ -1974,7 +2032,7 @@ def query_position_stratum_impact(params_str: str) -> str:
 
         return json.dumps({
             "INSTRUCTION": "以下是真实数据库数据，回答时必须原样使用这些数字",
-            "note": "total越高说明该刀位受地层影响越大，by_stratum显示各地层下的更换次数",
+            "note": "by_stratum按开仓点标签计数；一条记录可对应多个标签，total不可解释为独立更换总数或地层因果影响强度。",
             "top_positions": ranked,
         }, ensure_ascii=False)
 

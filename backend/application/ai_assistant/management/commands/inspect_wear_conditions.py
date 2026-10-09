@@ -2,13 +2,13 @@
 
 背景：wear_condition 是自由 CharField，库中可能同时存在
   - models.ToolChangeDetail.WEAR_CONDITION_CHOICES 定义的英文枚举码
-    （GOOD / NORMAL / MODERATE / SEVERE / ABNORMAL），开仓自动建档写入 "NORMAL"；
+    （GOOD / NORMAL / MODERATE / SEVERE / ABNORMAL），历史建档曾写入 "NORMAL"；
   - 人工 / 移动端录入的中文描述（正常、偏磨、刀圈崩刃 …）。
 
 tools.normalize_wear_condition 已统一兼容两套取值，但仍需要确认：
   1. 库里到底存的是哪一套（决定论文里怎么描述数据）；
   2. 有没有落到 'unknown' 的取值 —— 这些取值既不算正常也不算异常，
-     会被排除在异常磨损率的分母之外，必须补进 tools.py 的词表。
+     会被排除在异常磨损率的分母之外；确认含义后再补进 shield/wear.py 的共享词表。
 
 用法：
     python manage.py inspect_wear_conditions
@@ -77,8 +77,9 @@ class Command(BaseCommand):
         if unknown_values:
             self.stdout.write("")
             self.stdout.write(self.style.WARNING(
-                "以下取值未被 tools.py 的归一化词表覆盖，会被排除在异常磨损率分母之外，"
-                "请补进 _WEAR_NORMAL_TOKENS 或 _WEAR_ABNORMAL_TOKENS："
+                "以下取值尚未分类，会被排除在异常磨损率分母之外。"
+                "空值保持未知；其他文本确认含义后再补进 shield/wear.py 的 "
+                "NORMAL_WEAR_VALUES 或 KNOWN_ABNORMAL_VALUES："
             ))
             for item in unknown_values:
                 self.stdout.write(self.style.WARNING(f"  {item['value']!r}  ({item['count']} 条)"))

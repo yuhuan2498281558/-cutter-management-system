@@ -1,244 +1,147 @@
 <template>
   <div class="overview-page">
     <div class="analysis-export-bar">
-      <el-button type="primary" plain @click="exportPdf">导出PDF</el-button>
+      <el-button :loading="loading" @click="load">重新加载</el-button>
+      <el-button type="primary" plain :disabled="!ready" @click="exportPdf">导出 PDF</el-button>
     </div>
-
-    <!-- KPI 卡片区 -->
-    <el-row :gutter="12" class="kpi-row">
-      <el-col :span="4" v-for="card in kpiCards" :key="card.label">
-        <KpiCard
-          :label="card.label"
-          :value="kpi[card.key]"
-          :format="card.format"
-          :unit="card.unit"
-          :sub-text="card.subText"
-          :icon="card.icon"
-          :color="card.color"
-        />
-      </el-col>
-    </el-row>
-
-    <!-- 图表区 -->
-    <el-row :gutter="12">
-      <!-- 月度换刀趋势 -->
-      <el-col :span="12">
-        <ChartCard title="月度换刀趋势（整刀 + 维修）" :loading="loading" chart-height="320px" :is-empty="!overviewData?.monthly_trend?.length">
-          <div ref="monthlyChartRef" style="width:100%;height:320px" />
-        </ChartCard>
-      </el-col>
-
-      <!-- 各类型累计换刀 -->
-      <el-col :span="12">
-        <ChartCard title="各刀具类型累计换刀次数（按环号）" :loading="loading" chart-height="320px" :is-empty="!overviewData?.type_trend?.length">
-          <div ref="typeChartRef" style="width:100%;height:320px" />
-        </ChartCard>
-      </el-col>
-    </el-row>
-
-    <!-- 近期开仓记录 -->
-    <ChartCard title="近期开仓换刀概况（最近 10 次）" :loading="loading" :is-empty="!overviewData?.recent_openings?.length">
-      <el-table :data="overviewData?.recent_openings ?? []" stripe size="small" style="width:100%">
-        <el-table-column prop="ring_no" label="开仓环号" width="90" align="center" />
-        <el-table-column prop="open_time" label="开仓日期" width="110" align="center" />
-        <el-table-column prop="replaced_count" label="换刀数" width="80" align="center" />
-        <el-table-column prop="cost" label="费用（元）" width="110" align="right">
-          <template #default="{ row }">
-            {{ row.cost ? '¥' + row.cost.toLocaleString() : '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="abnormal_count" label="异常数" width="80" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.abnormal_count > 0" type="danger" size="small">{{ row.abnormal_count }}</el-tag>
-            <span v-else>0</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="geological_conditions" label="地质情况" min-width="120" show-overflow-tooltip />
+    <ScopeSummary :meta="data?.overview.meta" />
+    <div v-if="data" class="analysis-metrics">
+      <div class="analysis-metric"><span>范围内开仓</span><strong>{{ formatNumber(kpi?.total_openings) }} 次</strong><small>明细有检查证据 {{ formatNumber(kpi?.detail_checked_count) }} 条</small></div>
+      <div class="analysis-metric"><span>实际更换明细</span><strong>{{ formatNumber(kpi?.total_replacements) }} 把次</strong><small>含未分类更换 {{ formatNumber(kpi?.total_untyped) }} 把次</small></div>
+      <div class="analysis-metric"><span>新装刀具登记金额</span><strong>{{ formatCurrency(sources?.installation) }}</strong><small>缺登记价格 {{ formatNumber(sources?.missing_price_count) }} 条</small></div>
+      <div class="analysis-metric"><span>已确认返修登记金额</span><strong>{{ formatCurrency(sources?.confirmed_repair) }}</strong><small>待反馈 {{ formatNumber(sources?.pending_repair_count) }} 条 · 缺返修价 {{ formatNumber(sources?.repair_missing_price_count) }} 条</small></div>
+    </div>
+    <p v-if="data" class="analysis-note">
+      明确金额合计 {{ formatCurrency(sources?.total) }}，其中历史登记 {{ formatCurrency(sources?.legacy) }}；
+      待核对候选金额 {{ formatCurrency(sources?.unresolved) }}（{{ formatNumber(sources?.unresolved_count) }} 次更换）不计入合计。
+      平均开仓间隔 {{ formatNumber(kpi?.avg_rings_between_openings, 1) }} 环。
+    </p>
+    <div v-if="data" class="reconciliation">
+      <strong>整仓数量核对</strong>
+      <span>已确认人工更换汇总 {{ formatNumber(kpi?.summary_replaced_count) }}</span>
+      <span>同仓全部有效明细 {{ formatNumber(kpi?.summary_detail_replaced_count) }}</span>
+      <span :class="{ discrepancy: kpi?.replacement_gap }">差额 {{ formatNumber(kpi?.replacement_gap) }}</span>
+      <small>此处比较整仓数量；上方实际更换数随刀型、厂家筛选。</small>
+    </div>
+    <div class="analysis-grid">
+      <ChartCard title="更换消耗与刀具费用" description="按开仓环号归集；返修在确认后归回拆除开仓" :loading="loading" :error="error" :is-empty="!data?.trend.items.length" chart-height="340px" @retry="load">
+        <template #toolbar><el-radio-group v-model="trendMode" size="small"><el-radio-button label="ring">按环</el-radio-button><el-radio-button label="month">按月</el-radio-button></el-radio-group></template>
+        <div ref="trendRef" class="overview-chart" />
+      </ChartCard>
+      <ChartCard title="刀型消耗构成" description="实际更换把次，包含旧记录中的未分类更换" :loading="loading" :error="error" :is-empty="!data?.overview.type_trend.length" chart-height="340px" @retry="load">
+        <template #toolbar><el-radio-group v-model="typeMode" size="small"><el-radio-button label="total">总量</el-radio-button><el-radio-button label="cumulative">累计</el-radio-button></el-radio-group></template>
+        <div ref="typeRef" class="overview-chart" />
+      </ChartCard>
+    </div>
+    <ChartCard title="近期开仓与来源核对" description="当前工程范围内最近 10 次开仓；查看入口为只读明细" :loading="loading" :error="error" :is-empty="!data?.overview.recent_openings.length" chart-height="auto" @retry="load">
+      <el-table :data="data?.overview.recent_openings || []" stripe size="small">
+        <el-table-column label="开仓 / 环号" min-width="135"><template #default="{ row }"><el-button link type="primary" @click="viewOpening(row)">{{ row.warehouse_id || row.id }} · {{ row.ring_no }} 环</el-button></template></el-table-column>
+        <el-table-column prop="open_time" label="日期" width="110" />
+        <el-table-column label="汇总状态" width="105"><template #default="{ row }">{{ STATUS_LABELS[row.summary_status] || '待核实' }}</template></el-table-column>
+        <el-table-column prop="replaced_count" label="筛选明细 / 把次" width="125" align="right" />
+        <el-table-column label="整仓确认 / 差额" width="130" align="right"><template #default="{ row }">{{ formatNumber(row.summary_replaced_count) }} / {{ formatNumber(row.replacement_gap) }}</template></el-table-column>
+        <el-table-column label="新装登记 / 元" width="125" align="right"><template #default="{ row }">{{ formatCurrency(row.cost_sources?.installation) }}</template></el-table-column>
+        <el-table-column label="确认返修 / 元" width="125" align="right"><template #default="{ row }">{{ formatCurrency(row.cost_sources?.confirmed_repair) }}</template></el-table-column>
+        <el-table-column label="历史登记 / 元" width="125" align="right"><template #default="{ row }">{{ formatCurrency(row.cost_sources?.legacy) }}</template></el-table-column>
+        <el-table-column label="明确合计 / 元" width="125" align="right"><template #default="{ row }">{{ formatCurrency(row.cost) }}</template></el-table-column>
+        <el-table-column prop="geological_conditions" label="地层背景" min-width="180" />
       </el-table>
     </ChartCard>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import * as echarts from 'echarts';
-import KpiCard from '../components/KpiCard.vue';
 import ChartCard from '../components/ChartCard.vue';
-import { getOverview } from '../api';
-import { TOOL_TYPE_COLORS, TOOL_TYPE_LABELS, TOOLTIP_STYLE, DEFAULT_GRID } from '../utils/chartTheme';
-import type { AnalysisFilter, OverviewKpi, OverviewData } from '../types';
-import type { ExportColumn } from '/@/views/shield/utils/export';
+import ScopeSummary from '../components/ScopeSummary.vue';
+import { getCostTrend, getOverview } from '../api';
+import { useAnalysisQuery } from '../utils/useAnalysisQuery';
+import { analysisExportMeta, formatCurrency, formatNumber, requireAnalysisV2, STATUS_LABELS } from '../utils/presentation';
+import { DEFAULT_GRID, TOOLTIP_STYLE, TOOL_TYPE_COLORS, TOOL_TYPE_LABELS } from '../utils/chartTheme';
 import { exportAnalysisPdf } from '../utils/pdfExport';
+import type { AnalysisFilter, AnalysisMeta, CostTrendItem, OverviewData } from '../types';
 
 const props = defineProps<{ filter: AnalysisFilter }>();
-
-// ─── 数据状态 ────────────────────────────────────────────────
-const loading = ref(false);
-const overviewData = ref<OverviewData | null>(null);
-const kpi = reactive<OverviewKpi>({
-  total_openings: 0,
-  total_replacements: 0,
-  total_repairs: 0,
-  total_cost: 0,
-  avg_rings_between_openings: 0,
-  abnormal_wear_rate: 0,
-  healthy_rate: 0,
+const router = useRouter();
+type OverviewResult = OverviewData & { kpi: OverviewData['kpi'] & { summary_detail_replaced_count?: number } };
+const { data, loading, error, ready, load } = useAnalysisQuery(() => props.filter, async filter => {
+  const [overview, trend] = await Promise.all([getOverview(filter), getCostTrend(filter)]);
+  return {
+    overview: requireAnalysisV2<OverviewResult>(overview?.data ?? overview),
+    trend: requireAnalysisV2<{ meta?: AnalysisMeta; items: CostTrendItem[] }>(trend?.data ?? trend),
+  };
 });
-
-// ─── KPI 卡片配置 ────────────────────────────────────────────
-const kpiCards = [
-  { label: '累计开仓次数', key: 'total_openings' as keyof OverviewKpi, format: 'number', unit: '次', icon: 'iconfont icon-kucun', color: '#1677ff' },
-  { label: '累计整刀更换', key: 'total_replacements' as keyof OverviewKpi, format: 'number', unit: '次', icon: 'iconfont icon-gongju', color: '#e84749' },
-  { label: '累计维修次数', key: 'total_repairs' as keyof OverviewKpi, format: 'number', unit: '次', icon: 'iconfont icon-weixiu', color: '#fa8c16' },
-  { label: '累计换刀费用', key: 'total_cost' as keyof OverviewKpi, format: 'currency', icon: 'iconfont icon-feiyong', color: '#52c41a' },
-  { label: '平均换刀间距', key: 'avg_rings_between_openings' as keyof OverviewKpi, format: 'decimal', unit: ' 环', icon: 'iconfont icon-juli', color: '#722ed1' },
-  { label: '最近开仓完好率', key: 'healthy_rate' as keyof OverviewKpi, format: 'percent', icon: 'iconfont icon-jiankang', color: '#13c2c2' },
-];
-
-const exportColumns: ExportColumn[] = [
-  { key: 'section', title: '数据项' },
-  { key: 'name', title: '名称' },
-  { key: 'value', title: '数值' },
-  { key: 'extra', title: '补充信息' },
-];
-
-const exportRows = computed(() => {
-  const rows: any[] = kpiCards.map(card => ({
-    section: 'KPI',
-    name: card.label,
-    value: kpi[card.key],
-    extra: card.unit || '',
-  }));
-  (overviewData.value?.monthly_trend ?? []).forEach(item => rows.push({
-    section: '月度换刀趋势',
-    name: item.month,
-    value: `整刀更换:${item.replacements}; 维修:${item.repairs}; 费用:${item.cost}`,
-    extra: '',
-  }));
-  (overviewData.value?.type_trend ?? []).forEach(item => rows.push({
-    section: '各类型累计换刀',
-    name: item.ring_no,
-    value: `滚刀:${(item as any).DISC ?? 0}; 撕裂刀:${(item as any).RIPPER ?? 0}; 刮刀:${(item as any).SCRAPER ?? 0}`,
-    extra: '',
-  }));
-  (overviewData.value?.recent_openings ?? []).forEach(item => rows.push({
-    section: '近期开仓概况',
-    name: item.ring_no,
-    value: `换刀:${item.replaced_count}; 费用:${item.cost}; 异常:${item.abnormal_count}`,
-    extra: item.geological_conditions || '',
-  }));
-  return rows;
-});
-
-function exportPdf() {
-  exportAnalysisPdf('数据分析-概览', '.overview-page');
-}
-
-// ─── 图表实例 ────────────────────────────────────────────────
-const monthlyChartRef = ref<HTMLElement | null>(null);
-const typeChartRef = ref<HTMLElement | null>(null);
-let monthlyChart: echarts.ECharts | null = null;
+const kpi = computed(() => data.value?.overview.kpi);
+const sources = computed(() => kpi.value?.cost_sources);
+const trendMode = ref('ring');
+const typeMode = ref('total');
+const trendRef = ref<HTMLElement | null>(null);
+const typeRef = ref<HTMLElement | null>(null);
+let trendChart: echarts.ECharts | null = null;
 let typeChart: echarts.ECharts | null = null;
-
-// ─── 加载数据 ────────────────────────────────────────────────
-async function loadData() {
-  loading.value = true;
-  try {
-    const res = await getOverview(props.filter);
-    const data: OverviewData = res?.data ?? res;
-    overviewData.value = data;
-    Object.assign(kpi, data.kpi);
-    await nextTick();
-    renderMonthlyChart(data);
-    renderTypeChart(data);
-  } finally {
-    loading.value = false;
+let observer: ResizeObserver | null = null;
+let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+function resizeCharts() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { trendChart?.resize(); typeChart?.resize(); }, 80);
+}
+function renderCharts() {
+  if (!data.value || !trendRef.value || !typeRef.value) return;
+  if (!trendChart) trendChart = echarts.init(trendRef.value);
+  if (!typeChart) typeChart = echarts.init(typeRef.value);
+  if (!observer && typeof ResizeObserver !== 'undefined') {
+    observer = new ResizeObserver(resizeCharts);
+    observer.observe(trendRef.value); observer.observe(typeRef.value);
   }
-}
-
-// ─── 月度趋势图（堆叠柱状 + 费用折线） ──────────────────────
-function renderMonthlyChart(data: OverviewData) {
-  if (!monthlyChartRef.value) return;
-  if (!monthlyChart) monthlyChart = echarts.init(monthlyChartRef.value);
-
-  const months = data.monthly_trend.map(r => r.month);
-  const replacements = data.monthly_trend.map(r => r.replacements);
-  const repairs = data.monthly_trend.map(r => r.repairs);
-  const costs = data.monthly_trend.map(r => r.cost);
-
-  monthlyChart.setOption({
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', axisPointer: { type: 'cross' } },
-    legend: { data: ['整刀更换', '维修', '费用'], bottom: 0 },
-    grid: DEFAULT_GRID,
-    xAxis: { type: 'category', data: months },
-    yAxis: [
-      { type: 'value', name: '换刀次数', minInterval: 1 },
-      { type: 'value', name: '费用（元）', axisLabel: { formatter: (v: number) => v >= 10000 ? (v / 10000).toFixed(1) + 'w' : v } },
-    ],
-    series: [
-      { name: '整刀更换', type: 'bar', stack: 'total', data: replacements, color: TOOL_TYPE_COLORS.DISC, barMaxWidth: 40 },
-      { name: '维修', type: 'bar', stack: 'total', data: repairs, color: '#faad14', barMaxWidth: 40 },
-      { name: '费用', type: 'line', yAxisIndex: 1, data: costs, color: '#52c41a', smooth: true,
-        symbol: 'circle', symbolSize: 6 },
-    ],
-  }, true);
-}
-
-// ─── 各类型累计换刀折线图 ─────────────────────────────────────
-function renderTypeChart(data: OverviewData) {
-  if (!typeChartRef.value) return;
-  if (!typeChart) typeChart = echarts.init(typeChartRef.value);
-
-  const rings = data.type_trend.map(r => r.ring_no);
-  const types = props.filter.tool_parent_type
-    ? [props.filter.tool_parent_type]
-    : ['DISC', 'RIPPER', 'SCRAPER'];
-
-  typeChart.setOption({
+  const overview = data.value.overview;
+  const monthly = trendMode.value === 'month';
+  const rows = data.value.trend.items;
+  trendChart.setOption({
     tooltip: { ...TOOLTIP_STYLE, trigger: 'axis' },
-    legend: { data: types.map(t => TOOL_TYPE_LABELS[t]), bottom: 0 },
-    grid: DEFAULT_GRID,
-    xAxis: { type: 'category', data: rings, name: '环号' },
-    yAxis: { type: 'value', name: '累计换刀次数', minInterval: 1 },
-    series: types.map(t => ({
-      name: TOOL_TYPE_LABELS[t],
-      type: 'line',
-      data: data.type_trend.map(r => (r as any)[t] ?? 0),
-      color: TOOL_TYPE_COLORS[t],
-      smooth: false,
-      symbol: 'circle',
-      symbolSize: 5,
-    })),
+    legend: { bottom: 0, type: 'scroll' }, grid: { ...DEFAULT_GRID, bottom: 78 },
+    xAxis: { type: 'category', data: monthly ? overview.monthly_trend.map(r => r.month || '日期未记录') : rows.map(r => r.ring_no), name: monthly ? '月份' : '环号' },
+    yAxis: [{ type: 'value', name: '实际更换 / 把次', minInterval: 1 }, { type: 'value', name: '明确金额 / 元' }],
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 14, bottom: 28 }],
+    series: [
+      { name: '实际更换', type: 'bar', barMaxWidth: 26, itemStyle: { color: '#5470c6' }, data: monthly ? overview.monthly_trend.map(r => r.total_replacements ?? 0) : rows.map(r => r.replacement_count ?? 0) },
+      { name: '明确金额', type: 'line', yAxisIndex: 1, connectNulls: false, itemStyle: { color: '#c57932' }, data: monthly ? overview.monthly_trend.map(r => r.cost) : rows.map(r => r.total_cost) },
+    ],
   }, true);
+  const types = ['DISC', 'SCRAPER'];
+  const cumulative = typeMode.value === 'cumulative';
+  const last = overview.type_trend.at(-1);
+  typeChart.setOption({
+    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis' }, grid: { ...DEFAULT_GRID, bottom: cumulative ? 70 : 35 },
+    legend: { bottom: 0, show: cumulative },
+    xAxis: cumulative ? { type: 'category', name: '环号', data: overview.type_trend.map(r => r.ring_no) } : { type: 'value', name: '把次', minInterval: 1 },
+    yAxis: cumulative ? { type: 'value', name: '累计更换 / 把次', minInterval: 1 } : { type: 'category', data: types.map(t => TOOL_TYPE_LABELS[t]) },
+    series: cumulative ? types.map(t => ({ name: TOOL_TYPE_LABELS[t], type: 'line', color: TOOL_TYPE_COLORS[t], data: overview.type_trend.map(r => r[t as 'DISC' | 'SCRAPER']) })) : [{
+      type: 'bar', barMaxWidth: 34, label: { show: true, position: 'right' },
+      data: types.map(t => ({ value: last?.[t as 'DISC' | 'SCRAPER'] ?? 0, itemStyle: { color: TOOL_TYPE_COLORS[t] } })),
+    }],
+  }, true);
+  resizeCharts();
 }
-
-// ─── 响应筛选变化 ─────────────────────────────────────────────
-watch(() => props.filter, loadData, { deep: true });
-onMounted(loadData);
-
-// ─── 响应窗口 resize ─────────────────────────────────────────
-function onResize() {
-  monthlyChart?.resize();
-  typeChart?.resize();
+watch([data, trendMode, typeMode], async () => { await nextTick(); renderCharts(); });
+async function viewOpening(row: { id: number; warehouse_id: string }) {
+  try { await router.push({ path: '/shield/toolChangeDetail', query: { warehouse_id: row.id, warehouse_code: row.warehouse_id, mode: 'view' } }); }
+  catch { ElMessage.error('打开明细失败，请从开仓信息进入查看'); }
 }
-window.addEventListener('resize', onResize);
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize);
-  monthlyChart?.dispose();
-  typeChart?.dispose();
-});
+function exportPdf() {
+  if (!ready.value) return;
+  exportAnalysisPdf('数据分析 · 概览', '.overview-page', analysisExportMeta(data.value?.overview.meta));
+}
+window.addEventListener('resize', resizeCharts);
+onBeforeUnmount(() => { clearTimeout(resizeTimer); observer?.disconnect(); window.removeEventListener('resize', resizeCharts); trendChart?.dispose(); typeChart?.dispose(); });
 </script>
 
 <style scoped>
-.overview-page {
-  padding-bottom: 16px;
-}
-.analysis-export-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
-.kpi-row {
-  margin-bottom: 12px;
-}
+.overview-page { min-width: 0; padding-bottom: 12px; }
+.overview-chart { width: 100%; height: 340px; }
+.reconciliation { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 12px; margin-bottom: 12px; background: var(--el-fill-color-light); border-left: 3px solid var(--el-border-color); font-size: 12px; line-height: 1.7; }
+.reconciliation small { flex-basis: 100%; color: var(--el-text-color-secondary); }
+.discrepancy { color: var(--el-color-warning-dark-2); font-weight: 600; }
 </style>

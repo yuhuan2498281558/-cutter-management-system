@@ -91,21 +91,16 @@ router.beforeEach(async (to, from, next) => {
 
     const token = Session.get('token');
     const isMobileRoute = to.path.startsWith('/mobile');
+    const hasVerifiedMobileAccess = Boolean(token && Session.get('mobileAccessVerified') === true);
 
-    if (isMobileRoute && !token && to.path !== '/mobile/login') {
-        next({path: '/mobile/login', query: {redirect: to.fullPath}, replace: true});
-        NProgress.done();
-        return;
-    }
-
-    if (isMobileRoute && token && to.path === '/mobile/login') {
-        next({path: '/mobile/tasks', replace: true});
-        NProgress.done();
-        return;
-    }
-
-    if (isMobileRoute && token) {
-        next();
+    if (isMobileRoute) {
+        if (to.path === '/mobile/login') {
+            next(hasVerifiedMobileAccess ? {path: '/mobile/tasks', replace: true} : undefined);
+        } else if (!hasVerifiedMobileAccess) {
+            next({path: '/mobile/login', query: {redirect: to.fullPath}, replace: true});
+        } else {
+            next();
+        }
         NProgress.done();
         return;
     }
@@ -179,8 +174,9 @@ router.beforeEach(async (to, from, next) => {
             debugLog('路由加载成功，导航到：', to.path);
             debugLog('已注册路由：', router.getRoutes().map(r => ({ path: r.path, name: r.name })));
             // The initial match may be the static notFound route. Re-resolve by
-            // path only so its stale `name`/`matched` fields cannot win.
-            next({ path: to.fullPath, replace: true });
+            // path so its stale `name`/`matched` fields cannot win. Object-style
+            // navigation requires query/hash separately; embedding them in path drops them.
+            next({ path: to.path, query: to.query, hash: to.hash, replace: true });
         } catch (error) {
             // 初始化失败时清除登录状态并返回登录页。
             console.error('路由初始化失败：', error);

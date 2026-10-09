@@ -6,6 +6,7 @@ from django.db.models.functions import Cast
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from dvadmin.utils.models import CoreModel
+from .cutter_position_scope import is_active_cutter_position
 
 
 TOOL_TYPES = [
@@ -70,28 +71,6 @@ BLADE_WEAR_DESCRIPTION_CHOICES = [
 ]
 
 
-class WearTypeDict(CoreModel):
-    wear_type_name = models.CharField(max_length=50, verbose_name="wear type name")
-    wear_type_code = models.CharField(max_length=20, unique=True, verbose_name="wear type code")
-    description = models.TextField(blank=True, verbose_name="description")
-
-    class Meta:
-        verbose_name = "wear type dict"
-        verbose_name_plural = verbose_name
-        db_table = "shield_wear_type_dict"
-
-
-class AbnormalCauseDict(CoreModel):
-    cause_name = models.CharField(max_length=100, verbose_name="cause name")
-    cause_code = models.CharField(max_length=20, unique=True, verbose_name="cause code")
-    description = models.TextField(blank=True, verbose_name="description")
-
-    class Meta:
-        verbose_name = "abnormal cause dict"
-        verbose_name_plural = verbose_name
-        db_table = "shield_abnormal_cause_dict"
-
-
 class ProjectInfo(CoreModel):
     project_id = models.CharField(max_length=50, unique=True, verbose_name="project id")
     project_name = models.CharField(max_length=100, verbose_name="project name")
@@ -138,6 +117,8 @@ class StratumBasicInfo(CoreModel):
     project = models.ForeignKey(ProjectInfo, on_delete=models.CASCADE, verbose_name="project")
     ring_no = models.CharField(max_length=20, verbose_name="ring no")
     stratum_type_codes = models.CharField(max_length=500, verbose_name="stratum type codes", blank=True)
+    stratum_type_ratios = models.JSONField(default=dict, blank=True, verbose_name="cross-section stratum percentages")
+    longitudinal_type_ratios = models.JSONField(default=dict, blank=True, verbose_name="longitudinal-section area percentages")
     stratum_info = models.TextField(verbose_name="stratum info", blank=True)
     burial_depth = models.FloatField(verbose_name="burial depth", null=True, blank=True)
 
@@ -151,9 +132,11 @@ class StratumBasicInfo(CoreModel):
         return f"{self.project.project_name} - {self.ring_no}"
 
     def get_stratum_types(self):
+        """Historical engineering-condition tags, not cross-section rock types."""
         if not self.stratum_type_codes:
             return []
         from dvadmin.system.models import Dictionary
+        from application.shield.stratum_ratios import stratum_label
 
         result = []
         for code in self.stratum_type_codes.split(","):
@@ -162,8 +145,19 @@ class StratumBasicInfo(CoreModel):
                 continue
             item = Dictionary.objects.filter(parent__value="stratum_type", value=code, status=True).first()
             if item:
-                result.append({"code": item.value, "name": item.label, "description": item.remark or ""})
+                result.append({"code": item.value, "name": stratum_label(code) if code == 'WEAK_GRANITE' else item.label, "description": item.remark or ""})
+            else:
+                result.append({"code": code, "name": stratum_label(code), "description": "历史工程地质条件"})
         return result
+
+    def get_rock_types(self):
+        from application.shield.stratum_ratios import validate_stratum_ratios, stratum_label
+        try:
+            ratios = validate_stratum_ratios(self.stratum_type_ratios)
+        except ValueError:
+            return []
+        return [{"code": code, "name": stratum_label(code), "percent": percent}
+                for code, percent in ratios.items() if percent > 0]
 
 
 class ToolCategory(CoreModel):
@@ -486,6 +480,13 @@ class CutterImageAnnotation(CoreModel):
 
 
 class WarehouseOpeningBasicInfo(CoreModel):
+    SUMMARY_STATUS_DRAFT = "DRAFT"
+    SUMMARY_STATUS_CONFIRMED = "CONFIRMED"
+    SUMMARY_STATUS_CHOICES = [
+        (SUMMARY_STATUS_DRAFT, "Draft"),
+        (SUMMARY_STATUS_CONFIRMED, "Confirmed"),
+    ]
+
     warehouse_id = models.CharField(max_length=50, unique=True, verbose_name="warehouse id", blank=True)
     open_time = models.DateTimeField(verbose_name="open time")
     section = models.CharField(max_length=100, verbose_name="section", blank=True, null=True)
@@ -506,6 +507,36 @@ class WarehouseOpeningBasicInfo(CoreModel):
     opening_duration = models.FloatField(verbose_name="opening duration", null=True, blank=True)
     checked_tool_count = models.IntegerField(verbose_name="checked tool count", null=True, blank=True)
     replaced_tool_count = models.IntegerField(verbose_name="replaced tool count", null=True, blank=True)
+    summary_status = models.CharField(
+        max_length=20,
+        choices=SUMMARY_STATUS_CHOICES,
+        default=SUMMARY_STATUS_DRAFT,
+        verbose_name="summary status",
+    )
+    summary_confirmed_at = models.DateTimeField(
+        verbose_name="summary confirmed at", null=True, blank=True
+    )
+    summary_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="confirmed_warehouse_opening_summaries",
+        verbose_name="summary confirmed by",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
+    summary_withdrawn_at = models.DateTimeField(
+        verbose_name="summary withdrawn at", null=True, blank=True
+    )
+    summary_withdrawn_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="withdrawn_warehouse_opening_summaries",
+        verbose_name="summary withdrawn by",
+        null=True,
+        blank=True,
+        db_constraint=False,
+    )
     last_ring_no = models.CharField(max_length=20, verbose_name="last ring no", blank=True, null=True)
     rings_between_openings = models.IntegerField(verbose_name="rings between openings", null=True, blank=True)
     stratum_info_between = models.JSONField(verbose_name="stratum info between", default=dict, blank=True)
@@ -558,6 +589,15 @@ class WarehouseOpeningBasicInfo(CoreModel):
         if not self.warehouse_id:
             self.warehouse_id = self.generate_warehouse_id()
         self._fill_ring_gap()
+        self.usage_distance = (
+            float(self.rings_between_openings) * 2
+            if self.rings_between_openings is not None
+            else None
+        )
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = list(set(kwargs["update_fields"]) | {
+                "last_ring_no", "rings_between_openings", "usage_distance",
+            })
         super().save(*args, **kwargs)
         self._refresh_next_opening_gap()
 
@@ -587,13 +627,20 @@ class WarehouseOpeningBasicInfo(CoreModel):
                 nxt, nxt_ring = opening, ring
         if nxt is None:
             return
-        if nxt.last_ring_no == self.ring_no and nxt.rings_between_openings == nxt_ring - current_ring:
+        next_gap = nxt_ring - current_ring
+        next_usage_distance = float(next_gap) * 2
+        if (
+            nxt.last_ring_no == self.ring_no
+            and nxt.rings_between_openings == next_gap
+            and nxt.usage_distance == next_usage_distance
+        ):
             return
         nxt.last_ring_no = self.ring_no
-        nxt.rings_between_openings = nxt_ring - current_ring
-        # 只更新这两个字段，避免递归触发本方法
+        nxt.rings_between_openings = next_gap
+        nxt.usage_distance = next_usage_distance
+        # 只更新派生字段，避免递归触发本方法
         super(WarehouseOpeningBasicInfo, nxt).save(
-            update_fields=["last_ring_no", "rings_between_openings"]
+            update_fields=["last_ring_no", "rings_between_openings", "usage_distance"]
         )
 
     def _fill_ring_gap(self):
@@ -752,7 +799,16 @@ def create_tool_change_details(sender, instance, created, **kwargs):
     if not created and ToolChangeDetail.objects.filter(warehouse=instance).exists():
         return
 
-    cutter_positions = CutterPositionInfo.objects.filter(shield_machine=instance.shield_model).order_by("id")
+    cutter_positions = [
+        position
+        for position in CutterPositionInfo.objects.filter(
+            shield_machine=instance.shield_model
+        ).order_by("id")
+        if is_active_cutter_position(
+            position.cutter_position_no,
+            position.tool_type,
+        )
+    ]
     last_opening = None
     if instance.project:
         try:

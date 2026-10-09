@@ -2,11 +2,14 @@
 import json
 import os
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
 from application.ai_assistant.llm_service import get_assistant
+from application.ai_assistant.views import _build_project_snapshot
 
 
 def _compact_text(value):
@@ -56,9 +59,11 @@ class Command(BaseCommand):
     help = "Run regression checks for AI assistant routing, tool calls, and final answers."
 
     def add_arguments(self, parser):
+        parser.add_argument("--project-id", default="", help="Required project ID when executing cases.")
+        parser.add_argument("--route-mode", choices=["rule", "hybrid", "agent"], default=None)
         parser.add_argument("--case-file", help="UTF-8 JSON file containing regression cases.")
         parser.add_argument("--output", default="", help="Optional JSON result output path.")
-        parser.add_argument("--user-id", default="ai_regression", help="Session/user id for chat history.")
+        parser.add_argument("--user-id", default="ai_regression", help="Experiment label; cases use isolated scopes.")
         parser.add_argument("--category", action="append", default=[], help="Run only cases in this category. Repeatable.")
         parser.add_argument("--case-id", action="append", default=[], help="Run only cases with this id. Repeatable.")
         parser.add_argument("--limit", type=int, default=0, help="Run at most N cases after filtering.")
@@ -115,14 +120,24 @@ class Command(BaseCommand):
         if not cases:
             raise CommandError("No regression cases matched the filters.")
 
+        project_id = str(options.get("project_id") or "").strip()
+        if not project_id:
+            raise CommandError("--project-id is required; regressions never fall back to a demo project.")
+
         assistant = get_assistant()
-        user_id = options["user_id"]
+        run_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc).isoformat()
+        scope_prefix = f"regression:{str(options['user_id'])[:80]}:{run_id}"
+        route_mode = options.get("route_mode") or os.environ.get("AI_ASSISTANT_ROUTE_MODE", "hybrid")
+        context = {"project_id": project_id, "require_project": True, "route_mode": route_mode,
+                   **_build_project_snapshot(project_id)}
 
         rows = []
         for index, case in enumerate(cases, start=1):
             question = case["question"]
             started = time.perf_counter()
-            result = assistant.chat(question, {"user_id": user_id, "username": "regression"})
+            result = assistant.chat(question, {**context, "user_id": f"{scope_prefix}:{index}",
+                                               "username": "regression"})
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
             answer = result.get("answer") or result.get("error") or ""
 
@@ -165,6 +180,12 @@ class Command(BaseCommand):
 
         payload = {
             "summary": {
+                "run_id": run_id,
+                "started_at": started_at,
+                "project_id": project_id,
+                "route_mode": route_mode,
+                "scope_policy": "isolated_per_case",
+                "measurement_path": "synchronous_service; excludes HTTP/SSE transport",
                 "case_count": len(rows),
                 "pass_count": sum(1 for row in rows if row["ok"]),
                 "fail_count": sum(1 for row in rows if not row["ok"]),

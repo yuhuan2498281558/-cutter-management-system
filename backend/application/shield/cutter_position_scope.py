@@ -24,9 +24,15 @@ def normalize_cutter_position_no(value):
     return code
 
 
-def is_active_cutter_position(value, shield_machine_id=None):
-    """判断刀位是否属于当前业务需要记录的范围。"""
-    return normalize_cutter_position_no(value) in ACTIVE_CUTTER_POSITION_CODES
+def is_active_cutter_position(value, tool_parent_type=None):
+    """判断刀位及其刀具大类是否属于当前业务需要记录的范围。"""
+    code = normalize_cutter_position_no(value)
+    if code not in ACTIVE_CUTTER_POSITION_CODES:
+        return False
+    if tool_parent_type is None:
+        return True
+    expected_type = "SCRAPER" if code.startswith("S") else "DISC"
+    return str(tool_parent_type or "").strip().upper() == expected_type
 
 
 def cutter_position_sort_key(value):

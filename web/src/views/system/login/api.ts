@@ -13,6 +13,12 @@ export function login(params: object) {
         data: params
     });
 }
+export function guestLogin() {
+    return request({
+        url: '/api/guest-login/',
+        method: 'post',
+    });
+}
 export function getUserInfo() {
     return request({
         url: '/api/system/user/user_info/',

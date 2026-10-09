@@ -37,6 +37,7 @@ from dvadmin.system.views.login import (
     LoginView,
     CaptchaView,
     ApiLogin,
+    GuestLoginView,
     LogoutView,
     LoginTokenView
 )
@@ -111,6 +112,7 @@ urlpatterns = (
             path("api/shield/", include("application.shield.urls")),
             path("api/ai/", include("application.ai_assistant.urls")),  # AI助手接口
             path("api/login/", LoginView.as_view(), name="token_obtain_pair"),
+            path("api/guest-login/", GuestLoginView.as_view(), name="guest_login"),
             path("api/logout/", LogoutView.as_view(), name="token_obtain_pair"),
             path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
             re_path(

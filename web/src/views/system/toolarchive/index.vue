@@ -391,7 +391,7 @@ function handleEdit (row: any) {
 /** 删除（单条） */
 const handleRowDelete = (id: string | number) => {
   if (!id) {
-    console.log('请选择要删除的记录');
+    ElMessage.warning('请选择要删除的记录');
     return;
   }
   ElMessageBox.confirm('此操作将永久删除该记录, 是否继续?', '提示', {
