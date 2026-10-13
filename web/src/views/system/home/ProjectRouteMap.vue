@@ -387,9 +387,21 @@ async function loadProject() {
 
 async function loadStratum() {
   try {
-    const res: any = await request({ url: '/api/shield/stratum_basic_info/', method: 'get', params: { project: 1, limit: 5000, ordering: 'ring_no' } });
+    const records: StratumItem[] = [];
+    let page = 1;
+    while (!disposed) {
+      const res: any = await request({ url: '/api/shield/stratum_basic_info/', method: 'get', params: { project: 1, page, limit: 999, ordering: 'ring_no' } });
+      if (disposed) return;
+      const batch: StratumItem[] = res.data?.results ?? res.data ?? [];
+      if (!Array.isArray(batch)) throw new Error('Invalid stratum page');
+      records.push(...batch);
+      const total = Number(res.total ?? res.data?.count);
+      const hasNext = res.is_next ?? (Number.isFinite(total) ? records.length < total : batch.length === 999);
+      if (!hasNext) break;
+      if (!batch.length) throw new Error('Empty stratum page before end');
+      page += 1;
+    }
     if (disposed) return;
-    const records: StratumItem[] = res.data?.results ?? res.data ?? [];
     const map: Record<string, string> = {};
     const ratios: Record<string, StratumItem> = {};
     records.forEach((item) => {

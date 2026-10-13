@@ -15,7 +15,7 @@ function deferred() {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-function harness() {
+function harness(stratumPages) {
   const script = parse(fs.readFileSync(path.join(__dirname, '../ProjectRouteMap.vue'), 'utf8'))
     .descriptor.scriptSetup.content.replace(/^import .*$/gm, '')
     .replace('pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;', '');
@@ -24,6 +24,7 @@ function harness() {
     { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, calibration);
   const project = deferred(), strata = deferred(), openings = deferred(), pdf = deferred(), render = deferred();
   const started = [];
+  const stratumRequests = [];
   let mount, unmount;
   const page = {
     getViewport: ({ scale }) => ({ width: 9524 * scale, height: 652 * scale }),
@@ -37,18 +38,20 @@ function harness() {
     window: { devicePixelRatio: 1, innerHeight: 768, clearTimeout() {} },
     ResizeObserver: class { observe() {} disconnect() {} },
     GetHomeProjectInfo: () => { started.push('project'); return project.promise; },
-    request: ({ url }) => {
+    request: ({ url, params }) => {
       const key = url.includes('warehouse_opening') ? 'openings' : 'strata';
       started.push(key);
-      return key === 'openings' ? openings.promise : strata.promise;
+      if (key === 'openings') return openings.promise;
+      stratumRequests.push(params);
+      return stratumPages ? Promise.resolve().then(() => stratumPages(params.page)) : strata.promise;
     },
     pdfjsLib: { getDocument: () => { started.push('pdf'); return { promise: pdf.promise }; } },
   };
   vm.createContext(context);
   vm.runInContext(ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText
-    + '\nglobalThis.api={progressText,openingStatusText,currentPercent,totalRings,selectedStratumText,selectedRatioText,pdfError,canvasRef,stageRef};', context);
+    + '\nglobalThis.api={progressText,openingStatusText,currentPercent,totalRings,selectedStratumText,selectedRatioText,stratumCount,pdfError,canvasRef,stageRef};', context);
   const api = context.api;
-  return { api, started, project, strata, openings, pdf, render, document,
+  return { api, started, stratumRequests, project, strata, openings, pdf, render, document,
     mount: () => mount(), unmount: () => unmount() };
 }
 
@@ -73,6 +76,38 @@ test('slow project and stratum requests do not block PDF, openings or actual pro
   await mounted;
   assert.equal(h.api.selectedStratumText.value, '混合地层');
   assert.equal(h.api.selectedRatioText.value, '黏土 100.00%');
+  h.unmount();
+});
+
+test('stratum pagination loads later rings despite the server page limit', async () => {
+  const h = harness(page => ({
+    data: [{ ring_no: String(page === 3 ? 487 : page), stratum_type_ratios: { CLAY: 100 }, stratum_ratio_labels: { CLAY: '黏土' } }],
+    total: 3, is_next: page < 3, limit: 1,
+  }));
+  const mounted = h.mount();
+  h.project.resolve({ data: {} });
+  h.openings.resolve({ data: [{ ring_no: '487' }] });
+  h.pdf.resolve(h.document);
+  await mounted;
+  assert.deepEqual(h.stratumRequests.map(p => p.page), [1, 2, 3]);
+  assert.ok(h.stratumRequests.every(p => p.project === 1 && p.limit <= 999));
+  assert.equal(h.api.stratumCount.value, 3);
+  assert.equal(h.api.selectedRatioText.value, '黏土 100.00%');
+  h.unmount();
+});
+
+test('a failed later stratum page does not publish a partial coverage count', async () => {
+  const h = harness(page => {
+    if (page === 2) throw new Error('network unavailable');
+    return { data: [{ ring_no: '1' }], total: 2, is_next: true };
+  });
+  const mounted = h.mount();
+  h.project.resolve({ data: {} });
+  h.openings.resolve({ data: [] });
+  h.pdf.resolve(h.document);
+  await mounted;
+  assert.equal(h.api.stratumCount.value, 0);
+  assert.deepEqual(h.stratumRequests.map(p => p.page), [1, 2]);
   h.unmount();
 });
 
