@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import SQLChatMessageHistory
-from .llm_provider import create_chat_model, get_llm_config
+from .llm_provider import create_chat_model, get_llm_config, get_context_policy, LLMProviderError
 from .tools import (
     query_tool_change_data,
     query_stratum_data,
@@ -212,6 +212,20 @@ def current_config_signature() -> dict:
         "memory_recent_turns": os.environ.get("AI_MEMORY_RECENT_TURNS", "3"),
         "memory_context_token_budget": os.environ.get("AI_MEMORY_CONTEXT_TOKEN_BUDGET", "1200"),
     })
+    try:
+        policy = get_context_policy()
+        signature["context_budget"] = {
+            "version": "lossless-budget-v2",
+            "counter": "text-components-cjk1.5-other0.25-estimate",
+            "context_tokens": policy.context_tokens,
+            "output_tokens": policy.output_tokens,
+            "safety_margin_tokens": policy.safety_margin_tokens,
+            "compaction_min_tokens": policy.compaction_min_tokens,
+            "tool_protocol_tokens": policy.tool_protocol_tokens,
+        }
+    except LLMProviderError:
+        # Rule-only requests remain usable even when model settings are invalid.
+        signature["context_budget"] = {"status": "invalid_configuration"}
     return signature
 
 
@@ -374,7 +388,8 @@ def tool_query_tool_change_data(tool_type: str = "", ring_range: list = [], last
 
 @tool(args_schema=RingQuery)
 def tool_query_stratum_data(ring_range: list = []) -> str:
-    """查询历史地层标签覆盖的环数；不是横断面岩性或纵断面工程分区面积占比。
+    """查询项目地层基础信息表的历史标签分布，按地层记录统计；不限于开仓点，不关联换刀/磨损记录，也不是面积占比。
+    summary.label_association_count是标签出现次数，unique_project_ring_count是按项目与数值环号去重数，total_records是记录数；直接使用，不能互换。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     """
     return query_stratum_data(_to_json({"ring_range": ring_range}))
@@ -457,6 +472,7 @@ def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_
 @tool(args_schema=ChangeTrendQuery)
 def tool_query_tool_change_trend(tool_type: str = "", ring_range: list = [], interval: int = 50) -> str:
     """按环段统计观测数、更换次数和更换率；不是每百环频率或统计趋势检验。
+    summary直接给出total_records、replaced_count、replacement_rate_pct、segment_count及请求/实际环段；总计直接引用，不需累加segments。改变范围或刀型须重新查询。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     interval 为每段环数，默认50环一段。
     """
@@ -481,7 +497,9 @@ def tool_query_tunneling_summary(ring_range: list = [], limit: int = 10) -> str:
 
 @tool(args_schema=TunnelingTrendQuery)
 def tool_query_tunneling_trend(ring_range: list = [], interval: int = 50) -> str:
-    """按环号区间统计掘进动态趋势。适用于掘进参数变化、趋势、阶段对比等问题。"""
+    """按环号区间统计掘进动态趋势。适用于掘进参数变化、趋势、阶段对比等问题。
+    summary给出记录数、分段数与范围。分段count可能是point_count或记录数，缺少各指标原始sum/count时不能合成原始点总体均值。
+    """
     return query_tunneling_trend(_to_json({"ring_range": ring_range, "interval": interval}))
 
 

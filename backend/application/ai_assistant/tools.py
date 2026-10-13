@@ -438,7 +438,7 @@ def _trend_segments(query, interval: int = 50):
     segments = []
     seg_start = min_ring
     while seg_start <= max_ring:
-        seg_end = seg_start + interval - 1
+        seg_end = min(seg_start + interval - 1, max_ring)
         seg = [r for r in records if r.get('ring_int') is not None and seg_start <= r['ring_int'] <= seg_end]
         if seg:
             def avg(field):
@@ -606,16 +606,44 @@ def query_stratum_data(params_str: str) -> str:
             )
 
         total_rings = query.count()
+        label_count_note = (
+            "数据来源为当前项目筛选范围内的地层基础信息表，逐环读取历史标签；"
+            "未限定开仓点，也未关联换刀或磨损记录。"
+            "total_rings为地层记录数；label_association_count为非空地层标签出现次数，"
+            "同一记录可有多个或重复标签，不能当作去重环数、面积占比或服役地层暴露量。"
+            "unique_project_ring_count按项目和可解析数值环号去重，不合并不同项目的同号环；"
+            "无法解析环号的记录由unresolved_ring_record_count单独列出。"
+        )
 
         if total_rings == 0:
             return json.dumps({
                 "message": "未找到符合条件的地层数据",
-                "total_rings": 0
+                "total_rings": 0,
+                "label_association_count": 0,
+                "unique_project_ring_count": 0,
+                "unresolved_ring_record_count": 0,
+                "note": label_count_note,
+                "summary": {
+                    "total_records": 0, "label_association_count": 0,
+                    "unique_project_ring_count": 0,
+                    "unresolved_ring_record_count": 0,
+                    "requested_ring_range": ring_range or None,
+                    "effective_ring_range": None,
+                    "count_basis": label_count_note,
+                },
             }, ensure_ascii=False)
 
         # 统计地层类型分布（带中文名称）
         stratum_distribution = {}
+        project_rings = set()
+        unresolved_ring_records = 0
         for item in query:
+            try:
+                project_rings.add((item.project_id, int(item.ring_no)))
+            except (TypeError, ValueError):
+                # An unrestricted legacy query previously accepted these rows.
+                # Keep their labels, but do not invent a numeric ring identity.
+                unresolved_ring_records += 1
             types = item.stratum_type_codes.split(',') if item.stratum_type_codes else []
             for t in types:
                 t = t.strip()
@@ -624,10 +652,27 @@ def query_stratum_data(params_str: str) -> str:
                     key = f"{name}({t})"
                     stratum_distribution[key] = stratum_distribution.get(key, 0) + 1
 
+        numeric_rings = [ring for _, ring in project_rings]
+        effective_ring_range = [min(numeric_rings), max(numeric_rings)] if numeric_rings else None
+        unique_rings = len(project_rings)
+        label_count = sum(stratum_distribution.values())
         result = {
             "total_rings": total_rings,
             "stratum_distribution": stratum_distribution,
-            "ring_range": ring_range if ring_range else "全部"
+            "ring_range": ring_range if ring_range else "全部",
+            "label_association_count": label_count,
+            "unique_project_ring_count": unique_rings,
+            "unresolved_ring_record_count": unresolved_ring_records,
+            "note": label_count_note,
+            "summary": {
+                "total_records": total_rings,
+                "label_association_count": label_count,
+                "unique_project_ring_count": unique_rings,
+                "unresolved_ring_record_count": unresolved_ring_records,
+                "requested_ring_range": ring_range or None,
+                "effective_ring_range": effective_ring_range,
+                "count_basis": label_count_note,
+            },
         }
 
         logger.info(f"查询成功，返回数据：{result}")
@@ -1692,9 +1737,33 @@ def query_tool_change_trend(params_str: str) -> str:
         records = list(
             query.values('ring_int', 'is_replaced', 'wear_condition')
         )
+        summary = {
+            "segment_count": 0,
+            "nonempty_segment_count": 0,
+            "total_records": len(records),
+            "replaced_count": sum(1 for row in records if row['is_replaced']),
+            "requested_ring_range": ring_range,
+            "effective_ring_range": None,
+            "project_id": project_id,
+            "shield_machine_id": params.get('shield_machine_id'),
+            "tool_type": tool_type or None,
+            "interval": interval,
+            "count_basis": (
+                "按当前筛选范围内有效122刀位、刀型匹配且已检查或已更换的明细记录计数；"
+                "来源全部为现场明细，不使用人工确认开仓汇总数量。"
+                "replaced_count为其中is_replaced=True的记录数，不是去重刀具实例数。"
+                "replacement_rate_pct的分母为total_records，不是异常磨损率；"
+                "总计直接由筛选记录计算，不对分段百分比求平均。"
+            ),
+        }
+        summary['replacement_rate_pct'] = (
+            round(summary['replaced_count'] / len(records) * 100, 1) if records else None
+        )
 
         if not records:
-            return json.dumps({"message": "未找到换刀记录", "total": 0}, ensure_ascii=False)
+            return json.dumps({
+                "message": "未找到换刀记录", "total": 0, "summary": summary,
+            }, ensure_ascii=False)
 
         # 按区间分组
         min_ring = min(r['ring_int'] for r in records)
@@ -1703,7 +1772,7 @@ def query_tool_change_trend(params_str: str) -> str:
         segments = []
         seg_start = min_ring
         while seg_start <= max_ring:
-            seg_end = seg_start + interval - 1
+            seg_end = min(seg_start + interval - 1, max_ring)
             seg_records = [r for r in records if seg_start <= r['ring_int'] <= seg_end]
             replaced = sum(1 for r in seg_records if r['is_replaced'])
             segments.append({
@@ -1717,12 +1786,18 @@ def query_tool_change_trend(params_str: str) -> str:
         # 判断趋势
         rates = [float(s['replacement_rate'].rstrip('%')) for s in segments if s['total'] > 0]
         trend = "上升" if len(rates) >= 2 and rates[-1] > rates[0] else "下降" if len(rates) >= 2 and rates[-1] < rates[0] else "平稳"
+        summary.update({
+            "segment_count": len(segments),
+            "nonempty_segment_count": sum(1 for segment in segments if segment['total']),
+            "effective_ring_range": [min_ring, max_ring],
+        })
 
         return json.dumps({
             "ring_range": f"{min_ring}-{max_ring}",
             "interval": interval,
             "trend": trend,
             "segments": segments,
+            "summary": summary,
             "note": f"换刀率整体呈{trend}趋势，interval={interval}环/段"
         }, ensure_ascii=False)
 
@@ -1748,8 +1823,31 @@ def query_tunneling_trend(params_str: str) -> str:
         interval = max(1, min(interval, 500))
         query = _filter_tunneling_query(params)
         segments = _trend_segments(query, interval=interval)
+        bounds = query.aggregate(
+            start=Min(Cast('ring_no', IntegerField())),
+            end=Max(Cast('ring_no', IntegerField())),
+        )
+        summary = {
+            "total_records": query.count(),
+            "segment_count": len(segments),
+            "requested_ring_range": _parse_ring_range(params.get('ring_range')),
+            "effective_ring_range": (
+                [bounds['start'], bounds['end']] if bounds['start'] is not None else None
+            ),
+            "interval": interval,
+            "count_basis": (
+                "total_records为筛选后的掘进动态数据库记录数；单环时间分段的count可能是"
+                "point_count，多环分段的count为记录数，两者不可混用。"
+                "分段均值已舍入，且缺少各指标原始有效点的sum/count，"
+                "不提供合并均值，不可对分段均值简单平均或按count推算原始点总体均值。"
+            ),
+            "overall_metric_averages_available": False,
+        }
         if not segments:
-            return _build_json({"message": "未找到符合条件的掘进动态数据", "total_records": 0})
+            return _build_json({
+                "message": "未找到符合条件的掘进动态数据", "total_records": 0,
+                "summary": summary,
+            })
 
         first = next((s for s in segments if s.get('avg_penetration') is not None), None)
         last = next((s for s in reversed(segments) if s.get('avg_penetration') is not None), None)
@@ -1761,7 +1859,7 @@ def query_tunneling_trend(params_str: str) -> str:
                 trend = "下降"
 
         result = {
-            "total_records": query.count(),
+            "total_records": summary['total_records'],
             "interval": interval,
             "trend": trend,
             "segments": segments,
@@ -1769,6 +1867,7 @@ def query_tunneling_trend(params_str: str) -> str:
         segment_mode = any(s.get("segment_index") for s in segments)
         result.update(_analysis_payload(
             summary={
+                **summary,
                 "total_records": result["total_records"],
                 "interval": interval,
                 "trend": trend,

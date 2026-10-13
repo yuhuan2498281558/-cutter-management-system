@@ -144,3 +144,10 @@ backend/plugins/*
 /pelican-bicycle.html
 /AI_ASSISTANT_*.md
 !/AI_ASSISTANT_HARDENING.md
+
+# Agent workflow files (mattpocock-skills, local tracker; not public)
+/.scratch/
+/docs/agents/
+/docs/adr/
+/GLOSSARY.md
+/GLOSSARY-MAP.md

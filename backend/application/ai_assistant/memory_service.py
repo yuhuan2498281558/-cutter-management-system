@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import logging
 import json
-import math
 import os
-import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -30,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .models import AssistantMemoryMessage, AssistantMemoryScope
+from .token_estimation import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +64,6 @@ def _int_setting(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, int(os.environ.get(name, str(default))))
     except (TypeError, ValueError):
         return default
-
-
-def estimate_tokens(text: str) -> int:
-    """Conservative provider-neutral token estimate.
-
-    The assistant supports Ollama and OpenAI-compatible providers, so relying
-    on a provider tokenizer here would add a deployment-specific dependency.
-    The estimate is intentionally conservative for budgeting, not billing.
-    """
-
-    if not text:
-        return 0
-    cjk = len(re.findall(r"[\u3400-\u9fff]", text))
-    non_cjk = len(text) - cjk
-    return max(1, math.ceil(cjk * 1.5 + non_cjk / 4))
 
 
 @dataclass(frozen=True)

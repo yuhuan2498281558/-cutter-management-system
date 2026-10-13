@@ -9,6 +9,9 @@ Environment variables or Django settings in conf/env.py:
 - AI_LLM_TEMPERATURE: default 0.1
 - AI_LLM_TIMEOUT: request timeout seconds
 - OLLAMA_NUM_CTX / OLLAMA_NUM_PREDICT: Ollama generation options
+- AI_CONTEXT_WINDOW_TOKENS / AI_CONTEXT_OUTPUT_TOKENS: operational budget
+- AI_CONTEXT_SAFETY_MARGIN_TOKENS / AI_CONTEXT_COMPACTION_MIN_TOKENS
+- AI_CONTEXT_TOOL_PROTOCOL_TOKENS: reserve for provider tool templates
 """
 
 from __future__ import annotations
@@ -70,8 +73,33 @@ def get_llm_config(model_name: str | None = None) -> LLMConfig:
     )
 
 
+def get_context_policy(provider: str | None = None):
+    from .context_budget import ContextBudgetPolicy
+
+    provider = provider or _config_value("AI_LLM_PROVIDER", "deepseek").strip().lower()
+    ollama = provider == "ollama"
+    window = _config_value("OLLAMA_NUM_CTX", "4096") if ollama else "16384"
+    output = _config_value("OLLAMA_NUM_PREDICT", "1024") if ollama else "2048"
+    try:
+        policy = ContextBudgetPolicy(
+            context_tokens=int(_config_value("AI_CONTEXT_WINDOW_TOKENS", window)),
+            output_tokens=int(_config_value("AI_CONTEXT_OUTPUT_TOKENS", output)),
+            safety_margin_tokens=int(_config_value("AI_CONTEXT_SAFETY_MARGIN_TOKENS", "512" if ollama else "1024")),
+            compaction_min_tokens=int(_config_value("AI_CONTEXT_COMPACTION_MIN_TOKENS", "1000")),
+            tool_protocol_tokens=int(_config_value("AI_CONTEXT_TOOL_PROTOCOL_TOKENS", "1024")),
+        )
+        if ollama and policy.context_tokens > int(window):
+            raise ValueError("AI context budget cannot exceed OLLAMA_NUM_CTX")
+        return policy
+    except (ValueError, TypeError) as exc:
+        raise LLMProviderError(f"Invalid AI context budget configuration: {exc}") from exc
+
+
 def create_chat_model(model_name: str | None = None):
+    from .context_budget import GuardedChatModel
+
     config = get_llm_config(model_name)
+    policy = get_context_policy(config.provider)
 
     if config.provider == "ollama":
         try:
@@ -82,13 +110,14 @@ def create_chat_model(model_name: str | None = None):
                 "Switch AI_LLM_PROVIDER to deepseek/openai for API mode."
             ) from exc
 
-        return ChatOllama(
+        model = ChatOllama(
             model=config.model,
             base_url=config.base_url,
             temperature=config.temperature,
             num_ctx=int(_config_value("OLLAMA_NUM_CTX", "4096")),
-            num_predict=int(_config_value("OLLAMA_NUM_PREDICT", "1024")),
+            num_predict=policy.output_tokens,
         )
+        return GuardedChatModel(model, policy, output_parameter="num_predict")
 
     if config.provider in {"openai", "openai-compatible", "api", "deepseek"}:
         try:
@@ -103,12 +132,27 @@ def create_chat_model(model_name: str | None = None):
         if not config.api_key:
             raise LLMProviderError("AI_LLM_API_KEY is required for OpenAI-compatible providers.")
 
-        return ChatOpenAI(
+        model_class = ChatOpenAI
+        if config.provider != "openai":
+            class CompatibleChatOpenAI(ChatOpenAI):
+                """Keep the Chat Completions max_tokens contract for compatible APIs."""
+
+                def _get_request_payload(self, input_, *, stop=None, **kwargs):
+                    payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+                    if "max_completion_tokens" in payload:
+                        payload["max_tokens"] = payload.pop("max_completion_tokens")
+                    return payload
+
+            model_class = CompatibleChatOpenAI
+
+        model = model_class(
             model=config.model,
             base_url=config.base_url,
             api_key=config.api_key,
             temperature=config.temperature,
             timeout=config.timeout,
+            max_tokens=policy.output_tokens,
         )
+        return GuardedChatModel(model, policy)
 
     raise LLMProviderError(f"Unsupported AI_LLM_PROVIDER: {config.provider}")
