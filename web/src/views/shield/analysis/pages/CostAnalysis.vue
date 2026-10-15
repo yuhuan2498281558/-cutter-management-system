@@ -134,11 +134,11 @@ import * as echarts from 'echarts';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getFilterOptions, getCostOverview, getCostTrend, getBrandCost, getBrandPriceTrend, getBrandPerformanceTrend } from '../api';
-import { TOOL_TYPE_LABELS, TOOLTIP_STYLE, DEFAULT_GRID } from '../utils/chartTheme';
-import { analysisExportMeta, escapeHtml, formatCurrency, formatNumber, formatPercent, requireAnalysisV2, SOURCE_LABELS } from '../utils/presentation';
+import { buildCompositionOption, buildCostTrendOption, buildTypeOption, buildRelationshipOption, buildBrandTrendOption, manufacturerColor, serviceValue } from '../utils/costChartOptions';
+import { analysisExportMeta, formatCurrency, formatNumber, formatPercent, requireAnalysisV2, SOURCE_LABELS } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
-import type { AnalysisFilter, AnalysisMeta, BrandCostItem, BrandPerfTrendSeries, BrandPerformanceTrendData, BrandPriceTrendData, CostOverviewData, CostSourceRow, CostTrendItem } from '../types';
+import type { AnalysisFilter, AnalysisMeta, BrandCostItem, BrandPerformanceTrendData, BrandPriceTrendData, CostOverviewData, CostSourceRow, CostTrendItem } from '../types';
 
 interface ServiceRow {
   detail_id: number; opening_id: number; warehouse_id: string; ring_no: string; cutter_position_no: string;
@@ -254,7 +254,6 @@ const selectedTrend = computed(() => {
   return list.filter(item => visible.has(item.manufacturer));
 });
 const hasTrendData = computed(() => selectedTrend.value.some(item => item.data.some(value => value != null)));
-function serviceValue(value: unknown) { return value == null ? '无闭合样本' : `${formatNumber(value, 1)} 环`; }
 function focusManufacturer(name: string) { focusedManufacturer.value = focusedManufacturer.value === name ? '' : name; }
 function sourceLabel(row: CostSourceRow) { return row.source === 'confirmed_repair' && !['CONFIRMED', 'CLOSED'].includes(row.inspection_status || '') ? '返修登记（待确认）' : SOURCE_LABELS[row.source] || row.source; }
 function openOpening(row: { opening_id: number; warehouse_id: string }) {
@@ -290,13 +289,6 @@ function exportTrendPdf() {
     ]),
   }]);
 }
-const sourceConfig = [
-  { key: 'installation', trend: 'installation_cost', name: '新装登记', color: '#35689b' },
-  { key: 'confirmed_repair', trend: 'confirmed_repair_cost', name: '已确认返修', color: '#6f9483' },
-  { key: 'legacy', trend: 'legacy_cost', name: '历史登记', color: '#b7a078' },
-] as const;
-const palette = ['#35689b', '#7d6aa8', '#427c70', '#ae783c', '#a45f6d', '#537f92', '#687947', '#8c6b54'];
-function manufacturerColor(name: string) { let hash = 0; for (const character of name || '') hash = (hash * 31 + character.charCodeAt(0)) >>> 0; return palette[hash % palette.length]; }
 const compositionRef = ref<HTMLElement | null>(null);
 const costTrendRef = ref<HTMLElement | null>(null);
 const typeRef = ref<HTMLElement | null>(null);
@@ -319,68 +311,16 @@ function updateChart(key: string, element: HTMLElement | null, option: any) {
 }
 function renderCharts() {
   if (costReady.value && sources.value) {
-    updateChart('composition', compositionRef.value, {
-      tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', valueFormatter: (value: number) => formatCurrency(value) },
-      legend: { bottom: 0 }, grid: { left: 28, right: 30, top: 16, bottom: 48, containLabel: true },
-      xAxis: { type: 'value', name: '元' }, yAxis: { type: 'category', data: ['明确金额'], axisTick: { show: false } },
-      series: sourceConfig.map(item => ({ name: item.name, type: 'bar', stack: 'sources', barMaxWidth: 32, color: item.color, data: [sources.value![item.key]] })),
-    });
-    const items = costTrend.value?.items ?? [], cumulative = costMode.value === 'cumulative';
-    updateChart('costTrend', costTrendRef.value, {
-      tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', axisPointer: { type: 'shadow' } }, legend: { bottom: 0, type: 'scroll' }, grid: { ...DEFAULT_GRID, top: 38, right: 48, bottom: 75 },
-      xAxis: { type: 'category', data: items.map(item => `${item.ring_no}环`), axisLabel: { hideOverlap: true } },
-      yAxis: [{ type: 'value', name: '登记金额（元）' }, { type: 'value', name: cumulative ? '累计金额（元）' : '更换数量（把）', minInterval: cumulative ? undefined : 1 }],
-      dataZoom: items.length > 14 ? [{ type: 'inside' }] : [],
-      series: [...sourceConfig.map(source => ({ name: source.name, type: 'bar', stack: 'cost', barMaxWidth: 28, color: source.color, data: items.map(item => item[source.trend] ?? null) })),
-        { name: cumulative ? '累计明确金额' : '实际更换数量', type: 'line', yAxisIndex: 1, color: '#4b5563', smooth: false, symbol: 'circle', symbolSize: 5, data: items.map(item => cumulative ? item.cumulative_cost : item.replacement_count ?? null) }],
-    });
+    updateChart('composition', compositionRef.value, buildCompositionOption(sources.value));
+    updateChart('costTrend', costTrendRef.value, buildCostTrendOption(costTrend.value, costMode.value));
     const types = costOverview.value?.type_breakdown ?? [];
-    updateChart('type', typeRef.value, {
-      tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (value: number) => formatCurrency(value) },
-      legend: { bottom: 0 }, grid: { ...DEFAULT_GRID, left: 30, right: 45 },
-      xAxis: { type: 'value', name: '元' }, yAxis: { type: 'category', data: types.map(item => TOOL_TYPE_LABELS[item.tool_type] || item.tool_type) },
-      series: sourceConfig.map(source => ({ name: source.name, type: 'bar', stack: 'sources', barMaxWidth: 34, color: source.color, data: types.map(item => item.cost_sources?.[source.key] ?? null) })),
-    });
+    updateChart('type', typeRef.value, buildTypeOption(types));
   }
   if (!brandReady.value || !brandResult.value) return;
-  updateChart('relationship', relationshipRef.value, {
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'item', formatter: (parameter: any) => {
-      const item = parameter.data.sample as BrandCostItem;
-      return `${escapeHtml(item.manufacturer)}<br/>安装记录均价：${formatCurrency(item.avg_cost)}（${formatNumber(item.priced_count)} 个有价样本）<br/>已拆刀平均服役：${serviceValue(item.avg_lifespan)}（${formatNumber(item.lifespan_count)} 个闭合段）<br/>非正常磨损：${formatPercent(item.abnormal_rate)}（${formatNumber(item.wear_recorded_count)} 个有记录样本）`;
-    } },
-    grid: { ...DEFAULT_GRID, top: 35, right: 32, bottom: 55 },
-    xAxis: { type: 'value', name: '安装均价（元）', nameLocation: 'middle', nameGap: 32 }, yAxis: { type: 'value', name: '服役环数（环）' },
-    series: [{ type: 'scatter', symbolSize: 13, data: relationshipItems.value.map(item => ({ name: item.manufacturer, value: [item.avg_cost, item.avg_lifespan], sample: item, itemStyle: { color: manufacturerColor(item.manufacturer) } })),
-      label: { show: relationshipItems.value.length <= 8, position: 'top', formatter: '{b}', fontSize: 11 }, labelLayout: { hideOverlap: true } }],
-  });
+  updateChart('relationship', relationshipRef.value, buildRelationshipOption(relationshipItems.value));
   const trend = selectedTrend.value;
   const axis = brandMetric.value === 'price' ? brandResult.value.price.time_axis : brandResult.value.performance.time_axis;
-  updateChart('brandTrend', brandTrendRef.value, {
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', formatter: (parameters: any[]) => {
-      if (!parameters.length) return '';
-      const index = parameters[0].dataIndex, point = axis[index];
-      if (!point) return '';
-      return `${escapeHtml(point.ring_no)} 环 · ${escapeHtml(point.open_time)}<br/>` + parameters.map(parameter => {
-        const sample = trend.find(item => item.manufacturer === parameter.seriesName), value = sample?.data[index];
-        const formatted = value == null ? '无有效样本' : trendConfig.value.ratio ? formatPercent(value) : brandMetric.value === 'price' ? formatCurrency(value) : serviceValue(value);
-        const recordedCount = sample?.count_data?.[index];
-        if (trendConfig.value.ratio) {
-          const abnormalCount = (sample as BrandPerfTrendSeries | undefined)?.abnormal_count_data?.[index];
-          const categoryCount = brandMetric.value === 'normal'
-            ? recordedCount != null && abnormalCount != null ? recordedCount - abnormalCount : undefined
-            : abnormalCount;
-          const category = brandMetric.value === 'normal' ? '正常数' : '非正常数';
-          return `${escapeHtml(parameter.seriesName)}：${formatted}<br/>${category} / 有记录数：${formatNumber(categoryCount)} / ${formatNumber(recordedCount)}（已闭合配对旧刀）`;
-        }
-        return `${escapeHtml(parameter.seriesName)}：${formatted}（${brandMetric.value === 'price' ? '有价新装记录' : '闭合服役段'} ${formatNumber(recordedCount)}）`;
-      }).join('<br/>');
-    } },
-    legend: { bottom: 0, type: 'scroll' }, grid: { ...DEFAULT_GRID, top: 30, right: 30, bottom: 70 },
-    xAxis: { type: 'category', data: axis.map(item => `${item.ring_no}环`), axisLabel: { hideOverlap: true } },
-    yAxis: { type: 'value', name: trendConfig.value.unit, min: 0, max: trendConfig.value.ratio ? 1 : undefined, axisLabel: { formatter: (value: number) => trendConfig.value.ratio ? `${Math.round(value * 100)}%` : value } },
-    dataZoom: axis.length > 14 ? [{ type: 'inside' }] : [],
-    series: trend.map(item => ({ name: item.manufacturer, type: 'line', data: item.data, color: manufacturerColor(item.manufacturer), connectNulls: false, smooth: false, symbol: 'circle', symbolSize: 6 })),
-  });
+  updateChart('brandTrend', brandTrendRef.value, buildBrandTrendOption(trend, axis, brandMetric.value, trendConfig.value));
 }
 let activeCharts = true, resizeFrame: number | undefined, renderFrame: number | undefined;
 function scheduleRender() {

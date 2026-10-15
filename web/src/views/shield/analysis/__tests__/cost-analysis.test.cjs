@@ -318,3 +318,51 @@ test('unrelated charts retain their options and user view when a single metric c
   r.state.relationshipRef.value = { key: 'replacement-element' }; r.state.renderCharts();
   assert.equal(r.charts[3].disposed, true); assert.equal(r.charts[5].options.length, 1);
 });
+
+function loadCostChartOptions() {
+  function load(file) {
+    return compile(fs.readFileSync(file, 'utf8'), name => load(path.resolve(path.dirname(file), `${name}.ts`)));
+  }
+  return load(path.resolve(__dirname, '../utils/costChartOptions.ts'));
+}
+
+test('cost option builders preserve source order, colors and explicit amounts', () => {
+  const { buildCompositionOption, buildTypeOption, buildCostTrendOption } = loadCostChartOptions();
+  const composition = buildCompositionOption(sources);
+  const type = buildTypeOption([{ tool_type: 'DISC', cost_sources: sources }, { tool_type: 'OTHER' }]);
+  const trend = buildCostTrendOption(fixture({ url: 'cost_trend/', params: {} }).data, 'consumption');
+  const expected = [['新装登记', '#35689b'], ['已确认返修', '#6f9483'], ['历史登记', '#b7a078']];
+  for (const option of [composition, type, trend]) {
+    assert.deepEqual(plain(option.series.slice(0, 3).map(item => [item.name, item.color])), expected);
+  }
+  assert.deepEqual(plain(composition.series.map(item => item.data)), [[100], [20], [30]]);
+  assert.deepEqual(plain(type.series.map(item => item.data)), [[100, null], [20, null], [30, null]]);
+  assert.deepEqual(plain(type.yAxis.data), ['滚刀', 'OTHER']);
+  assert.equal(composition.tooltip.valueFormatter(0), '¥0');
+});
+
+test('manufacturer colors stay stable across chart builders, ordering and focused subsets', () => {
+  const { buildRelationshipOption, buildBrandTrendOption } = loadCostChartOptions();
+  const relationship = buildRelationshipOption(brands);
+  const price = fixture({ url: 'brand_price_trend/', params: {} }).data;
+  const trend = buildBrandTrendOption([...price.series].reverse(), price.time_axis, 'price', { unit: '元', ratio: false });
+  assert.deepEqual(plain(relationship.series[0].data.map(item => [item.name, item.itemStyle.color])), [['A', '#7d6aa8'], ['B', '#427c70']]);
+  assert.deepEqual(plain(trend.series.map(item => [item.name, item.color])), [['B', '#427c70'], ['A', '#7d6aa8']]);
+  const focused = buildRelationshipOption([brands[0]]);
+  assert.equal(focused.series[0].data[0].itemStyle.color, relationship.series[0].data[0].itemStyle.color);
+  assert.equal(focused.series[0].label.show, true);
+});
+
+test('cost trend builder switches only the count or cumulative series and its axis', () => {
+  const { buildCostTrendOption } = loadCostChartOptions();
+  const data = fixture({ url: 'cost_trend/', params: {} }).data;
+  const consumption = buildCostTrendOption(data, 'consumption');
+  const cumulative = buildCostTrendOption(data, 'cumulative');
+  assert.deepEqual(plain(consumption.series.slice(0, 3).map(item => item.data)), [[100, 0], [20, 0], [0, 30]]);
+  assert.deepEqual(plain(cumulative.series.slice(0, 3)), plain(consumption.series.slice(0, 3)));
+  const line = { type: 'line', yAxisIndex: 1, color: '#4b5563', smooth: false, symbol: 'circle', symbolSize: 5 };
+  assert.deepEqual(plain(consumption.series[3]), { ...line, name: '实际更换数量', data: [2, 1] });
+  assert.deepEqual(plain(cumulative.series[3]), { ...line, name: '累计明确金额', data: [120, 150] });
+  assert.deepEqual(plain(consumption.yAxis[1]), { type: 'value', name: '更换数量（把）', minInterval: 1 });
+  assert.deepEqual(plain(cumulative.yAxis[1]), { type: 'value', name: '累计金额（元）' });
+});
