@@ -16,25 +16,12 @@ function loadModel() {
     return context.exports;
   }
   function requireModule(name) {
-    if (name === 'vue') return { ...vue, onMounted() {} };
-    if (name === '/@/utils/service') return { request: async config => {
-      throw new Error(`Unexpected request: ${config.url}`);
-    } };
-    if (name === '/@/utils/engineeringAssets') return { CUTTERHEAD_CLEAN_IMAGE: '' };
     if (name === '/@/constants/cutterPositions') {
       return compile(fs.readFileSync(path.resolve(__dirname, '../../../../constants/cutterPositions.ts'), 'utf8'));
     }
     throw new Error(`Unexpected import: ${name}`);
   }
-  const filename = path.resolve(__dirname, '../ToolChangeOverview.vue');
-  const { descriptor, errors } = parse(fs.readFileSync(filename, 'utf8'), { filename });
-  assert.deepEqual(errors, []);
-  const script = compileScript(descriptor, { id: 'overview-model-test' });
-  const component = compile(script.content).default;
-  const state = component.setup({}, { expose() {}, emit() {} });
-  const names = ['buildRows', 'buildRow', 'getAverageLife', 'getAverageLifeByItems', 'getLifeStatus',
-    'getStatus', 'compareRecordDesc', 'compareLifeThenPosition', 'comparePosition', 'formatDateTime'];
-  return Object.fromEntries(names.map(name => [name, state[name]]));
+  return compile(fs.readFileSync(path.resolve(__dirname, '../overviewModel.ts'), 'utf8'));
 }
 
 const model = loadModel();
@@ -175,4 +162,13 @@ test('formats local dates and preserves invalid text', () => {
   assert.equal(model.formatDateTime('2026-02-03T04:05:59'), '2026/02/03 04:05');
   assert.equal(model.formatDateTime('bad-date'), 'bad-date');
   for (const value of ['', null, undefined, 0]) assert.equal(model.formatDateTime(value), '');
+});
+
+test('overview Vue script and template compile', () => {
+  const { compileTemplate } = require('@vue/compiler-sfc');
+  const filename = path.resolve(__dirname, '../ToolChangeOverview.vue');
+  const { descriptor, errors } = parse(fs.readFileSync(filename, 'utf8'), { filename });
+  assert.deepEqual(errors, []);
+  const script = compileScript(descriptor, { id: 'overview-model-test' });
+  assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename, id: 'overview-model-test', compilerOptions: { bindingMetadata: script.bindings, expressionPlugins: ['typescript'] } }).errors, []);
 });
