@@ -17,6 +17,7 @@ function run(source, requireModule = require, globals = {}) {
   return context.exports;
 }
 const helpers = run(fs.readFileSync(path.resolve(__dirname, '../tablePresentation.ts'), 'utf8'));
+const presentation = run(fs.readFileSync(path.resolve(__dirname, '../detailPresentation.ts'), 'utf8'));
 const { repairStatus, matchesDetailFilters } = helpers;
 const rows = [
   { cutter_position_no: '1', tool_number: 'BASE-1', is_checked: false, is_replaced: false },
@@ -28,6 +29,14 @@ const rows = [
   })),
 ];
 const select = (check = 'ALL', repair = 'ALL', query = '') => rows.filter(row => matchesDetailFilters(row, check, repair, query));
+
+test('stratum display preserves object fields, legacy fallbacks and non-object formats', () => {
+  const { formatStratumBetween } = presentation;
+  assert.equal(formatStratumBetween([{ stratum_type_name: '砂层', ring_count: 3 }, { name: '岩层', count: 2 }]), '砂层(3环)、岩层(2环)');
+  for (const value of [[], null, undefined, '砂层', {}]) assert.equal(formatStratumBetween(value), '-');
+  assert.equal(formatStratumBetween(['砂层', '岩层']), '砂层,岩层');
+  assert.equal(formatStratumBetween([null, '砂层']), ',砂层');
+});
 
 test('repair states distinguish absent records, vendor feedback, confirmation, archive and unknown', () => {
   assert.deepEqual(rows.map(repairStatus), ['NOT_REPLACED', 'NOT_REPLACED', 'UNRECORDED', 'PENDING_VENDOR_FEEDBACK', 'CONFIRMED', 'CLOSED', 'UNKNOWN']);
@@ -75,6 +84,7 @@ function setup(t, mode = 'supplement', options = {}) {
     if (name === 'vue') return { ...vue, onMounted() {}, onActivated() {}, onDeactivated() {}, onUnmounted() {} };
     if (name === 'vue-router') return { useRoute: () => ({ path: '/shield/toolChangeDetail', query: options.query || { mode } }), useRouter: () => options.router || {} };
     if (name === './tablePresentation') return helpers;
+    if (name === './detailPresentation') return presentation;
     if (name === '/@/utils/service') return { request: options.request || (() => { throw new Error('Unexpected API call'); }) };
     if (name === 'element-plus') return { ElMessage: { success() {}, warning() {}, error() {} } };
     if (name.endsWith('.vue')) return {};

@@ -17,6 +17,7 @@ function compile(content, requireModule = require) {
   return context.exports;
 }
 const helpers = compile(fs.readFileSync(path.resolve(__dirname, '../tablePresentation.ts'), 'utf8'));
+const presentation = compile(fs.readFileSync(path.resolve(__dirname, '../detailPresentation.ts'), 'utf8'));
 const script = compileScript(parse(source).descriptor, { id: 'detail-load-test' });
 function deferred() {
   let resolve, reject;
@@ -35,6 +36,7 @@ function setup(t, respond = async config => fixture(config)) {
     if (name === 'vue') return { ...vue, ...Object.fromEntries(['onMounted', 'onActivated', 'onDeactivated', 'onUnmounted'].map(key => [key, fn => { hooks[key] = fn; }])) };
     if (name === 'vue-router') return { useRoute: () => route, useRouter: () => ({ back() {}, replace: async target => { route.query = target.query; } }) };
     if (name === './tablePresentation') return helpers;
+    if (name === './detailPresentation') return presentation;
     if (name === '/@/utils/service') return { request: async config => { assert.equal(config.method, 'get'); calls.push(config); return respond(config); } };
     if (name === 'element-plus') return { ElMessage: Object.fromEntries(['success', 'warning', 'error'].map(key => [key, message => notices.push([key, message])])) };
     if (name.endsWith('.vue')) return {};
