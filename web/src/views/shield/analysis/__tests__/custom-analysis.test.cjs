@@ -47,3 +47,49 @@ test('configuration stays disabled until field choices load', async t => {
   fieldsPending.resolve(fields); await pending;
   assert.equal(h.nodes().find(node => node.type?.name === 'el-form').props.disabled, false);
 });
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { compile, root } = require('./helpers.cjs');
+function loadChartOptionsModule(file) {
+  return compile(fs.readFileSync(file, 'utf8'), name => loadChartOptionsModule(path.resolve(path.dirname(file), `${name}.ts`)));
+}
+const { buildLineChartOption, buildMatrixChartOption } = loadChartOptionsModule(path.resolve(root, 'utils/customChartOptions.ts'));
+
+test('option builders preserve line gaps and matrix null versus zero', () => {
+  const line = result({ chart_type: 'line', x_field: 'ring_no' });
+  line.series[0].data = [0, null];
+  assert.equal(buildLineChartOption(line).series[0].type, 'line');
+  assert.deepEqual(plain(buildLineChartOption(line).series[0].data), [0, null]);
+  line.x_field.value = 'manufacturer';
+  assert.equal(buildLineChartOption(line).series[0].type, 'bar');
+
+  const matrix = result({ chart_type: 'matrix', x_field: 'ring_no' });
+  matrix.series[0].data = [[0, 0, 0], [1, 0, null], [2, 0, 5]];
+  matrix.series.push({ metric: 'total_cost', name: '登记费用', unit: '元', data: [[0, 0, 0], [2, 0, null]] });
+  const option = buildMatrixChartOption(matrix, { width: 900, height: '380px' });
+  assert.deepEqual(plain(option.series[0].data.map(item => item.value)), [[0, 0, 0, 0], [2, 0, 5, null]]);
+  assert.equal(option.series[0].symbolSize([0, 0, 0, 0]), 5);
+  assert.equal(option.series[0].data[1].itemStyle.color, '#a8abb2');
+});
+
+test('matrix option tooltip escapes categories, dimensions, metrics and units', () => {
+  const data = result({ chart_type: 'matrix', x_field: 'ring_no' });
+  data.x_categories = ['<img>'];
+  data.y_categories = ['滚刀&刮刀'];
+  data.x_field.label = 'X<轴>';
+  data.y_field.label = 'Y"轴';
+  data.series[0].name = '更换<数>';
+  data.series[0].unit = '把&';
+  data.series.push({ metric: 'total_cost', name: '费用\'额', unit: '<元>', data: [[0, 0, null]] });
+  const option = buildMatrixChartOption(data, { width: 900, height: '380px' });
+  assert.equal(option.tooltip.formatter({ value: [0, 0, 0, null] }),
+    '<b>X&lt;轴&gt;：&lt;img&gt;</b><br/>Y&quot;轴：滚刀&amp;刮刀<br/>更换&lt;数&gt;：0 把&amp;<br/>费用&#39;额：- &lt;元&gt;');
+});
+
+test('matrix option narrows grid left to the existing width limit', () => {
+  const data = result({ chart_type: 'matrix', x_field: 'ring_no' });
+  data.y_categories = ['这是一个超过十四个字符的刀具类型名称'];
+  assert.equal(buildMatrixChartOption(data, { width: 900, height: '380px' }).grid.left, 180);
+  assert.equal(buildMatrixChartOption(data, { width: 320, height: '380px' }).grid.left, 100);
+});
