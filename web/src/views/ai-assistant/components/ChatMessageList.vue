@@ -7,7 +7,14 @@
           加载更早消息
         </el-button>
       </div>
-      <div v-if="messages.length === 0" class="welcome-message">
+      <!-- 首屏历史还没回来时先不显示欢迎语和快捷问题，避免误以为历史丢了 -->
+      <div v-if="messages.length === 0 && historyLoading" class="welcome-message">
+        <div class="welcome-icon">
+          <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+        </div>
+        <p class="history-loading-text">正在加载历史对话…</p>
+      </div>
+      <div v-else-if="messages.length === 0" class="welcome-message">
         <div class="welcome-icon">
           <el-icon :size="30"><ChatDotRound /></el-icon>
         </div>
@@ -99,7 +106,7 @@
 <script setup lang="ts">
 import { nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { ChatDotRound, User, DocumentCopy, ArrowDown, RefreshRight } from '@element-plus/icons-vue';
+import { ChatDotRound, User, DocumentCopy, ArrowDown, RefreshRight, Loading } from '@element-plus/icons-vue';
 import { Message } from '../types';
 import { quickQuestionGroups } from '../constants';
 import AnalysisMessage from './AnalysisMessage.vue';
@@ -307,6 +314,10 @@ defineExpose({
   p {
     margin: 0 0 16px;
     font-size: 13px;
+  }
+
+  .history-loading-text {
+    margin: 14px 0 0;
   }
 
   .welcome-chips {

@@ -216,3 +216,26 @@ test('the message list marks stopped and failed answers as cut off', () => {
   const bindings = Object.fromEntries(find(descriptor.template.ast).props.filter(prop => prop.name === 'bind').map(prop => [prop.arg.content, prop.exp.content]));
   assert.equal(bindings.truncated, 'msg.aborted || msg.rawError');
 });
+
+async function renderMessageList(props) {
+  const { renderToString } = require('@vue/server-renderer');
+  const bindings = loadComponent('ChatMessageList.vue', props, 'welcomeChips, containerRef, handleScroll, elapsedSec, canRetry, handleCopy, isNearBottom, scrollToBottom');
+  const template = require('@vue/compiler-sfc').parse(fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8')).descriptor.template.content;
+  const app = vue.createSSRApp({ template, setup: () => ({ ...props, ...bindings }) });
+  for (const name of ['ElIcon', 'ElButton', 'AnalysisMessage', 'ChatDotRound', 'User', 'DocumentCopy', 'ArrowDown', 'RefreshRight', 'Loading']) {
+    app.component(name, { setup: (_props, { slots }) => () => vue.h('span', slots.default?.()) });
+  }
+  return renderToString(app);
+}
+
+test('the first history load shows a loading state instead of the welcome shortcuts', async () => {
+  const loading = await renderMessageList({ messages: [], historyLoading: true, hasMoreHistory: false });
+  assert.match(loading, /正在加载历史对话…/);
+  assert.equal(loading.includes('你好，我是刀小智'), false);
+  const empty = await renderMessageList({ messages: [], historyLoading: false, hasMoreHistory: false });
+  assert.match(empty, /你好，我是刀小智/);
+  assert.equal(empty.includes('正在加载历史对话'), false);
+  const older = await renderMessageList({ messages: [{ id: 'm1', role: 'user', content: '旧问题', time: '' }], historyLoading: true, hasMoreHistory: true });
+  assert.equal(older.includes('正在加载历史对话'), false, 'loading earlier pages keeps the conversation on screen');
+  assert.match(older, /旧问题/);
+});
