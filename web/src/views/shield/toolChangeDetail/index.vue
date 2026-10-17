@@ -312,7 +312,9 @@ const getWarehouseInfo = async () => {
     warehouseInfo.value = res.data;
 
     if (route.query.mode === 'supplement' && !warehouseInfo.value?.supplement_ready) {
-      ElMessage.warning('请先在开仓列表补全开仓持续时间、换刀总时长和刀具数量');
+      ElMessage.warning(warehouseInfo.value?.supplement_missing_fields?.length
+        ? '请先在开仓列表补全开仓持续时间、换刀总时长和刀具数量'
+        : '开仓汇总尚未确认（可能已被撤回），请回到开仓列表点“补录明细”重新确认');
       await router.replace({
         path: route.path,
         query: { ...route.query, mode: 'view' },

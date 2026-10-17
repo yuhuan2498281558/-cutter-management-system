@@ -86,7 +86,7 @@ function setup(t, mode = 'supplement', options = {}) {
     if (name === './tablePresentation') return helpers;
     if (name === './detailPresentation') return presentation;
     if (name === '/@/utils/service') return { request: options.request || (() => { throw new Error('Unexpected API call'); }) };
-    if (name === 'element-plus') return { ElMessage: { success() {}, warning() {}, error() {} } };
+    if (name === 'element-plus') return { ElMessage: options.message || { success() {}, warning() {}, error() {} } };
     if (name.endsWith('.vue')) return {};
     throw new Error(`Unexpected import: ${name}`);
   });
@@ -252,6 +252,22 @@ test('unconfirmed warehouse downgrades supplement to view with query preserved',
   assert.equal(replacements[0].query.mode, 'view');
   assert.equal(replacements[0].query.warehouse_id, '123');
   assert.equal(replacements[0].query.warehouse_code, 'TEST-123');
+});
+
+test('downgrade notice asks to fill fields only when fields are missing, otherwise to re-confirm', async t => {
+  const missingText = '请先在开仓列表补全开仓持续时间、换刀总时长和刀具数量';
+  const unconfirmedText = '开仓汇总尚未确认（可能已被撤回），请回到开仓列表点“补录明细”重新确认';
+  for (const [missing, expected] of [[['opening_duration'], missingText], [[], unconfirmedText], [undefined, unconfirmedText]]) {
+    const warnings = [];
+    const s = setup(t, 'supplement', {
+      query: { warehouse_id: '123', mode: 'supplement' },
+      router: { replace: async () => {} },
+      message: { success() {}, error() {}, warning: text => warnings.push(text) },
+      request: async config => ({ data: config.url.includes('warehouse_opening') ? { shield_model: 9, supplement_ready: false, supplement_missing_fields: missing } : [] }),
+    });
+    await s.getWarehouseInfo();
+    assert.deepEqual(warnings, [expected]);
+  }
 });
 
 test('parent repair entry enforces missing-record, not-replaced, readonly and archived guards', t => {
