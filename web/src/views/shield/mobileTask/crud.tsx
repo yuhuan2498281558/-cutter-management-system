@@ -1,5 +1,5 @@
 import * as api from './api';
-import { AddReq, DelReq, EditReq, UserPageQuery, UserPageRes, dict } from '@fast-crud/fast-crud';
+import { AddReq, DelReq, EditReq, UserPageQuery, UserPageRes } from '@fast-crud/fast-crud';
 
 const statusMap: Record<string, string> = {
   UNASSIGNED: '待分配',
@@ -61,17 +61,6 @@ export const createCrudOptions = function ({ crudExpose, openApproval }: { crudE
           type: 'number',
           form: { show: false },
           column: { width: 80 },
-        },
-        warehouse: {
-          title: '开仓记录',
-          type: 'dict-select',
-          dict: dict({ url: '/api/shield/warehouse_opening/', label: 'warehouse_id', value: 'id' }),
-          form: {
-            show: false,
-            rules: [{ required: true, message: '请选择开仓记录' }],
-            component: { placeholder: '请选择开仓记录', filterable: true },
-          },
-          column: { width: 110 },
         },
         warehouse_id_name: {
           title: '开仓编号',
