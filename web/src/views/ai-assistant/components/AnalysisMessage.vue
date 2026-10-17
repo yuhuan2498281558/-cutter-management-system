@@ -83,6 +83,8 @@ import { SECTION_TITLES } from '../constants';
 const props = defineProps<{
   content: string;
   streaming?: boolean;
+  // 回答被停止或出错中断，最后一行可能只收到一半
+  truncated?: boolean;
 }>();
 
 type MarkdownBlock =
@@ -171,7 +173,7 @@ const startsBlock = (lines: string[], index: number) => {
   );
 };
 
-const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
+const parseMarkdown = (content: string, streaming = false, truncated = false): MarkdownBlock[] => {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const blocks: MarkdownBlock[] = [];
   let index = 0;
@@ -214,6 +216,17 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
         if (row.length !== headers.length) malformed = true;
         rows.push(row);
         index += 1;
+      }
+      // 停止或出错时最后一行可能只收到一半：完整的行仍显示为表格，这一行单独显示原文。
+      const tail = rows[rows.length - 1];
+      if (
+        truncated && !streaming && tail && tail.length < headers.length
+        && parseTableRow(lines[tableStart + 1]).length === headers.length
+        && rows.slice(0, -1).every((item) => item.length === headers.length)
+      ) {
+        blocks.push({ type: 'table', headers, rows: rows.slice(0, -1) });
+        blocks.push({ type: 'raw', text: lines[index - 1] });
+        continue;
       }
       if (malformed) {
         blocks.push({
@@ -272,7 +285,7 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
   return blocks;
 };
 
-const markdownBlocks = computed(() => parseMarkdown(props.content, props.streaming));
+const markdownBlocks = computed(() => parseMarkdown(props.content, props.streaming, props.truncated));
 
 const hasMarkdown = computed(() => (
   markdownBlocks.value.some((block) => block.type !== 'paragraph')

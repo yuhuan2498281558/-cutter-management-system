@@ -171,3 +171,48 @@ test('copying stopped/failed answers retains integrity notices and the original 
   assert.equal(copied[0], `回答已中止，内容不完整\n\n${content}`);
   assert.equal(copied[1], `查询未完成或失败，以下内容仅供核对\n\n${content}`);
 });
+
+const cutTable = '| 刀位 | 更换次数 | 主要磨损 |\n| --- | --- | --- |\n| 17 | 9 | 偏磨 |\n| 19 | 7 | 正常磨损 |\n| S1L | 3';
+
+for (const [label, content] of [
+  ['stopped', cutTable],
+  ['failed', `${cutTable}\n\n抱歉，出错了：连接提前结束，回答不完整，请重试`],
+]) {
+  test(`a ${label} answer keeps complete rows as a table and shows only the cut-off row as source`, () => {
+    const h = loadComponent('AnalysisMessage.vue', { content, streaming: false, truncated: true }, 'markdownBlocks');
+    const [table, tail, ...rest] = h.markdownBlocks.value;
+    assert.equal(table.type, 'table');
+    assert.deepEqual(Array.from(table.rows, row => Array.from(row)), [['17', '9', '偏磨'], ['19', '7', '正常磨损']]);
+    assert.deepEqual({ ...tail }, { type: 'raw', text: '| S1L | 3' });
+    assert.deepEqual(rest.map(block => block.type), label === 'failed' ? ['paragraph'] : []);
+  });
+}
+
+test('stopping mid-row keeps the same table rows that were visible while streaming', () => {
+  const props = vue.reactive({ content: cutTable, streaming: true, truncated: false });
+  const h = loadComponent('AnalysisMessage.vue', props, 'markdownBlocks');
+  const visible = h.markdownBlocks.value[0].rows.map(row => Array.from(row));
+  props.streaming = false; props.truncated = true;
+  assert.equal(h.markdownBlocks.value[0].type, 'table');
+  assert.deepEqual(h.markdownBlocks.value[0].rows.map(row => Array.from(row)), visible);
+});
+
+for (const [label, content] of [
+  ['an earlier short row', '| 厂家 | 更换次数 |\n| --- | --- |\n| A厂家 |\n| B厂家 | 2 |\n| C厂家'],
+  ['a long last row', '| 厂家 | 更换次数 |\n| --- | --- |\n| A厂家 | 2 | 多余列'],
+  ['a separator width mismatch', '| 厂家 | 更换次数 |\n| --- | --- | --- |\n| A厂家'],
+]) {
+  test(`a cut-off answer with ${label} still retains the whole table source with the warning`, () => {
+    const h = loadComponent('AnalysisMessage.vue', { content, streaming: false, truncated: true }, 'markdownBlocks');
+    assert.equal(h.markdownBlocks.value.length, 1);
+    assert.equal(h.markdownBlocks.value[0].type, 'raw'); assert.equal(h.markdownBlocks.value[0].text, content);
+    assert.match(h.markdownBlocks.value[0].note, /列数不一致/);
+  });
+}
+
+test('the message list marks stopped and failed answers as cut off', () => {
+  const { descriptor } = require('@vue/compiler-sfc').parse(fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8'));
+  const find = node => node.tag === 'AnalysisMessage' ? node : (node.children || []).map(find).find(Boolean);
+  const bindings = Object.fromEntries(find(descriptor.template.ast).props.filter(prop => prop.name === 'bind').map(prop => [prop.arg.content, prop.exp.content]));
+  assert.equal(bindings.truncated, 'msg.aborted || msg.rawError');
+});

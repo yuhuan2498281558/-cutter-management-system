@@ -169,3 +169,18 @@ test('replacing an answer discards its old table and partial tail', async () => 
     assert.equal(h.find('li')[1].props.innerHTML, '查看 <code>S1L</code>');
   } finally { h.unmount(); }
 });
+
+test('stopping mid-row keeps the mounted table and shows the cut-off row as source without a warning', async () => {
+  const h = mountMessage(header + row);
+  try {
+    const table = h.find('table')[0];
+    await h.append('| S19R | 0');
+    h.props.streaming = false;
+    h.props.truncated = true;
+    await vue.nextTick();
+    assert.equal(h.find('table')[0], table);
+    assert.equal(h.find('td').length, 3);
+    assert.equal(h.find('pre')[0].text, '| S19R | 0');
+    assert.equal(h.find('p').length, 0, 'no format warning for a cut-off row');
+  } finally { h.unmount(); }
+});

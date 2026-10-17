@@ -42,6 +42,7 @@
               v-if="msg.role === 'assistant'"
               :content="msg.content"
               :streaming="msg.streaming"
+              :truncated="msg.aborted || msg.rawError"
             />
             <template v-else>{{ msg.content }}</template>
           </div>
