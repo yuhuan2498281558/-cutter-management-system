@@ -49,6 +49,9 @@ for (const [label, options, pattern] of [
   ['premature EOF', { payload: 'data: {"type":"chunk","content":"未完成"}\n\n' }, /回答不完整/],
   ['HTML response', { payload: '<html>proxy error</html>', contentType: 'text/html' }, /未返回流式响应/],
   ['HTTP error', { status: 401 }, /401/],
+  ['HTTP error with a JSON reason', { status: 400, contentType: 'application/json', payload: JSON.stringify({ code: 4000, msg: '查询内容不能超过 10000 个字符' }) }, /^查询内容不能超过 10000 个字符（400）$/],
+  ['HTTP error with JSON but no reason', { status: 500, contentType: 'application/json', payload: JSON.stringify({ code: 5000 }) }, /^请求失败：500$/],
+  ['HTTP error with an HTML page', { status: 502, contentType: 'text/html', payload: '<html>Bad Gateway</html>' }, /^请求失败：502$/],
   ['invalid chunk shape', { payload: 'data: {"type":"chunk","content":{}}\n\n' }, /文本格式无效/],
 ]) {
   test(`${label} is one visible error, never a successful done`, async () => {

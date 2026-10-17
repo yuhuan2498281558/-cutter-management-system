@@ -22,6 +22,17 @@ function unwrapResponse(response: { data: any }) {
 	return response.data;
 }
 
+// 流式接口非 2xx 时优先显示后端给的原因（JSON 的 msg），取不到再只显示状态码
+async function httpErrorMessage(res: Response) {
+	try {
+		const body = await res.json();
+		if (typeof body?.msg === 'string' && body.msg.trim()) return `${body.msg.trim()}（${res.status}）`;
+	} catch {
+		/* 响应体不是 JSON，沿用状态码提示。 */
+	}
+	return `请求失败：${res.status}`;
+}
+
 // 添加请求拦截器（只添加token）
 aiService.interceptors.request.use(
 	(config) => {
@@ -84,7 +95,7 @@ export function useAiAssistantApi() {
 					signal,
 				});
 				if (!res.ok) {
-					throw new Error(`请求失败：${res.status}`);
+					throw new Error(await httpErrorMessage(res));
 				}
 				if (res.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream') {
 					throw new Error('服务未返回流式响应，请重试');
