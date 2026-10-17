@@ -9,7 +9,11 @@
         <span>状态：{{ statusText(task.status) }}</span>
       </div>
 
-      <el-table :data="details" border height="560px" class="approval-table">
+      <div v-if="loadFailed" class="approval-error">
+        <span>加载失败</span>
+        <el-button type="primary" plain @click="retry">重试</el-button>
+      </div>
+      <el-table v-else :data="details" border height="560px" class="approval-table">
         <el-table-column prop="cutter_position_no" label="刀位" width="90" fixed />
         <el-table-column prop="tool_type_name" label="刀具类型" min-width="140" />
         <el-table-column label="是否更换" width="90">
@@ -57,6 +61,7 @@ import { ApprovalDetail } from './api';
 
 const visible = ref(false);
 const loading = ref(false);
+const loadFailed = ref(false);
 const task = ref<any>(null);
 const details = ref<any[]>([]);
 const photoPreviewVisible = ref(false);
@@ -87,22 +92,37 @@ function checkResultText(value: string) {
   return checkResultMap[value] || value || '-';
 }
 
+// 关闭后马上打开另一行时，只采用最后一次请求的结果。
+let latestRequestId = 0;
+let currentRowId: string | number = '';
+
 async function load(id: string | number) {
+  const requestId = ++latestRequestId;
   loading.value = true;
+  loadFailed.value = false;
   try {
     const res: any = await ApprovalDetail(id);
+    if (requestId !== latestRequestId) return;
     task.value = res.data?.task || null;
     details.value = res.data?.details || [];
+  } catch {
+    if (requestId !== latestRequestId) return;
+    loadFailed.value = true;
   } finally {
-    loading.value = false;
+    if (requestId === latestRequestId) loading.value = false;
   }
 }
 
 async function open(row: any) {
   visible.value = true;
+  currentRowId = row.id;
   task.value = row;
   details.value = [];
   await load(row.id);
+}
+
+function retry() {
+  return load(currentRowId);
 }
 
 function previewPhoto(url: string, name = '旧刀磨损照片') {
@@ -121,6 +141,16 @@ defineExpose({ open });
   flex-wrap: wrap;
   gap: 8px 20px;
   margin-bottom: 14px;
+  color: #606266;
+}
+
+.approval-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 240px;
   color: #606266;
 }
 
