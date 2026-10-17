@@ -30,7 +30,7 @@ function loadInput(overrides = {}) {
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
-    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, selectedQuickParams, quickQuestionGroups, modelDataTypes, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickParamHint, selectedModelDataTypes, selectedModelPrompt, modelPromptOptions, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
+    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, selectedQuickParams, quickQuestionGroups, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickParamHint, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, FOCUS_SOURCES, TOOL_TYPE_OPTIONS, selectedSources, selectedTemplateTitle, selectedTemplate, selectedTemplateParams, templateParams, templateParamHint, visibleTemplates, handleTemplateChange, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
   vm.runInNewContext(transpile(source), context);
   return { props, emitted, ...context.exports.input };
 }
@@ -56,7 +56,8 @@ async function renderInput(h) {
       ? vue.h('textarea', { 'data-maxlength': props.maxlength, 'data-word-limit': String(props.showWordLimit) })
       : vue.h('input', { 'data-placeholder': props.placeholder, 'data-disabled': String(props.disabled) })),
   });
-  return renderToString(app);
+  // Drop SSR fragment markers so the assertions read like the browser DOM.
+  return (await renderToString(app)).replace(/<!--[[\]]-->/g, '');
 }
 
 const buttonAttrs = (html, text) => html.match(new RegExp(`<button([^>]*)>\\s*${text}\\s*</button>`))?.[1];
@@ -73,7 +74,7 @@ test('every question starts from its own default and the first question is selec
   assert.equal(h.activeQuickGroup.value, '换刀与磨损');
   assert.equal(h.activeQuickItemLabel.value, '最近{n}环换刀');
   for (const item of constants.quickQuestionGroups.flatMap(group => group.items)) {
-    assert.deepEqual({ ...h.quickParams.value[item.label] }, { n: item.defaultValue ?? null, id: '' }, item.label);
+    assert.deepEqual({ ...h.quickParams.value[item.label] }, { n: item.defaultValue ?? null, tool: '全部刀具', id: '' }, item.label);
   }
 });
 
@@ -133,27 +134,65 @@ test('tracing a tool needs a tool number before the question can be generated', 
   assert.equal(h.inputText.value, '追溯刀具 GD-0123 的安装、检查、拆下和返修过程');
 });
 
-test('switching to the model path composes the first template with the selected data types', () => {
+const titles = templates => Array.from(templates, template => template.title);
+const OPENING_REVIEW = '复盘最近5次开仓：列出环号、开仓间隔、开仓时长、换刀时长、检查数、更换数和异常率，找出异常率最高的几次开仓，并列出这几次的高频刀位和需关注未更换的刀。';
+
+test('switching to the model path picks the first default template, ticks its data types and fills its question without a prefix', async () => {
   const h = loadInput();
+  assert.deepEqual(titles(h.visibleTemplates.value), ['开仓复盘', '近期数据复核清单', '异常磨损待复核线索']);
   h.handleSwitchRoute('agent');
-  assert.deepEqual(h.emitted, [['update:routeMode', 'agent']]);
-  assert.equal(h.selectedModelPrompt.value, '分析近期换刀异常是否集中在特定磨损类型、刀具类型或刀位区域，并给出原因判断');
-  assert.equal(h.inputText.value, '结合换刀/旧刀补录、地层信息数据，分析近期换刀异常是否集中在特定磨损类型、刀具类型或刀位区域，并给出原因判断');
+  assert.equal(h.selectedTemplateTitle.value, '开仓复盘');
+  assert.deepEqual(Array.from(h.selectedSources.value), ['opening', 'inspection', 'position']);
+  assert.equal(h.inputText.value, OPENING_REVIEW);
+  await vue.nextTick();
+  assert.deepEqual(h.emitted.map(([event, value]) => [event, typeof value === 'string' ? value : Array.from(value)]), [['update:routeMode', 'agent'], ['sources-change', ['opening', 'inspection', 'position']]]);
 });
 
-test('model templates that already start with 结合 or 综合 are used as written', () => {
+test('selected data types filter the templates and no selection shows the three defaults', () => {
   const h = loadInput({ routeMode: 'agent' });
-  h.selectedModelPrompt.value = '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节';
+  h.selectedSources.value = ['repair'];
+  assert.deepEqual(titles(h.visibleTemplates.value), ['登记金额汇总', '返修进度', '失效原因与刀位', '近期数据复核清单']);
+  h.selectedSources.value = ['lifecycle'];
+  assert.deepEqual(titles(h.visibleTemplates.value), ['追溯一把刀']);
+  h.selectedSources.value = [];
+  assert.deepEqual(titles(h.visibleTemplates.value), ['开仓复盘', '近期数据复核清单', '异常磨损待复核线索']);
+});
+
+test('choosing a template adds its data types and writes its question with the chosen parameters', async () => {
+  const h = loadInput({ routeMode: 'agent' });
+  h.selectedSources.value = ['cost'];
+  h.handleTemplateChange('型号选型参考');
+  assert.deepEqual(Array.from(h.selectedSources.value), ['tool_change', 'manufacturer', 'cost']);
+  assert.equal(h.inputText.value, '列出全部刀具各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。');
+  assert.match(await renderInput(h), /<div class="tool-select" data-disabled="false" data-loading="false"><span>全部刀具<\/span><span>滚刀<\/span><span>刮刀<\/span><\/div>/);
+  h.templateParams.value['型号选型参考'].tool = '滚刀';
   h.composeModelQuestion();
-  assert.equal(h.inputText.value, '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节');
-  h.selectedModelDataTypes.value = ['掘进参数'];
-  h.handleModelDataTypesChange();
-  assert.equal(h.selectedModelPrompt.value, '分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关');
-  assert.equal(h.inputText.value, '结合掘进参数数据，分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关');
-  h.selectedModelDataTypes.value = [];
-  h.handleModelDataTypesChange();
-  assert.deepEqual(Array.from(h.modelPromptOptions.value), Array.from(constants.defaultModelPrompts));
-  assert.equal(h.inputText.value, '结合地层、掘进参数和换刀记录，分析近期异常磨损的可能原因');
+  assert.equal(h.inputText.value, '列出滚刀各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。');
+  h.handleTemplateChange('前后环段对比');
+  h.templateParams.value['前后环段对比'].n = 30;
+  h.composeModelQuestion();
+  assert.equal(h.inputText.value, '以30环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段的高频刀位；只做逐段对比，不下趋势结论。');
+});
+
+test('model templates need their parameters before 生成问题 works', async () => {
+  const h = loadInput({ routeMode: 'agent' });
+  h.inputText.value = '已有草稿';
+  h.handleTemplateChange('追溯一把刀');
+  assert.equal(h.templateParamHint.value, '请先填写刀具编号');
+  assert.equal(h.inputText.value, '已有草稿');
+  let html = await renderInput(h);
+  assert.ok(isDisabled(buttonAttrs(html, '生成问题')));
+  assert.match(html, /<input data-placeholder="刀具编号" data-disabled="false">/);
+  assert.match(html, /<span class="quick-hint">请先填写刀具编号<\/span>/);
+  h.templateParams.value['追溯一把刀'].id = 'GD-0123';
+  h.composeModelQuestion();
+  assert.equal(h.inputText.value, '追溯刀具 GD-0123 的安装、检查、拆下和返修全过程，列出缺失的环节。');
+  h.handleTemplateChange('开仓复盘');
+  h.templateParams.value['开仓复盘'].n = null;
+  assert.equal(h.templateParamHint.value, '请先填写数字');
+  html = await renderInput(h);
+  assert.ok(isDisabled(buttonAttrs(html, '生成问题')));
+  assert.equal(/null|\{n\}/.test(html), false);
 });
 
 test('switching back to the rule path keeps the input and sending trims then clears it', () => {
@@ -247,44 +286,54 @@ test('the page passes generation and reset state to the input area separately', 
   assert.equal(bindings.generating, 'loading');
   assert.equal(bindings.disabled, 'loading || resetting');
   assert.equal(bindings.loading, undefined);
+  const sourcesHandler = find(descriptor.template.ast).props.find(prop => prop.name === 'on' && prop.arg.content === 'sources-change');
+  assert.equal(sourcesHandler.exp.content, 'focusSources = $event');
 });
+
+const DRAFT = '统计120环到180环刮刀S3L的更换次数';
+const COVERAGE_CHECK = '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入力和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。';
 
 test('switching to the model path or changing data types keeps a draft the user wrote', () => {
   const h = loadInput();
-  h.inputText.value = '统计120环到180环刮刀S3L的更换次数';
+  h.inputText.value = DRAFT;
   h.handleSwitchRoute('agent');
   assert.equal(h.props.routeMode, 'agent');
-  assert.equal(h.inputText.value, '统计120环到180环刮刀S3L的更换次数');
-  h.selectedModelDataTypes.value = ['掘进参数'];
+  assert.equal(h.inputText.value, DRAFT);
+  h.selectedSources.value = ['tunneling'];
   h.handleModelDataTypesChange();
-  assert.equal(h.inputText.value, '统计120环到180环刮刀S3L的更换次数');
+  assert.equal(h.selectedTemplateTitle.value, '掘进与换刀覆盖核对');
+  assert.equal(h.inputText.value, DRAFT);
   h.handleSwitchRoute('rule'); h.handleSwitchRoute('agent');
-  assert.equal(h.inputText.value, '统计120环到180环刮刀S3L的更换次数');
+  assert.equal(h.inputText.value, DRAFT);
 });
 
 test('text the input area filled in itself is still replaced until the user edits it', () => {
   const h = loadInput();
   h.applyQuickQuestion();
   h.handleSwitchRoute('agent');
-  assert.equal(h.inputText.value, '结合换刀/旧刀补录、地层信息数据，分析近期换刀异常是否集中在特定磨损类型、刀具类型或刀位区域，并给出原因判断');
-  h.selectedModelDataTypes.value = ['掘进参数'];
+  assert.equal(h.inputText.value, OPENING_REVIEW);
+  h.selectedSources.value = ['tunneling'];
   h.handleModelDataTypesChange();
-  assert.equal(h.inputText.value, '结合掘进参数数据，分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关');
-  h.inputText.value += '，重点看S1L';
-  h.selectedModelDataTypes.value = ['地层信息'];
+  assert.equal(h.inputText.value, COVERAGE_CHECK);
+  h.inputText.value += '重点看S1L';
+  h.selectedSources.value = ['repair'];
   h.handleModelDataTypesChange();
-  assert.equal(h.inputText.value, '结合掘进参数数据，分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关，重点看S1L');
+  assert.equal(h.selectedTemplateTitle.value, '登记金额汇总');
+  assert.equal(h.inputText.value, `${COVERAGE_CHECK}重点看S1L`);
   h.inputText.value = '   ';
   h.handleModelDataTypesChange();
-  assert.equal(h.inputText.value, '结合地层信息数据，分析地层变化是否可能解释近期异常磨损，并指出对应磨损类型和高风险刀位');
+  assert.equal(h.inputText.value, '汇总新装登记金额、厂家已确认的返修金额和待厂家反馈的返修金额，按厂家和刀型分别列出，并说明这些是登记金额不是实际支出。');
 });
 
 test('choosing a template or pressing 生成问题 always writes the chosen question', () => {
   const h = loadInput({ routeMode: 'agent' });
+  const repairProgress = '统计旧刀返修的厂家反馈进度：待反馈、已确认、已归档各多少，已报废和待厂家确认的报废建议各多少，列出部件失效原因的分布。';
   h.inputText.value = '我自己的问题';
-  h.selectedModelPrompt.value = '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节';
+  h.handleTemplateChange('返修进度');
+  assert.equal(h.inputText.value, repairProgress);
+  h.inputText.value = '我自己的问题';
   h.composeModelQuestion();
-  assert.equal(h.inputText.value, '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节');
+  assert.equal(h.inputText.value, repairProgress);
   const rule = loadInput();
   rule.inputText.value = '我自己的问题';
   rule.applyQuickQuestion();

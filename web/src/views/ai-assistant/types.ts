@@ -36,9 +36,36 @@ export interface QuickQuestionGroup {
   items: QuickQuestionItem[];
 }
 
-// 每条问题各自的参数值：{n} 数字（清空时为 null）、{id} 刀具编号
+export type FocusSource =
+  | 'tool_change'
+  | 'opening'
+  | 'inspection'
+  | 'position'
+  | 'stratum'
+  | 'tunneling'
+  | 'manufacturer'
+  | 'cost'
+  | 'repair'
+  | 'lifecycle';
+
+export interface ModelPromptTemplate {
+  title: string;
+  query: string;
+  sources: FocusSource[];
+  isDefault?: boolean;
+  numKey?: QuickQuestionItem['numKey'];
+  min?: number;
+  max?: number;
+  step?: number;
+  defaultValue?: number;
+  toolParam?: boolean;
+  textKey?: 'id';
+}
+
+// 每条问题或模板各自的参数值：{n} 数字（清空时为 null）、{tool} 刀型、{id} 刀具编号
 export interface QuestionParamValues {
   n: number | null;
+  tool: string;
   id: string;
 }
 

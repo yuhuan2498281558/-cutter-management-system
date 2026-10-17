@@ -21,7 +21,7 @@ function setup() {
     if (name.endsWith('.vue') || name === '@element-plus/icons-vue') return {};
     throw new Error(`Unexpected import: ${name}`);
   };
-  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, setContextMode, toggleClearSlot };';
+  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, setContextMode, toggleClearSlot, routeMode, focusSources };';
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, context);
   return { ...context.exports.page, api, history, reset, streams, notices, frames, mount: () => mounted(), unmount: () => unmounted(), frame() { const callbacks = [...frames.values()]; frames.clear(); clock += 16; callbacks.forEach(callback => callback(clock)); } };
 }
@@ -196,3 +196,16 @@ for (const action of ['send', 'reset']) {
     else assert.equal(h.loading.value, true);
   });
 }
+
+test('data types are sent as focus_sources only on the model path and only when some are selected', () => {
+  const h = setup();
+  h.focusSources.value = ['opening', 'inspection'];
+  h.sendQuery('规则问题'); h.streams[0].callbacks.onDone();
+  assert.equal('focus_sources' in h.streams[0].data, false);
+  h.routeMode.value = 'agent';
+  h.sendQuery('模型问题'); h.streams[1].callbacks.onDone();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.streams[1].data)), { query: '模型问题', route_mode: 'agent', context_mode: 'auto', clear_slots: [], focus_sources: ['opening', 'inspection'] });
+  h.focusSources.value = [];
+  h.sendQuery('不限定数据类型'); h.streams[2].callbacks.onDone();
+  assert.equal('focus_sources' in h.streams[2].data, false);
+});

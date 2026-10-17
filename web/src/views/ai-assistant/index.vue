@@ -46,6 +46,7 @@
           :generating="loading"
           :disabled="loading || resetting"
           @send="sendQuery"
+          @sources-change="focusSources = $event"
           @abort="handleAbort"
         />
       </div>
@@ -58,7 +59,7 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound, RefreshRight } from '@element-plus/icons-vue';
 import { useAiAssistantApi } from '/@/api/ai-assistant';
-import { ContextMode, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
+import { ContextMode, FocusSource, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
 import ChatMessageList from './components/ChatMessageList.vue';
 import ChatInputArea from './components/ChatInputArea.vue';
 import MemorySlotBadge from './components/MemorySlotBadge.vue';
@@ -72,6 +73,8 @@ const historyLoading = ref(false);
 const hasMoreHistory = ref(false);
 const nextHistoryCursor = ref<number>();
 const routeMode = ref<RouteMode>('rule');
+// 模型路径选中的数据类型，只在模型路径发送
+const focusSources = ref<FocusSource[]>([]);
 const memoryInfo = ref<MemoryMetadata>();
 const contextMode = ref<ContextMode>('auto');
 const pendingClears = ref<QuerySlot[]>([]);
@@ -201,7 +204,11 @@ const handleRegenerate = () => {
 
 const runStream = async (query: string) => {
   const version = ++operationVersion;
-  const requestControls = { context_mode: contextMode.value, clear_slots: [...pendingClears.value] };
+  const requestControls = {
+    context_mode: contextMode.value,
+    clear_slots: [...pendingClears.value],
+    ...(routeMode.value === 'agent' && focusSources.value.length ? { focus_sources: [...focusSources.value] } : {}),
+  };
   loading.value = true;
 
   const assistantMsg: Message = { id: nextMessageId(), role: 'assistant', content: '', time: getCurrentTime(), streaming: true };

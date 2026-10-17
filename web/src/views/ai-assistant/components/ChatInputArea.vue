@@ -86,7 +86,7 @@
       <!-- 模型路径分析模板与能力选择 -->
       <template v-else>
         <el-select
-          v-model="selectedModelDataTypes"
+          v-model="selectedSources"
           class="model-capability-select"
           size="small"
           multiple
@@ -98,28 +98,66 @@
           @change="handleModelDataTypesChange"
         >
           <el-option
-            v-for="item in modelDataTypes"
-            :key="item"
-            :label="item"
-            :value="item"
+            v-for="source in FOCUS_SOURCES"
+            :key="source.value"
+            :label="source.label"
+            :value="source.value"
           />
         </el-select>
         <el-select
-          v-model="selectedModelPrompt"
+          v-model="selectedTemplateTitle"
           class="model-prompt-select"
           size="small"
           filterable
           :disabled="disabled"
           placeholder="选择分析模板"
-          @change="composeModelQuestion"
+          @change="handleTemplateChange"
         >
           <el-option
-            v-for="item in modelPromptOptions"
-            :key="item"
-            :label="item"
-            :value="item"
+            v-for="template in visibleTemplates"
+            :key="template.title"
+            :label="template.title"
+            :value="template.title"
           />
         </el-select>
+        <el-input-number
+          v-if="selectedTemplate?.numKey && selectedTemplateParams"
+          v-model="selectedTemplateParams.n"
+          class="quick-number"
+          :min="selectedTemplate.min || 1"
+          :max="selectedTemplate.max || 200"
+          :step="selectedTemplate.step || 1"
+          size="small"
+          controls-position="right"
+          :disabled="disabled"
+        />
+        <el-select
+          v-if="selectedTemplate?.toolParam && selectedTemplateParams"
+          v-model="selectedTemplateParams.tool"
+          class="tool-select"
+          size="small"
+          :disabled="disabled"
+        >
+          <el-option v-for="tool in TOOL_TYPE_OPTIONS" :key="tool" :label="tool" :value="tool" />
+        </el-select>
+        <el-input
+          v-if="selectedTemplate?.textKey && selectedTemplateParams"
+          v-model="selectedTemplateParams.id"
+          class="quick-text"
+          size="small"
+          placeholder="刀具编号"
+          :disabled="disabled"
+        />
+        <el-button
+          class="quick-run"
+          type="primary"
+          size="small"
+          :disabled="disabled || !selectedTemplate || Boolean(templateParamHint)"
+          @click="composeModelQuestion"
+        >
+          生成问题
+        </el-button>
+        <span v-if="templateParamHint" class="quick-hint">{{ templateParamHint }}</span>
       </template>
     </div>
 
@@ -168,8 +206,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import type { InputInstance } from 'element-plus';
-import { QuestionParamValues, QuickQuestionGroup, QuickQuestionItem, RouteMode } from '../types';
-import { defaultModelPrompts, modelDataTypes, modelPromptLibrary, quickQuestionGroups } from '../constants';
+import { FocusSource, ModelPromptTemplate, QuestionParamValues, QuickQuestionGroup, QuickQuestionItem, RouteMode } from '../types';
+import { FOCUS_SOURCES, TOOL_TYPE_OPTIONS, modelPromptTemplates, quickQuestionGroups } from '../constants';
 
 const props = defineProps<{
   // 正在生成回答：显示"停止生成"，发送按钮转圈
@@ -182,6 +220,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'send', query: string): void;
   (e: 'update:routeMode', mode: RouteMode): void;
+  // 模型路径选中的数据类型有变化，页面在模型路径发送时带上
+  (e: 'sources-change', sources: FocusSource[]): void;
   (e: 'abort'): void;
 }>();
 
@@ -205,13 +245,30 @@ const focusInputEnd = () => {
 };
 const activeQuickItemLabel = ref(quickQuestionGroups[0].items[0].label);
 
+type ParamSpec = Pick<ModelPromptTemplate, 'numKey' | 'textKey' | 'toolParam' | 'defaultValue'>;
+
+const initialParams = (spec: ParamSpec): QuestionParamValues => ({ n: spec.defaultValue ?? null, tool: TOOL_TYPE_OPTIONS[0], id: '' });
+
+// 数字框清空时 Element Plus 给的是 null，按"未填写"处理，不把 null 写进问题
+const paramNumber = (values?: QuestionParamValues) => (Number.isFinite(values?.n) ? (values?.n as number) : undefined);
+
+// 参数没填时说明为什么不能生成问题；为空字符串表示可以生成
+const paramHint = (spec?: ParamSpec, values?: QuestionParamValues) => {
+  if (spec?.numKey && paramNumber(values) === undefined) return '请先填写数字';
+  if (spec?.textKey && !values?.id.trim()) return '请先填写刀具编号';
+  return '';
+};
+
+// 只在参数都已填写（paramHint 为空）时调用
+const fillParams = (text: string, values: QuestionParamValues) => text
+  .replaceAll('{n}', String(paramNumber(values)))
+  .replaceAll('{tool}', values.tool)
+  .replaceAll('{id}', values.id.trim());
+
 // 每条快捷问题各自保存参数，按标签索引（同一种数字在不同问题里的默认值可能不同）
 const quickParams = ref<Record<string, QuestionParamValues>>(Object.fromEntries(
-  quickQuestionGroups.flatMap((group) => group.items).map((item) => [item.label, { n: item.defaultValue ?? null, id: '' }])
+  quickQuestionGroups.flatMap((group) => group.items).map((item) => [item.label, initialParams(item)])
 ));
-
-const selectedModelDataTypes = ref<string[]>(['换刀/旧刀补录', '地层信息']);
-const selectedModelPrompt = ref('');
 
 const selectedQuickGroup = computed<QuickQuestionGroup>(() => {
   return quickQuestionGroups.find((g) => g.title === activeQuickGroup.value) || quickQuestionGroups[0];
@@ -221,38 +278,41 @@ const selectedQuickItem = computed<QuickQuestionItem | undefined>(() => {
   return selectedQuickGroup.value.items.find((item) => item.label === activeQuickItemLabel.value);
 });
 
-const modelPromptOptions = computed(() => {
-  const prompts = selectedModelDataTypes.value.flatMap((type) => modelPromptLibrary[type] || []);
-  return Array.from(new Set(prompts.length ? prompts : defaultModelPrompts));
-});
-
 const selectedQuickParams = computed(() => (selectedQuickItem.value ? quickParams.value[selectedQuickItem.value.label] : undefined));
 
-// 数字框清空时 Element Plus 给的是 null，按"未填写"处理，不把 null 写进问题
-const getQuickNumber = (item: QuickQuestionItem) => {
-  const num = item.numKey ? quickParams.value[item.label]?.n : undefined;
-  return Number.isFinite(num) ? (num as number) : undefined;
-};
-
-const getQuickId = (item: QuickQuestionItem) => (item.textKey ? quickParams.value[item.label]?.id.trim() || '' : '');
-
-// 参数没填时说明为什么不能生成问题；为空字符串表示可以生成
-const quickParamHint = computed(() => {
-  const item = selectedQuickItem.value;
-  if (item?.numKey && getQuickNumber(item) === undefined) return '请先填写数字';
-  if (item?.textKey && !getQuickId(item)) return '请先填写刀具编号';
-  return '';
-});
+const quickParamHint = computed(() => paramHint(selectedQuickItem.value, selectedQuickParams.value));
 
 const buildQuickLabel = (item: QuickQuestionItem) => {
-  const num = getQuickNumber(item);
+  const num = paramNumber(quickParams.value[item.label]);
   return item.label.replace('{n}', num === undefined ? 'N' : String(num));
 };
 
-// 只在参数都已填写（quickParamHint 为空）时调用
-const buildQuickQuery = (item: QuickQuestionItem) => item.query
-  .replaceAll('{n}', String(getQuickNumber(item)))
-  .replaceAll('{id}', getQuickId(item));
+// 模型路径：数据类型过滤模板，模板各自保存参数，按标题索引
+const selectedSources = ref<FocusSource[]>([]);
+watch(selectedSources, (sources) => emit('sources-change', [...sources]));
+const selectedTemplateTitle = ref('');
+const templateParams = ref<Record<string, QuestionParamValues>>(Object.fromEntries(
+  modelPromptTemplates.map((template) => [template.title, initialParams(template)])
+));
+
+// 选了数据类型时只显示和所选类型有交集的模板；一个都没选时显示默认的三条
+const visibleTemplates = computed(() => (selectedSources.value.length
+  ? modelPromptTemplates.filter((template) => template.sources.some((source) => selectedSources.value.includes(source)))
+  : modelPromptTemplates.filter((template) => template.isDefault)));
+
+const selectedTemplate = computed(() => modelPromptTemplates.find((template) => template.title === selectedTemplateTitle.value));
+const selectedTemplateParams = computed(() => (selectedTemplate.value ? templateParams.value[selectedTemplate.value.title] : undefined));
+const templateParamHint = computed(() => paramHint(selectedTemplate.value, selectedTemplateParams.value));
+
+// 选中模板后自动勾上它关联的数据类型（按数据类型的固定顺序）
+const selectTemplate = (title: string) => {
+  selectedTemplateTitle.value = title;
+  const template = selectedTemplate.value;
+  if (!template) return;
+  selectedSources.value = FOCUS_SOURCES
+    .map((source) => source.value)
+    .filter((source) => selectedSources.value.includes(source) || template.sources.includes(source));
+};
 
 const handleQuickGroupChange = () => {
   activeQuickItemLabel.value = selectedQuickGroup.value.items[0]?.label || '';
@@ -268,19 +328,25 @@ const fillInput = (text: string) => {
 const canAutoFill = () => !inputText.value.trim() || inputText.value === lastAutoFilled;
 
 const applyQuickQuestion = () => {
-  if (!selectedQuickItem.value || quickParamHint.value) return;
-  fillInput(buildQuickQuery(selectedQuickItem.value));
+  const item = selectedQuickItem.value;
+  if (!item || quickParamHint.value) return;
+  fillInput(fillParams(item.query, quickParams.value[item.label]));
 };
 
 const composeModelQuestion = () => {
-  const types = selectedModelDataTypes.value.length ? selectedModelDataTypes.value.join('、') : '相关';
-  const template = selectedModelPrompt.value || modelPromptOptions.value[0] || '分析近期异常磨损的主要原因，并给出重点关注刀位和处理建议';
-  fillInput(/^(结合|综合)/.test(template) ? template : `结合${types}数据，${template}`);
+  const template = selectedTemplate.value;
+  if (!template || templateParamHint.value) return;
+  fillInput(fillParams(template.query, templateParams.value[template.title]));
+};
+
+const handleTemplateChange = (title: string) => {
+  selectTemplate(title);
+  composeModelQuestion();
 };
 
 const handleModelDataTypesChange = () => {
-  if (selectedModelPrompt.value && !modelPromptOptions.value.includes(selectedModelPrompt.value)) {
-    selectedModelPrompt.value = modelPromptOptions.value[0] || '';
+  if (!visibleTemplates.value.some((template) => template.title === selectedTemplateTitle.value)) {
+    selectedTemplateTitle.value = visibleTemplates.value[0]?.title || '';
   }
   if (canAutoFill()) composeModelQuestion();
 };
@@ -289,7 +355,7 @@ const handleSwitchRoute = (mode: RouteMode) => {
   if (mode === props.routeMode) return;
   emit('update:routeMode', mode);
   if (mode === 'agent') {
-    if (!selectedModelPrompt.value) selectedModelPrompt.value = modelPromptOptions.value[0] || '';
+    if (!selectedTemplateTitle.value) selectTemplate(visibleTemplates.value[0]?.title || '');
     if (canAutoFill()) composeModelQuestion();
   }
 };
@@ -380,6 +446,10 @@ const handleEnterKey = (event: Event) => {
 
     .quick-text {
       width: 140px;
+    }
+
+    .tool-select {
+      width: 110px;
     }
 
     .quick-run {

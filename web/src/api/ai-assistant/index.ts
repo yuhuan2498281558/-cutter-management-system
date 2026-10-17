@@ -63,6 +63,8 @@ export interface ChatRequest {
 	route_mode?: 'rule' | 'agent';
 	context_mode?: 'auto' | 'new' | 'continue';
 	clear_slots?: Array<'ring_range' | 'tool_type' | 'cutter_position_no'>;
+	// 模型路径选中的数据类型，只在 route_mode=agent 时发送
+	focus_sources?: string[];
 }
 
 /**

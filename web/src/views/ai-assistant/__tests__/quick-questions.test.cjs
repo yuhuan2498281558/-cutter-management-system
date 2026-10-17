@@ -34,56 +34,39 @@ function loadMessageList(constants) {
 
 const SECTION_TITLES = ['结论', '关键依据', '数据依据', '关键发现', '注意事项', '注意事项/建议', '建议'];
 
-const modelDataTypes = ['换刀/旧刀补录', '开仓记录', '刀位统计', '地层信息', '掘进参数', '厂家表现', '寿命预警', '备刀建议', '趋势分析', '跨源联动'];
+const FOCUS_SOURCES = [
+  { value: 'tool_change', label: '换刀与磨损' },
+  { value: 'opening', label: '开仓记录' },
+  { value: 'inspection', label: '现场检查' },
+  { value: 'position', label: '刀位' },
+  { value: 'stratum', label: '地层' },
+  { value: 'tunneling', label: '掘进参数' },
+  { value: 'manufacturer', label: '厂家表现' },
+  { value: 'cost', label: '报价与登记金额' },
+  { value: 'repair', label: '旧刀返修' },
+  { value: 'lifecycle', label: '单把刀追溯' },
+];
 
-const modelPromptLibrary = {
-  '换刀/旧刀补录': [
-    '分析近期换刀异常是否集中在特定磨损类型、刀具类型或刀位区域，并给出原因判断',
-    '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节',
-  ],
-  '开仓记录': [
-    '结合最近开仓记录分析异常率较高开仓的共同特征，以及与换刀工作量的关系',
-    '分析开仓间隔、开仓时长、检查数量和更换数量之间是否存在异常联动',
-  ],
-  '刀位统计': [
-    '分析高频刀位是否呈现局部集中、相邻刀位联动或刀盘区域性磨损风险',
-    '结合刀位统计识别需要优先复核的刀位组合，并解释可能的受力或安装原因',
-  ],
-  '地层信息': [
-    '分析地层变化是否可能解释近期异常磨损，并指出对应磨损类型和高风险刀位',
-    '结合地层分布判断不同地层对换刀频率、异常率和刀位风险的影响',
-  ],
-  '掘进参数': [
-    '分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关',
-    '结合推力、扭矩、转速和贯入力变化，判断近期刀具磨损风险的可能工况原因',
-  ],
-  '厂家表现': [
-    '结合厂家表现、地层条件和刀具类型，分析异常磨损差异是否具有稳定性',
-    '评估近期厂家刀具表现差异，并给出后续选型和复核建议',
-  ],
-  '寿命预警': [
-    '结合平均寿命、累计推进和高频刀位，判断近期是否存在集中到寿风险',
-    '分析寿命预警刀位与近期异常磨损、地层变化和开仓记录之间的关系',
-  ],
-  '备刀建议': [
-    '结合近期消耗、异常磨损、地层变化和厂家表现，形成下一阶段备刀策略',
-    '基于高风险刀位、失效模式和厂家表现，给出备刀优先级和关注原因',
-  ],
-  '趋势分析': [
-    '分析近期换刀趋势是否出现阶段性抬升，并解释可能的地层、刀位或工况原因',
-    '对比前后阶段换刀频率、异常磨损和高频刀位变化，判断风险是否加剧',
-  ],
-  '跨源联动': [
-    '结合最近开仓、地层和换刀数据，分析哪些开仓异常率高以及对应地层和高频刀位',
-    '结合地层、掘进参数和换刀记录，分析近期异常磨损的可能原因',
-    '综合换刀、开仓、地层、刀位、厂家和寿命数据，生成近期风险清单和处理建议',
-  ],
-};
+const TOOL_TYPE_OPTIONS = ['全部刀具', '滚刀', '刮刀'];
 
-const defaultModelPrompts = [
-  '结合地层、掘进参数和换刀记录，分析近期异常磨损的可能原因',
-  '结合最近开仓、地层和换刀数据，分析哪些开仓异常率高以及对应地层和高频刀位',
-  '综合换刀、开仓、地层、刀位、厂家和寿命数据，生成近期风险清单和处理建议',
+const modelPromptTemplates = [
+  { title: '近期异常磨损分布', query: '统计最近{n}环的现场观测记录，按磨损类型、刀具类型和刀位列出异常磨损的数量和占比，指出异常集中的刀位和环段，并列出需要复核的记录。', sources: ['tool_change', 'position'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+  { title: '前后环段对比', query: '以{n}环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段的高频刀位；只做逐段对比，不下趋势结论。', sources: ['tool_change', 'position'], numKey: 'interval', min: 10, max: 200, step: 10, defaultValue: 50 },
+  { title: '开仓复盘', query: '复盘最近{n}次开仓：列出环号、开仓间隔、开仓时长、换刀时长、检查数、更换数和异常率，找出异常率最高的几次开仓，并列出这几次的高频刀位和需关注未更换的刀。', sources: ['opening', 'inspection', 'position'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5, isDefault: true },
+  { title: '检查完成情况', query: '检查最近{n}次开仓的现场检查完成情况：各次开仓已检查、未检查和需关注未更换的数量，列出还没检查的刀位。', sources: ['inspection', 'opening'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
+  { title: '异常集中的刀位', query: '找出异常观测数最多的前{n}个刀位，列出每个刀位的现场观测数、异常类型和更换次数，并给出这些刀位最近几次开仓的检查记录。', sources: ['position', 'tool_change', 'inspection'], numKey: 'topN', min: 3, max: 30, defaultValue: 10 },
+  { title: '开仓位置地层对照', query: '列出最近{n}次开仓所在位置的地层和仓间经过的地层（按纵断面面积），与每次开仓的异常率、高频刀位并列对照；只做并列，不判断地层是否导致磨损。', sources: ['stratum', 'opening', 'tool_change'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
+  { title: '地层组成与换刀', query: '统计最近{n}环的纵断面六类面积占比，并与同一范围的换刀次数、更换率和异常率并列列出。', sources: ['stratum', 'tool_change'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+  { title: '掘进与换刀覆盖核对', query: '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入力和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。', sources: ['tunneling', 'tool_change'] },
+  { title: '掘进分段均值偏高筛查', query: '筛查已导入的掘进数据中推力、扭矩、贯入力分段均值偏高的记录，列出环号、时间段和数值，并说明这类数据能说明什么、不能说明什么。', sources: ['tunneling'] },
+  { title: '厂家寿命与异常率', query: '按刀具原安装时的厂家，对比已确认拆下刀具的平均服役环数、已分类异常率和样本量，另列各厂家本次新装的供货次数和登记金额；样本少的厂家单独说明。', sources: ['manufacturer', 'cost'] },
+  { title: '型号选型参考', query: '列出{tool}各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。', sources: ['cost', 'manufacturer', 'tool_change'], toolParam: true },
+  { title: '登记金额汇总', query: '汇总新装登记金额、厂家已确认的返修金额和待厂家反馈的返修金额，按厂家和刀型分别列出，并说明这些是登记金额不是实际支出。', sources: ['cost', 'repair'] },
+  { title: '返修进度', query: '统计旧刀返修的厂家反馈进度：待反馈、已确认、已归档各多少，已报废和待厂家确认的报废建议各多少，列出部件失效原因的分布。', sources: ['repair'] },
+  { title: '失效原因与刀位', query: '列出轴承、刀圈等部件失效的旧刀，对照这些刀拆下时所在的刀位和开仓，指出重复出现的刀位。', sources: ['repair', 'position', 'opening'] },
+  { title: '追溯一把刀', query: '追溯刀具 {id} 的安装、检查、拆下和返修全过程，列出缺失的环节。', sources: ['lifecycle'], textKey: 'id' },
+  { title: '近期数据复核清单', query: '汇总最近{n}环的换刀、开仓检查、刀位、地层和旧刀返修数据，生成一份数据复核清单：每条写明对象（刀位、开仓或环段）、依据的数字和建议的复核动作，不推断原因。', sources: ['tool_change', 'opening', 'inspection', 'position', 'stratum', 'repair'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100, isDefault: true },
+  { title: '异常磨损待复核线索', query: '结合最近{n}环的换刀、地层和掘进数据，列出异常磨损的待复核线索；某类数据覆盖不到这个范围时如实说明，不断言原因。', sources: ['tool_change', 'stratum', 'tunneling'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100, isDefault: true },
 ];
 
 const quickQuestionGroups = [
@@ -192,20 +175,41 @@ const quickQuestionGroups = [
 // Which backend parameter each {n} feeds: recent ring window, segment interval, recent opening count, ranking size.
 const NUMBER_PHRASES = {
   ringWindow: /最近(?:有记录的)?\{n\}环/,
-  interval: /按\{n\}环为一段/,
+  interval: /[按以]\{n\}环为一段/,
   openingLimit: /最近\{n\}次开仓/,
   topN: /前\{n\}个/,
 };
 
-test('quick questions, model prompts and section titles match the verified wording exactly', () => {
+test('quick questions, model templates, data types and section titles match the verified wording exactly', () => {
   const constants = loadConstants();
   assert.deepEqual(plain(constants.quickQuestionGroups), quickQuestionGroups);
-  assert.deepEqual(plain(constants.modelPromptLibrary), modelPromptLibrary);
-  assert.deepEqual(plain(constants.defaultModelPrompts), defaultModelPrompts);
-  assert.deepEqual(plain(constants.modelDataTypes), modelDataTypes);
+  assert.deepEqual(plain(constants.modelPromptTemplates), modelPromptTemplates);
+  assert.deepEqual(plain(constants.FOCUS_SOURCES), FOCUS_SOURCES);
+  assert.deepEqual(plain(constants.TOOL_TYPE_OPTIONS), TOOL_TYPE_OPTIONS);
   assert.deepEqual(plain(constants.SECTION_TITLES), SECTION_TITLES);
   assert.equal(quickQuestionGroups.flatMap(group => group.items).length, 46);
-  assert.equal(Object.values(modelPromptLibrary).flat().length, 21);
+  assert.equal(modelPromptTemplates.length, 17);
+});
+
+test('model templates use known data types, three are defaults and every data type has a template', () => {
+  const { modelPromptTemplates: templates, FOCUS_SOURCES: sources } = loadConstants();
+  const values = sources.map(source => source.value);
+  assert.deepEqual(plain(values), ['tool_change', 'opening', 'inspection', 'position', 'stratum', 'tunneling', 'manufacturer', 'cost', 'repair', 'lifecycle']);
+  assert.equal(new Set(templates.map(template => template.title)).size, templates.length, 'titles are unique because parameters are kept per title');
+  assert.deepEqual(plain(templates.filter(template => template.isDefault).map(template => template.title)), ['开仓复盘', '近期数据复核清单', '异常磨损待复核线索']);
+  for (const template of templates) {
+    assert.ok(template.sources.length && template.sources.every(source => values.includes(source)), template.title);
+    assert.equal(template.query.includes('{tool}'), Boolean(template.toolParam), `${template.title} {tool}`);
+    assert.equal(template.query.includes('{id}'), template.textKey === 'id', `${template.title} {id}`);
+    if (template.query.includes('{n}') || template.numKey) {
+      assert.equal(template.query.split('{n}').length, 2, `${template.title} must use {n} once`);
+      assert.ok(Number.isInteger(template.defaultValue) && template.defaultValue >= template.min && template.defaultValue <= template.max, `${template.title} default`);
+      for (const [numKey, phrase] of Object.entries(NUMBER_PHRASES)) {
+        assert.equal(phrase.test(template.query), numKey === template.numKey, `${template.title}: ${phrase} belongs to ${numKey}`);
+      }
+    }
+  }
+  for (const value of values) assert.ok(templates.some(template => template.sources.includes(value)), `${value} has no template`);
 });
 
 test('every {n} question declares bounds, its own default and a parameter that matches its wording', () => {
