@@ -239,24 +239,31 @@ const handleQuickGroupChange = () => {
   activeQuickItemLabel.value = selectedQuickGroup.value.items[0]?.label || '';
 };
 
+// 上次自动填入的问题。输入框为空或仍是这段文字时才自动替换，用户写过或改过的草稿保留。
+let lastAutoFilled = '';
+const fillInput = (text: string) => {
+  inputText.value = text;
+  lastAutoFilled = text;
+  focusInputEnd();
+};
+const canAutoFill = () => !inputText.value.trim() || inputText.value === lastAutoFilled;
+
 const applyQuickQuestion = () => {
   if (!selectedQuickItem.value || quickNumberMissing.value) return;
-  inputText.value = buildQuickQuery(selectedQuickItem.value);
-  focusInputEnd();
+  fillInput(buildQuickQuery(selectedQuickItem.value));
 };
 
 const composeModelQuestion = () => {
   const types = selectedModelDataTypes.value.length ? selectedModelDataTypes.value.join('、') : '相关';
   const template = selectedModelPrompt.value || modelPromptOptions.value[0] || '分析近期异常磨损的主要原因，并给出重点关注刀位和处理建议';
-  inputText.value = /^(结合|综合)/.test(template) ? template : `结合${types}数据，${template}`;
-  focusInputEnd();
+  fillInput(/^(结合|综合)/.test(template) ? template : `结合${types}数据，${template}`);
 };
 
 const handleModelDataTypesChange = () => {
   if (selectedModelPrompt.value && !modelPromptOptions.value.includes(selectedModelPrompt.value)) {
     selectedModelPrompt.value = modelPromptOptions.value[0] || '';
   }
-  composeModelQuestion();
+  if (canAutoFill()) composeModelQuestion();
 };
 
 const handleSwitchRoute = (mode: RouteMode) => {
@@ -264,7 +271,7 @@ const handleSwitchRoute = (mode: RouteMode) => {
   emit('update:routeMode', mode);
   if (mode === 'agent') {
     if (!selectedModelPrompt.value) selectedModelPrompt.value = modelPromptOptions.value[0] || '';
-    composeModelQuestion();
+    if (canAutoFill()) composeModelQuestion();
   }
 };
 

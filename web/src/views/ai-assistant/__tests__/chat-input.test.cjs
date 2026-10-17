@@ -198,3 +198,45 @@ test('the page passes generation and reset state to the input area separately', 
   assert.equal(bindings.disabled, 'loading || resetting');
   assert.equal(bindings.loading, undefined);
 });
+
+test('switching to the model path or changing data types keeps a draft the user wrote', () => {
+  const h = loadInput();
+  h.inputText.value = '统计120环到180环刮刀S3L的更换次数';
+  h.handleSwitchRoute('agent');
+  assert.equal(h.props.routeMode, 'agent');
+  assert.equal(h.inputText.value, '统计120环到180环刮刀S3L的更换次数');
+  h.selectedModelDataTypes.value = ['掘进参数'];
+  h.handleModelDataTypesChange();
+  assert.equal(h.inputText.value, '统计120环到180环刮刀S3L的更换次数');
+  h.handleSwitchRoute('rule'); h.handleSwitchRoute('agent');
+  assert.equal(h.inputText.value, '统计120环到180环刮刀S3L的更换次数');
+});
+
+test('text the input area filled in itself is still replaced until the user edits it', () => {
+  const h = loadInput();
+  h.applyQuickQuestion();
+  h.handleSwitchRoute('agent');
+  assert.equal(h.inputText.value, '结合换刀/旧刀补录、地层信息数据，分析近期换刀异常是否集中在特定磨损类型、刀具类型或刀位区域，并给出原因判断');
+  h.selectedModelDataTypes.value = ['掘进参数'];
+  h.handleModelDataTypesChange();
+  assert.equal(h.inputText.value, '结合掘进参数数据，分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关');
+  h.inputText.value += '，重点看S1L';
+  h.selectedModelDataTypes.value = ['地层信息'];
+  h.handleModelDataTypesChange();
+  assert.equal(h.inputText.value, '结合掘进参数数据，分析掘进参数波动是否与异常磨损、换刀频率上升或刀位集中损伤有关，重点看S1L');
+  h.inputText.value = '   ';
+  h.handleModelDataTypesChange();
+  assert.equal(h.inputText.value, '结合地层信息数据，分析地层变化是否可能解释近期异常磨损，并指出对应磨损类型和高风险刀位');
+});
+
+test('choosing a template or pressing 生成问题 always writes the chosen question', () => {
+  const h = loadInput({ routeMode: 'agent' });
+  h.inputText.value = '我自己的问题';
+  h.selectedModelPrompt.value = '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节';
+  h.composeModelQuestion();
+  assert.equal(h.inputText.value, '结合换刀明细识别异常磨损的主要模式、集中环段和需要复核的作业环节');
+  const rule = loadInput();
+  rule.inputText.value = '我自己的问题';
+  rule.applyQuickQuestion();
+  assert.equal(rule.inputText.value, '统计最近100环的换刀情况，列出检查数、更换数、更换率、主要磨损类型和高频刀位');
+});
