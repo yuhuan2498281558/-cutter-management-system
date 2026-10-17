@@ -78,10 +78,13 @@ const statusMap: Record<string, string> = {
   CANCELLED: '已取消',
 };
 
+// 与移动端录入页的检查结果一致；是否换刀看"是否更换"列。
 const checkResultMap: Record<string, string> = {
   PENDING: '待检查',
-  NORMAL: '已更换',
-  NOT_REPLACED: '未更换',
+  NOT_REPLACED: '未进行换刀',
+  NORMAL: '正常',
+  ATTENTION: '需关注',
+  ABNORMAL_NOT_REPLACED: '异常未换',
 };
 
 function statusText(value: string) {

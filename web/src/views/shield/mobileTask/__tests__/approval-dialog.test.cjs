@@ -115,6 +115,14 @@ test('an older failure cannot mark the current row as failed', async t => {
   assert.deepEqual(nos(s.details.value), ['B-1']);
 });
 
+test('check results use the same five labels as the mobile page', t => {
+  const { s } = mount(t, async () => response('A'));
+  const labels = ['PENDING', 'NOT_REPLACED', 'NORMAL', 'ATTENTION', 'ABNORMAL_NOT_REPLACED'].map(value => s.checkResultText(value));
+  assert.deepEqual(labels, ['待检查', '未进行换刀', '正常', '需关注', '异常未换']);
+  assert.equal(s.checkResultText('UNKNOWN'), 'UNKNOWN');
+  assert.equal(s.checkResultText(''), '-');
+});
+
 test('the dialog renders the failure text and a retry button instead of the table', () => {
   const template = descriptor.template.content;
   assert.match(template, /<div v-if="loadFailed"[^>]*>[\s\S]*加载失败[\s\S]*<el-button[^>]*@click="retry"[^>]*>重试<\/el-button>[\s\S]*?<\/div>\s*<el-table v-else/);
