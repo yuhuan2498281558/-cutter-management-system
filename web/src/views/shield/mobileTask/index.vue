@@ -1,7 +1,7 @@
 <template>
   <fs-page>
     <fs-crud ref="crudRef" v-bind="crudBinding" />
-    <MobileTaskApprovalDialog ref="approvalDialogRef" @approved="crudExpose.doRefresh()" />
+    <MobileTaskApprovalDialog ref="approvalDialogRef" />
   </fs-page>
 </template>
 

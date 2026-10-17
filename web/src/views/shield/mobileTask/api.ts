@@ -1,14 +1,10 @@
 import { request } from '/@/utils/service';
-import { UserPageQuery, AddReq, EditReq, InfoReq } from '@fast-crud/fast-crud';
+import { UserPageQuery, AddReq, EditReq } from '@fast-crud/fast-crud';
 
 export const apiPrefix = '/api/shield/mobile/task_manage/';
 
 export function GetList(query: UserPageQuery) {
   return request({ url: apiPrefix, method: 'get', params: query });
-}
-
-export function GetObj(id: InfoReq) {
-  return request({ url: apiPrefix + id + '/', method: 'get' });
 }
 
 export function AddObj(obj: AddReq) {
@@ -48,10 +44,6 @@ function normalizeTask(obj: any) {
 
 export function GetAssignOptions(warehouse?: string | number) {
   return request({ url: apiPrefix + 'assign_options/', method: 'get', params: { warehouse } });
-}
-
-export function GetRecorderOptions() {
-  return request({ url: apiPrefix + 'recorder_options/', method: 'get' });
 }
 
 
