@@ -43,7 +43,8 @@
         <!-- 底部输入与路径控制区 -->
         <ChatInputArea
           v-model:route-mode="routeMode"
-          :loading="loading || resetting"
+          :generating="loading"
+          :disabled="loading || resetting"
           @send="sendQuery"
           @abort="handleAbort"
         />

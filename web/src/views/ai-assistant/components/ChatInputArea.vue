@@ -5,7 +5,7 @@
       <div class="route-segment">
         <button
           :class="['segment-option', { active: routeMode === 'rule' }]"
-          :disabled="loading"
+          :disabled="disabled"
           title="规则路径：快速查询"
           @click="handleSwitchRoute('rule')"
         >
@@ -13,7 +13,7 @@
         </button>
         <button
           :class="['segment-option', { active: routeMode === 'agent' }]"
-          :disabled="loading"
+          :disabled="disabled"
           title="模型路径：复杂分析"
           @click="handleSwitchRoute('agent')"
         >
@@ -27,7 +27,7 @@
           v-model="activeQuickGroup"
           class="mode-select"
           size="small"
-          :disabled="loading"
+          :disabled="disabled"
           @change="handleQuickGroupChange"
         >
           <el-option
@@ -42,7 +42,7 @@
           class="question-select"
           size="small"
           filterable
-          :disabled="loading"
+          :disabled="disabled"
           :placeholder="selectedQuickGroup.desc"
         >
           <el-option
@@ -61,13 +61,13 @@
           :step="selectedQuickItem.step || 1"
           size="small"
           controls-position="right"
-          :disabled="loading"
+          :disabled="disabled"
         />
         <el-button
           class="quick-run"
           type="primary"
           size="small"
-          :disabled="loading"
+          :disabled="disabled || quickNumberMissing"
           @click="applyQuickQuestion"
         >
           生成问题
@@ -84,7 +84,7 @@
           collapse-tags
           collapse-tags-tooltip
           :max-collapse-tags="2"
-          :disabled="loading"
+          :disabled="disabled"
           placeholder="选择可查数据"
           @change="handleModelDataTypesChange"
         >
@@ -100,7 +100,7 @@
           class="model-prompt-select"
           size="small"
           filterable
-          :disabled="loading"
+          :disabled="disabled"
           placeholder="选择分析模板"
           @change="composeModelQuestion"
         >
@@ -130,7 +130,7 @@
       </span>
       <div class="button-group">
         <el-button
-          v-if="loading"
+          v-if="generating"
           type="danger"
           plain
           size="default"
@@ -138,10 +138,12 @@
         >
           停止生成
         </el-button>
+        <!-- 生成中已由 loading 禁用，不再叠加禁用样式；重置等其他禁用时不转圈 -->
         <el-button
           type="primary"
           size="default"
-          :loading="loading"
+          :loading="generating"
+          :disabled="disabled && !generating"
           @click="handleSend"
         >
           发送
@@ -159,7 +161,10 @@ import { QuickParams, QuickQuestionGroup, QuickQuestionItem, RouteMode } from '.
 import { defaultModelPrompts, modelDataTypes, modelPromptLibrary, quickQuestionGroups } from '../constants';
 
 const props = defineProps<{
-  loading: boolean;
+  // 正在生成回答：显示"停止生成"，发送按钮转圈
+  generating: boolean;
+  // 生成或重置期间：禁用所有控件
+  disabled: boolean;
   routeMode: RouteMode;
 }>();
 
@@ -209,7 +214,16 @@ const modelPromptOptions = computed(() => {
   return Array.from(new Set(prompts.length ? prompts : defaultModelPrompts));
 });
 
-const getQuickNumber = (item: QuickQuestionItem) => (item.numKey ? quickParams.value[item.numKey] : undefined);
+// 数字框清空时 Element Plus 给的是 null，按"未填写"处理，不把 null 写进问题
+const getQuickNumber = (item: QuickQuestionItem) => {
+  const num = item.numKey ? quickParams.value[item.numKey] : undefined;
+  return Number.isFinite(num) ? num : undefined;
+};
+
+const quickNumberMissing = computed(() => {
+  const item = selectedQuickItem.value;
+  return Boolean(item && item.numKey && getQuickNumber(item) === undefined);
+});
 
 const buildQuickLabel = (item: QuickQuestionItem) => {
   const num = getQuickNumber(item);
@@ -226,7 +240,7 @@ const handleQuickGroupChange = () => {
 };
 
 const applyQuickQuestion = () => {
-  if (!selectedQuickItem.value) return;
+  if (!selectedQuickItem.value || quickNumberMissing.value) return;
   inputText.value = buildQuickQuery(selectedQuickItem.value);
   focusInputEnd();
 };
@@ -246,6 +260,7 @@ const handleModelDataTypesChange = () => {
 };
 
 const handleSwitchRoute = (mode: RouteMode) => {
+  if (mode === props.routeMode) return;
   emit('update:routeMode', mode);
   if (mode === 'agent') {
     if (!selectedModelPrompt.value) selectedModelPrompt.value = modelPromptOptions.value[0] || '';
@@ -255,7 +270,7 @@ const handleSwitchRoute = (mode: RouteMode) => {
 
 const handleSend = () => {
   const query = inputText.value.trim();
-  if (!query || props.loading) return;
+  if (!query || props.disabled) return;
   emit('send', query);
   inputText.value = '';
 };
