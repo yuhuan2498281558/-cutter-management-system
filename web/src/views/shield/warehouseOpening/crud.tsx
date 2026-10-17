@@ -50,7 +50,8 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 		const project = form?.project;
 		const ringNo = form?.ring_no;
 		clearAutoStratum(form);
-		if (!project || ringNo === undefined || ringNo === null || String(ringNo).trim() === '') {
+		// 与后端环号校验一致：只接受半角数字，其他输入不发预览请求。
+		if (!project || !/^\d+$/.test(String(ringNo ?? ''))) {
 			previewState.value = 'waiting';
 			return;
 		}
@@ -206,7 +207,10 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 					search: { show: true, order: 2, component: { clearable: true } },
 					column: { minWidth: 120, sortable: true },
 					form: {
-						rules: [{ required: true, message: '请输入换刀环号' }],
+						rules: [
+							{ required: true, message: '请输入换刀环号' },
+							{ pattern: /^\d+$/, message: '环号必须是纯数字' },
+						],
 						component: { placeholder: '请输入换刀环号' },
 						valueChange: ({ form }: any) => queueAutoStratumPreview(form),
 						order: 2,
