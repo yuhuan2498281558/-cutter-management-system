@@ -41,12 +41,6 @@ function normalizeTask(obj: any) {
   };
 }
 
-
-export function GetAssignOptions(warehouse?: string | number) {
-  return request({ url: apiPrefix + 'assign_options/', method: 'get', params: { warehouse } });
-}
-
-
 export function ApprovalDetail(id: string | number) {
   return request({ url: apiPrefix + id + '/approval_detail/', method: 'get' });
 }
