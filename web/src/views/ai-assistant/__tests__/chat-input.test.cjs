@@ -30,7 +30,7 @@ function loadInput(overrides = {}) {
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
-    + '\nexports.input = { inputText, inputRef, quickParams, quickQuestionGroups, modelDataTypes, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickNumberMissing, selectedModelDataTypes, selectedModelPrompt, modelPromptOptions, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
+    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, quickQuestionGroups, modelDataTypes, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickNumberMissing, selectedModelDataTypes, selectedModelPrompt, modelPromptOptions, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
   vm.runInNewContext(transpile(source), context);
   return { props, emitted, ...context.exports.input };
 }
@@ -47,9 +47,9 @@ async function renderInput(h) {
   const template = require('@vue/compiler-sfc').parse(fs.readFileSync(componentPath, 'utf8')).descriptor.template.content;
   const app = vue.createSSRApp({ template, setup: () => ({ ...h, routeMode: h.props.routeMode, generating: h.props.generating, disabled: h.props.disabled }) });
   for (const name of ['ElSelect', 'ElInputNumber']) app.component(name, stub('div'));
-  app.component('ElOption', { props: ['label'], setup: props => () => vue.h('span', props.label) });
+  app.component('ElOption', { inheritAttrs: false, props: ['label'], setup: props => () => vue.h('span', props.label) });
   app.component('ElButton', stub('button'));
-  app.component('ElInput', { setup: () => () => vue.h('textarea') });
+  app.component('ElInput', { inheritAttrs: false, props: { maxlength: Number, showWordLimit: Boolean }, setup: props => () => vue.h('textarea', { 'data-maxlength': props.maxlength, 'data-word-limit': String(Boolean(props.showWordLimit)) }) });
   return renderToString(app);
 }
 
@@ -135,24 +135,42 @@ test('switching back to the rule path keeps the input and sending trims then cle
   assert.equal(h.inputText.value, '');
 });
 
-test('a cleared number keeps the plain label, disables 生成问题 and never writes null into the input', async () => {
+test('a cleared number shows N in the label, disables 生成问题 with a reason and never writes null into the input', async () => {
   for (const cleared of [null, Number.NaN]) {
     const h = loadInput();
     h.inputText.value = '已有草稿';
     h.quickParams.value.ringWindow = cleared;
-    assert.equal(h.buildQuickLabel(h.selectedQuickItem.value), '近{n}环统计');
+    assert.equal(h.buildQuickLabel(h.selectedQuickItem.value), '近N环统计');
     assert.equal(h.quickNumberMissing.value, true);
     h.applyQuickQuestion();
     assert.equal(h.inputText.value, '已有草稿');
     const html = await renderInput(h);
     assert.ok(isDisabled(buttonAttrs(html, '生成问题')), `生成问题 must be disabled for ${cleared}`);
-    assert.equal(/null|NaN/.test(html), false);
+    assert.match(html, /<span class="quick-hint">请先填写数字<\/span>/);
+    assert.equal(/null|NaN|\{n\}/.test(html), false);
     pick(h, '换刀/旧刀补录', '换刀汇总');
     assert.equal(h.quickNumberMissing.value, false, 'questions without numbers are unaffected');
     pick(h, '换刀/旧刀补录', '近{n}环统计');
     h.quickParams.value.ringWindow = 120;
-    assert.equal(isDisabled(buttonAttrs(await renderInput(h), '生成问题')), false);
+    const filled = await renderInput(h);
+    assert.equal(isDisabled(buttonAttrs(filled, '生成问题')), false);
+    assert.equal(filled.includes('请先填写数字'), false);
   }
+});
+
+test('dropdown labels show the current numbers instead of {n}', async () => {
+  const h = loadInput();
+  const html = await renderInput(h);
+  assert.match(html, /<span>近100环统计<\/span>/);
+  assert.equal(html.includes('{n}'), false);
+  pick(h, '趋势区间', '{n}环分段');
+  h.quickParams.value.interval = 30;
+  assert.match(await renderInput(h), /<span>30环分段<\/span><span>近100环趋势<\/span>/);
+});
+
+test('the input shows its length against the backend limit of 10000 characters', async () => {
+  const html = await renderInput(loadInput());
+  assert.match(html, /<textarea data-maxlength="10000" data-word-limit="true"><\/textarea>/);
 });
 
 test('clicking the path that is already selected leaves the input alone', () => {

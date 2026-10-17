@@ -72,6 +72,7 @@
         >
           生成问题
         </el-button>
+        <span v-if="quickNumberMissing" class="quick-hint">请先填写数字</span>
       </template>
 
       <!-- 模型路径分析模板与能力选择 -->
@@ -119,6 +120,8 @@
       v-model="inputText"
       type="textarea"
       :autosize="{ minRows: 2, maxRows: 6 }"
+      :maxlength="MAX_QUERY_LENGTH"
+      show-word-limit
       resize="none"
       :placeholder="routeMode === 'rule' ? '输入规则查询，例如：统计最近100环的换刀情况' : '输入复杂分析问题，可结合多个数据类型追问原因和建议'"
       @keydown.enter="handleEnterKey"
@@ -174,6 +177,9 @@ const emit = defineEmits<{
   (e: 'abort'): void;
 }>();
 
+// 与后端 views.py _validate_body 的上限一致
+const MAX_QUERY_LENGTH = 10000;
+
 const inputText = ref('');
 const inputRef = ref<InputInstance>();
 const activeQuickGroup = ref(quickQuestionGroups[0].title);
@@ -227,7 +233,7 @@ const quickNumberMissing = computed(() => {
 
 const buildQuickLabel = (item: QuickQuestionItem) => {
   const num = getQuickNumber(item);
-  return num === undefined ? item.label : item.label.replace('{n}', String(num));
+  return item.label.replace('{n}', num === undefined ? 'N' : String(num));
 };
 
 const buildQuickQuery = (item: QuickQuestionItem) => {
@@ -361,6 +367,11 @@ const handleEnterKey = (event: Event) => {
 
     .quick-run {
       flex-shrink: 0;
+    }
+
+    .quick-hint {
+      font-size: 12px;
+      color: #e6a23c;
     }
 
     &.model {
