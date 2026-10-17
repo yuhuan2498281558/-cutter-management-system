@@ -30,7 +30,7 @@ function loadInput(overrides = {}) {
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
-    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, quickQuestionGroups, modelDataTypes, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickNumberMissing, selectedModelDataTypes, selectedModelPrompt, modelPromptOptions, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
+    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, selectedQuickParams, quickQuestionGroups, modelDataTypes, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickParamHint, selectedModelDataTypes, selectedModelPrompt, modelPromptOptions, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
   vm.runInNewContext(transpile(source), context);
   return { props, emitted, ...context.exports.input };
 }
@@ -49,7 +49,13 @@ async function renderInput(h) {
   for (const name of ['ElSelect', 'ElInputNumber']) app.component(name, stub('div'));
   app.component('ElOption', { inheritAttrs: false, props: ['label'], setup: props => () => vue.h('span', props.label) });
   app.component('ElButton', stub('button'));
-  app.component('ElInput', { inheritAttrs: false, props: { maxlength: Number, showWordLimit: Boolean }, setup: props => () => vue.h('textarea', { 'data-maxlength': props.maxlength, 'data-word-limit': String(Boolean(props.showWordLimit)) }) });
+  app.component('ElInput', {
+    inheritAttrs: false,
+    props: { type: String, maxlength: Number, showWordLimit: Boolean, placeholder: String, disabled: Boolean },
+    setup: props => () => (props.type === 'textarea'
+      ? vue.h('textarea', { 'data-maxlength': props.maxlength, 'data-word-limit': String(props.showWordLimit) })
+      : vue.h('input', { 'data-placeholder': props.placeholder, 'data-disabled': String(props.disabled) })),
+  });
   return renderToString(app);
 }
 
@@ -62,25 +68,28 @@ function pick(h, groupTitle, label) {
   return h.selectedQuickItem.value;
 }
 
-test('default numbers stay inside each question bounds and start on the recent-ring question', () => {
+test('every question starts from its own default and the first question is selected', () => {
   const h = loadInput();
-  assert.deepEqual({ ...h.quickParams.value }, { openingLimit: 5, ringWindow: 100, topN: 10, interval: 50 });
-  assert.equal(h.activeQuickGroup.value, '换刀/旧刀补录');
-  assert.equal(h.activeQuickItemLabel.value, '近{n}环统计');
-  for (const item of constants.quickQuestionGroups.flatMap(group => group.items).filter(entry => entry.numKey)) {
-    const value = h.quickParams.value[item.numKey];
-    assert.ok(value >= item.min && value <= item.max, `${item.label} default ${value}`);
+  assert.equal(h.activeQuickGroup.value, '换刀与磨损');
+  assert.equal(h.activeQuickItemLabel.value, '最近{n}环换刀');
+  for (const item of constants.quickQuestionGroups.flatMap(group => group.items)) {
+    assert.deepEqual({ ...h.quickParams.value[item.label] }, { n: item.defaultValue ?? null, id: '' }, item.label);
   }
 });
 
-test('the six numbered questions generate the same labels and text as before', () => {
+test('the numbered questions generate their labels and text with the default numbers', () => {
   for (const [group, label, expectedLabel, expectedQuery] of [
-    ['换刀/旧刀补录', '近{n}环统计', '近100环统计', '统计最近100环的换刀情况，列出检查数、更换数、更换率、主要磨损类型和高频刀位'],
-    ['趋势区间', '{n}环分段', '50环分段', '按50环为一段统计换刀趋势，列出每段检查数、更换数和更换率'],
-    ['趋势区间', '近{n}环趋势', '近100环趋势', '分析最近100环换刀趋势，说明更换率是否上升'],
-    ['开仓记录', '近{n}次开仓', '近5次开仓', '查询最近5次开仓情况，列出环号、开仓间隔、开仓时长、检查数、更换数和异常率'],
-    ['刀位统计', '前{n}刀位', '前10刀位', '列出更换次数最高的前10个刀位，并说明刀具类型和主要磨损类型'],
-    ['掘进动态', '近{n}环参数', '近100环参数', '分析最近100环掘进参数趋势'],
+    ['换刀与磨损', '最近{n}环换刀', '最近100环换刀', '统计最近100环的换刀情况，列出现场观测记录数、更换数、更换率、主要磨损类型和高频刀位'],
+    ['趋势区间', '按{n}环分段', '按50环分段', '按50环为一段统计换刀情况，列出每段现场观测记录数、更换数、更换率和已分类异常率'],
+    ['趋势区间', '最近{n}环变化', '最近100环变化', '分析最近100环换刀变化，比较首末环段的更换率'],
+    ['趋势区间', '前后环段对比', '前后环段对比', '按50环为一段，对比前后各段的更换率和已分类异常率'],
+    ['趋势区间', '换刀最多的环段', '换刀最多的环段', '按50环为一段，找出更换次数最多的环段并列出该段的主要刀位'],
+    ['开仓与检查', '最近{n}次开仓', '最近5次开仓', '查询最近5次开仓情况，列出环号、开仓间隔、开仓时长、检查数、更换数和异常率'],
+    ['开仓与检查', '异常率较高的开仓', '异常率较高的开仓', '列出最近10次开仓中已分类异常率较高的开仓'],
+    ['刀位统计', '更换最多的刀位', '更换最多的刀位', '列出更换次数最多的前10个刀位，并说明刀具类型和主要磨损类型'],
+    ['刀位统计', '异常集中的刀位', '异常集中的刀位', '找出异常磨损集中的前10个刀位，并列出异常类型'],
+    ['掘进参数', '掘进参数概览', '掘进参数概览', '查询最近有记录的100环掘进参数概览，列出推力、扭矩、转速和贯入力'],
+    ['掘进参数', '掘进分段变化', '掘进分段变化', '分析最近有记录的100环掘进参数分段变化'],
   ]) {
     const h = loadInput();
     const item = pick(h, group, label);
@@ -90,15 +99,38 @@ test('the six numbered questions generate the same labels and text as before', (
   }
 });
 
-test('an edited number and a question without numbers are written verbatim', () => {
+test('each question keeps its own number and questions without parameters are written verbatim', () => {
   const h = loadInput();
-  pick(h, '换刀/旧刀补录', '近{n}环统计');
-  h.quickParams.value.ringWindow = 120;
+  pick(h, '开仓与检查', '最近{n}次开仓');
+  h.quickParams.value['最近{n}次开仓'].n = 8;
   h.applyQuickQuestion();
-  assert.equal(h.inputText.value, '统计最近120环的换刀情况，列出检查数、更换数、更换率、主要磨损类型和高频刀位');
-  pick(h, '换刀/旧刀补录', '换刀汇总');
+  assert.equal(h.inputText.value, '查询最近8次开仓情况，列出环号、开仓间隔、开仓时长、检查数、更换数和异常率');
+  pick(h, '开仓与检查', '异常率较高的开仓');
   h.applyQuickQuestion();
-  assert.equal(h.inputText.value, '统计当前项目全部刀具换刀情况，列出检查数、更换数、更换率和主要磨损类型');
+  assert.equal(h.inputText.value, '列出最近10次开仓中已分类异常率较高的开仓');
+  pick(h, '换刀与磨损', '全项目换刀');
+  h.applyQuickQuestion();
+  assert.equal(h.inputText.value, '统计当前项目全部刀具的换刀情况，列出现场观测记录数、更换数、更换率和主要磨损类型');
+});
+
+test('tracing a tool needs a tool number before the question can be generated', async () => {
+  const h = loadInput();
+  h.inputText.value = '已有草稿';
+  pick(h, '服役与选型', '追溯刀具');
+  for (const id of ['', '   ']) {
+    h.quickParams.value['追溯刀具'].id = id;
+    assert.equal(h.quickParamHint.value, '请先填写刀具编号');
+    h.applyQuickQuestion();
+    assert.equal(h.inputText.value, '已有草稿');
+  }
+  const html = await renderInput(h);
+  assert.ok(isDisabled(buttonAttrs(html, '生成问题')));
+  assert.match(html, /<input data-placeholder="刀具编号" data-disabled="false">/);
+  assert.match(html, /<span class="quick-hint">请先填写刀具编号<\/span>/);
+  h.quickParams.value['追溯刀具'].id = ' GD-0123 ';
+  assert.equal(h.quickParamHint.value, '');
+  h.applyQuickQuestion();
+  assert.equal(h.inputText.value, '追溯刀具 GD-0123 的安装、检查、拆下和返修过程');
 });
 
 test('switching to the model path composes the first template with the selected data types', () => {
@@ -139,19 +171,19 @@ test('a cleared number shows N in the label, disables 生成问题 with a reason
   for (const cleared of [null, Number.NaN]) {
     const h = loadInput();
     h.inputText.value = '已有草稿';
-    h.quickParams.value.ringWindow = cleared;
-    assert.equal(h.buildQuickLabel(h.selectedQuickItem.value), '近N环统计');
-    assert.equal(h.quickNumberMissing.value, true);
+    h.quickParams.value['最近{n}环换刀'].n = cleared;
+    assert.equal(h.buildQuickLabel(h.selectedQuickItem.value), '最近N环换刀');
+    assert.equal(h.quickParamHint.value, '请先填写数字');
     h.applyQuickQuestion();
     assert.equal(h.inputText.value, '已有草稿');
     const html = await renderInput(h);
     assert.ok(isDisabled(buttonAttrs(html, '生成问题')), `生成问题 must be disabled for ${cleared}`);
     assert.match(html, /<span class="quick-hint">请先填写数字<\/span>/);
     assert.equal(/null|NaN|\{n\}/.test(html), false);
-    pick(h, '换刀/旧刀补录', '换刀汇总');
-    assert.equal(h.quickNumberMissing.value, false, 'questions without numbers are unaffected');
-    pick(h, '换刀/旧刀补录', '近{n}环统计');
-    h.quickParams.value.ringWindow = 120;
+    pick(h, '换刀与磨损', '全项目换刀');
+    assert.equal(h.quickParamHint.value, '', 'questions without numbers are unaffected');
+    pick(h, '换刀与磨损', '最近{n}环换刀');
+    h.quickParams.value['最近{n}环换刀'].n = 120;
     const filled = await renderInput(h);
     assert.equal(isDisabled(buttonAttrs(filled, '生成问题')), false);
     assert.equal(filled.includes('请先填写数字'), false);
@@ -161,11 +193,11 @@ test('a cleared number shows N in the label, disables 生成问题 with a reason
 test('dropdown labels show the current numbers instead of {n}', async () => {
   const h = loadInput();
   const html = await renderInput(h);
-  assert.match(html, /<span>近100环统计<\/span>/);
+  assert.match(html, /<span>最近100环换刀<\/span>/);
   assert.equal(html.includes('{n}'), false);
-  pick(h, '趋势区间', '{n}环分段');
-  h.quickParams.value.interval = 30;
-  assert.match(await renderInput(h), /<span>30环分段<\/span><span>近100环趋势<\/span>/);
+  pick(h, '趋势区间', '按{n}环分段');
+  h.quickParams.value['按{n}环分段'].n = 30;
+  assert.match(await renderInput(h), /<span>按30环分段<\/span><span>最近100环变化<\/span>/);
 });
 
 test('the input shows its length against the backend limit of 10000 characters', async () => {
@@ -256,5 +288,5 @@ test('choosing a template or pressing 生成问题 always writes the chosen ques
   const rule = loadInput();
   rule.inputText.value = '我自己的问题';
   rule.applyQuickQuestion();
-  assert.equal(rule.inputText.value, '统计最近100环的换刀情况，列出检查数、更换数、更换率、主要磨损类型和高频刀位');
+  assert.equal(rule.inputText.value, '统计最近100环的换刀情况，列出现场观测记录数、更换数、更换率、主要磨损类型和高频刀位');
 });

@@ -75,7 +75,7 @@ test('shortcut uses a current S-series cutter position rather than retired G-ser
   const context = { exports: {} };
   const source = fs.readFileSync(path.resolve(__dirname, '../constants.ts'), 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
-  const query = context.exports.quickQuestionGroups.find(group => group.title === '刀位统计').items.find(item => item.label === '指定刀位').query;
+  const query = context.exports.quickQuestionGroups.find(group => group.title === '刀位统计').items.find(item => item.label === '单个刀位').query;
   assert.equal(query, '分析S1L刀位的换刀和磨损情况');
 });
 

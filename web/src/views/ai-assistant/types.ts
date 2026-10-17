@@ -26,6 +26,8 @@ export interface QuickQuestionItem {
   min?: number;
   max?: number;
   step?: number;
+  defaultValue?: number;
+  textKey?: 'id';
 }
 
 export interface QuickQuestionGroup {
@@ -34,11 +36,10 @@ export interface QuickQuestionGroup {
   items: QuickQuestionItem[];
 }
 
-export interface QuickParams {
-  openingLimit: number;
-  ringWindow: number;
-  topN: number;
-  interval: number;
+// 每条问题各自的参数值：{n} 数字（清空时为 null）、{id} 刀具编号
+export interface QuestionParamValues {
+  n: number | null;
+  id: string;
 }
 
 export interface MemoryMetadata {

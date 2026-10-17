@@ -53,8 +53,8 @@
           />
         </el-select>
         <el-input-number
-          v-if="selectedQuickItem?.numKey"
-          v-model="quickParams[selectedQuickItem.numKey]"
+          v-if="selectedQuickItem?.numKey && selectedQuickParams"
+          v-model="selectedQuickParams.n"
           class="quick-number"
           :min="selectedQuickItem.min || 1"
           :max="selectedQuickItem.max || 200"
@@ -63,16 +63,24 @@
           controls-position="right"
           :disabled="disabled"
         />
+        <el-input
+          v-if="selectedQuickItem?.textKey && selectedQuickParams"
+          v-model="selectedQuickParams.id"
+          class="quick-text"
+          size="small"
+          placeholder="刀具编号"
+          :disabled="disabled"
+        />
         <el-button
           class="quick-run"
           type="primary"
           size="small"
-          :disabled="disabled || quickNumberMissing"
+          :disabled="disabled || Boolean(quickParamHint)"
           @click="applyQuickQuestion"
         >
           生成问题
         </el-button>
-        <span v-if="quickNumberMissing" class="quick-hint">请先填写数字</span>
+        <span v-if="quickParamHint" class="quick-hint">{{ quickParamHint }}</span>
       </template>
 
       <!-- 模型路径分析模板与能力选择 -->
@@ -160,7 +168,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import type { InputInstance } from 'element-plus';
-import { QuickParams, QuickQuestionGroup, QuickQuestionItem, RouteMode } from '../types';
+import { QuestionParamValues, QuickQuestionGroup, QuickQuestionItem, RouteMode } from '../types';
 import { defaultModelPrompts, modelDataTypes, modelPromptLibrary, quickQuestionGroups } from '../constants';
 
 const props = defineProps<{
@@ -197,12 +205,10 @@ const focusInputEnd = () => {
 };
 const activeQuickItemLabel = ref(quickQuestionGroups[0].items[0].label);
 
-const quickParams = ref<QuickParams>({
-  openingLimit: 5,
-  ringWindow: 100,
-  topN: 10,
-  interval: 50,
-});
+// 每条快捷问题各自保存参数，按标签索引（同一种数字在不同问题里的默认值可能不同）
+const quickParams = ref<Record<string, QuestionParamValues>>(Object.fromEntries(
+  quickQuestionGroups.flatMap((group) => group.items).map((item) => [item.label, { n: item.defaultValue ?? null, id: '' }])
+));
 
 const selectedModelDataTypes = ref<string[]>(['换刀/旧刀补录', '地层信息']);
 const selectedModelPrompt = ref('');
@@ -220,15 +226,22 @@ const modelPromptOptions = computed(() => {
   return Array.from(new Set(prompts.length ? prompts : defaultModelPrompts));
 });
 
+const selectedQuickParams = computed(() => (selectedQuickItem.value ? quickParams.value[selectedQuickItem.value.label] : undefined));
+
 // 数字框清空时 Element Plus 给的是 null，按"未填写"处理，不把 null 写进问题
 const getQuickNumber = (item: QuickQuestionItem) => {
-  const num = item.numKey ? quickParams.value[item.numKey] : undefined;
-  return Number.isFinite(num) ? num : undefined;
+  const num = item.numKey ? quickParams.value[item.label]?.n : undefined;
+  return Number.isFinite(num) ? (num as number) : undefined;
 };
 
-const quickNumberMissing = computed(() => {
+const getQuickId = (item: QuickQuestionItem) => (item.textKey ? quickParams.value[item.label]?.id.trim() || '' : '');
+
+// 参数没填时说明为什么不能生成问题；为空字符串表示可以生成
+const quickParamHint = computed(() => {
   const item = selectedQuickItem.value;
-  return Boolean(item && item.numKey && getQuickNumber(item) === undefined);
+  if (item?.numKey && getQuickNumber(item) === undefined) return '请先填写数字';
+  if (item?.textKey && !getQuickId(item)) return '请先填写刀具编号';
+  return '';
 });
 
 const buildQuickLabel = (item: QuickQuestionItem) => {
@@ -236,10 +249,10 @@ const buildQuickLabel = (item: QuickQuestionItem) => {
   return item.label.replace('{n}', num === undefined ? 'N' : String(num));
 };
 
-const buildQuickQuery = (item: QuickQuestionItem) => {
-  const num = getQuickNumber(item);
-  return num === undefined ? item.query : item.query.replaceAll('{n}', String(num));
-};
+// 只在参数都已填写（quickParamHint 为空）时调用
+const buildQuickQuery = (item: QuickQuestionItem) => item.query
+  .replaceAll('{n}', String(getQuickNumber(item)))
+  .replaceAll('{id}', getQuickId(item));
 
 const handleQuickGroupChange = () => {
   activeQuickItemLabel.value = selectedQuickGroup.value.items[0]?.label || '';
@@ -255,7 +268,7 @@ const fillInput = (text: string) => {
 const canAutoFill = () => !inputText.value.trim() || inputText.value === lastAutoFilled;
 
 const applyQuickQuestion = () => {
-  if (!selectedQuickItem.value || quickNumberMissing.value) return;
+  if (!selectedQuickItem.value || quickParamHint.value) return;
   fillInput(buildQuickQuery(selectedQuickItem.value));
 };
 
@@ -363,6 +376,10 @@ const handleEnterKey = (event: Event) => {
 
     .quick-number {
       width: 90px;
+    }
+
+    .quick-text {
+      width: 140px;
     }
 
     .quick-run {

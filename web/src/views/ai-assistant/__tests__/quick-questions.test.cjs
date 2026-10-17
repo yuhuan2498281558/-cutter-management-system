@@ -88,119 +88,113 @@ const defaultModelPrompts = [
 
 const quickQuestionGroups = [
   {
-    title: '换刀/旧刀补录',
-    desc: '检查数、更换数、旧刀补录磨损类型和高频刀位',
+    title: '换刀与磨损',
+    desc: '现场观测、更换率、磨损类型和高频刀位',
     items: [
-      { label: '近{n}环统计', query: '统计最近{n}环的换刀情况，列出检查数、更换数、更换率、主要磨损类型和高频刀位', numKey: 'ringWindow', min: 20, max: 500, step: 10 },
-      { label: '换刀汇总', query: '统计当前项目全部刀具换刀情况，列出检查数、更换数、更换率和主要磨损类型' },
-      { label: '异常磨损', query: '统计异常磨损记录，列出异常类型、数量和占比' },
-      { label: '更换率', query: '统计换刀更换率，并列出主要更换刀位' },
-      { label: '滚刀统计', query: '统计滚刀换刀情况，列出检查数、更换数和主要磨损类型' },
-      { label: '刮刀统计', query: '统计刮刀换刀情况，列出检查数、更换数和主要磨损类型' },
+      { label: '最近{n}环换刀', query: '统计最近{n}环的换刀情况，列出现场观测记录数、更换数、更换率、主要磨损类型和高频刀位', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+      { label: '全项目换刀', query: '统计当前项目全部刀具的换刀情况，列出现场观测记录数、更换数、更换率和主要磨损类型' },
+      { label: '异常磨损类型', query: '统计异常磨损记录，列出异常类型、数量和占比' },
+      { label: '更换率与主要刀位', query: '统计换刀更换率，并列出主要更换刀位' },
+      { label: '滚刀换刀', query: '统计滚刀换刀情况，列出现场观测记录数、更换数和主要磨损类型' },
+      { label: '刮刀换刀', query: '统计刮刀换刀情况，列出现场观测记录数、更换数和主要磨损类型' },
     ],
   },
   {
     title: '趋势区间',
-    desc: '按环段观察换刀频率和异常变化',
+    desc: '按环段比较更换率和异常率',
     items: [
-      { label: '{n}环分段', query: '按{n}环为一段统计换刀趋势，列出每段检查数、更换数和更换率', numKey: 'interval', min: 10, max: 200, step: 10 },
-      { label: '近{n}环趋势', query: '分析最近{n}环换刀趋势，说明更换率是否上升', numKey: 'ringWindow', min: 20, max: 500, step: 10 },
-      { label: '阶段对比', query: '对比前后阶段换刀频率和异常磨损变化' },
-      { label: '峰值环段', query: '找出换刀频率最高的环段并列出主要刀位' },
-      { label: '100-300环', query: '统计100环到300环的换刀趋势和主要磨损类型' },
+      { label: '按{n}环分段', query: '按{n}环为一段统计换刀情况，列出每段现场观测记录数、更换数、更换率和已分类异常率', numKey: 'interval', min: 10, max: 200, step: 10, defaultValue: 50 },
+      { label: '最近{n}环变化', query: '分析最近{n}环换刀变化，比较首末环段的更换率', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+      { label: '前后环段对比', query: '按{n}环为一段，对比前后各段的更换率和已分类异常率', numKey: 'interval', min: 10, max: 200, step: 10, defaultValue: 50 },
+      { label: '换刀最多的环段', query: '按{n}环为一段，找出更换次数最多的环段并列出该段的主要刀位', numKey: 'interval', min: 10, max: 200, step: 10, defaultValue: 50 },
+      { label: '100–300环分段', query: '统计100环到300环的换刀分段情况' },
     ],
   },
   {
-    title: '开仓记录',
-    desc: '开仓间隔、时长、异常率和换刀数量',
+    title: '开仓与检查',
+    desc: '开仓汇总、检查完成情况和作业效率',
     items: [
-      { label: '近{n}次开仓', query: '查询最近{n}次开仓情况，列出环号、开仓间隔、开仓时长、检查数、更换数和异常率', numKey: 'openingLimit', min: 1, max: 20 },
-      { label: '开仓异常', query: '分析最近开仓记录中异常磨损率较高的开仓' },
-      { label: '开仓效率', query: '结合开仓时长和检查刀具数量，统计平均检查一把刀需要多长时间' },
-      { label: '更换效率', query: '结合开仓时长和更换刀具数量，统计平均更换一把刀需要多长时间' },
+      { label: '最近{n}次开仓', query: '查询最近{n}次开仓情况，列出环号、开仓间隔、开仓时长、检查数、更换数和异常率', numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
+      { label: '异常率较高的开仓', query: '列出最近{n}次开仓中已分类异常率较高的开仓', numKey: 'openingLimit', min: 1, max: 20, defaultValue: 10 },
+      { label: '检查效率', query: '结合开仓时长和检查刀具数量，统计平均检查一把刀需要多长时间' },
+      { label: '更换效率', query: '结合换刀总时长和更换刀具数量，统计平均更换一把刀需要多长时间' },
       { label: '开仓间隔', query: '统计平均多少环开一次仓，并列出最近开仓间隔' },
+      { label: '需关注未更换', query: '列出需要关注但还没更换的刀，给出刀位、环号和磨损情况' },
+      { label: '未检查刀位', query: '列出还没检查的刀位和所在开仓' },
     ],
   },
   {
     title: '刀位统计',
-    desc: '定位高频更换和高风险刀位',
+    desc: '更换次数和异常集中的刀位',
     items: [
-      { label: '前{n}刀位', query: '列出更换次数最高的前{n}个刀位，并说明刀具类型和主要磨损类型', numKey: 'topN', min: 3, max: 30 },
-      { label: '高频刀位', query: '分析高频更换刀位，列出更换次数和主要磨损类型' },
-      { label: '异常刀位', query: '找出异常磨损集中的刀位，并列出异常类型' },
-      { label: '刀盘分布', query: '分析刀盘不同刀位的磨损分布情况' },
-      { label: '指定刀位', query: '分析S1L刀位的换刀和磨损情况' },
+      { label: '更换最多的刀位', query: '列出更换次数最多的前{n}个刀位，并说明刀具类型和主要磨损类型', numKey: 'topN', min: 3, max: 30, defaultValue: 10 },
+      { label: '异常集中的刀位', query: '找出异常磨损集中的前{n}个刀位，并列出异常类型', numKey: 'topN', min: 3, max: 30, defaultValue: 10 },
+      { label: '全刀盘磨损分布', query: '列出全部有效刀位的更换次数和磨损情况' },
+      { label: '单个刀位', query: '分析S1L刀位的换刀和磨损情况' },
     ],
   },
   {
-    title: '地层信息',
-    desc: '地层分布和地层-磨损关联',
+    title: '地层',
+    desc: '地层面积占比、地层标签和开仓位置地层',
     items: [
-      { label: '地层分布', query: '统计当前项目地层分布，列出各地层类型占比' },
-      { label: '区间地层', query: '查询100环到300环的地层分布情况' },
-      { label: '地层磨损', query: '分析地层类型与刀具磨损的关联' },
-      { label: '地层换刀', query: '分析不同地层下的换刀数量和更换率' },
-      { label: '刀位地层', query: '分析刀位受地层影响的情况，列出高风险刀位' },
+      { label: '地层面积占比', query: '统计当前项目各地层的面积占比' },
+      { label: '环段地层面积', query: '统计100环到300环各地层的面积占比' },
+      { label: '地层标签分布', query: '统计100环到300环的历史地层标签分布' },
+      { label: '开仓位置地层', query: '查询最近一次开仓的位置地层和上次开仓以来经过的地层' },
+      { label: '地层与换刀', query: '分析不同地层标签下的换刀数量和更换率' },
+      { label: '刀位与地层', query: '列出刀位与地层标签的关联次数和实际更换次数' },
     ],
   },
   {
-    title: '掘进动态',
-    desc: '推力、扭矩、转速、贯入力趋势',
+    title: '掘进参数',
+    desc: '推力、扭矩、转速、贯入力和分段均值',
     items: [
-      { label: '参数概览', query: '查询近期掘进动态参数概览，列出推力、扭矩、转速和贯入力' },
-      { label: '异常检查', query: '检查近期掘进参数异常，列出偏高或波动明显的环段' },
-      { label: '近{n}环参数', query: '分析最近{n}环掘进参数趋势', numKey: 'ringWindow', min: 20, max: 500, step: 10 },
-      { label: '参数磨损', query: '分析掘进参数与换刀磨损的关联' },
-      { label: '波动原因', query: '结合掘进参数和换刀记录，分析异常磨损可能原因' },
+      { label: '掘进参数概览', query: '查询最近有记录的{n}环掘进参数概览，列出推力、扭矩、转速和贯入力', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+      { label: '分段均值偏高筛查', query: '筛查掘进参数分段均值偏高的记录，列出环号、时间段和数值' },
+      { label: '掘进分段变化', query: '分析最近有记录的{n}环掘进参数分段变化', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+      { label: '掘进与换刀对照', query: '分析掘进参数与换刀磨损的关联' },
     ],
   },
   {
-    title: '厂家刀具',
-    desc: '厂家表现、异常率和成本线索',
+    title: '厂家与报价',
+    desc: '厂家寿命、异常率、报价和登记金额',
     items: [
-      { label: '厂家表现', query: '评估各厂家刀具表现，列出更换数量、异常数量和异常率' },
-      { label: '厂家对比', query: '对比不同厂家在异常磨损率和使用寿命上的差异' },
-      { label: '厂家异常', query: '分析主要厂家的异常磨损模式' },
-      { label: '厂家刀位', query: '分析不同厂家在高频刀位上的表现差异' },
+      { label: '厂家寿命与异常率', query: '对比各厂家刀具的使用寿命和异常磨损率' },
+      { label: '厂家磨损类型', query: '分析主要厂家的异常磨损类型' },
+      { label: '型号报价', query: '查询各型号的新刀和维修报价，按厂家列出' },
+      { label: '登记金额', query: '统计项目登记金额，按厂家分别列出' },
     ],
   },
   {
-    title: '寿命预测',
-    desc: '平均寿命、状态分布和预警刀位',
+    title: '旧刀返修',
+    desc: '返修进度、报废和部件失效原因',
     items: [
-      { label: '寿命概况', query: '统计当前刀具平均寿命、已推进环数和剩余寿命分布' },
-      { label: '预警刀位', query: '查询需要重点关注的寿命预警刀位，并列出当前状态' },
-      { label: '滚刀寿命', query: '统计滚刀平均寿命和集中更换环段' },
-      { label: '刮刀寿命', query: '统计刮刀平均寿命和集中更换环段' },
+      { label: '返修进度', query: '统计旧刀返修进度，列出待厂家反馈、已确认、已归档的数量' },
+      { label: '报废情况', query: '统计已经报废了多少把刀，另列待厂家确认的报废建议' },
+      { label: '返修登记金额', query: '统计已确认的返修登记了多少钱' },
+      { label: '部件失效原因', query: '统计旧刀的部件失效原因，列出轴承、刀圈等损坏数量' },
     ],
   },
   {
-    title: '备刀建议',
-    desc: '根据近期消耗和异常做备刀规划',
+    title: '服役与选型',
+    desc: '服役环数、选型参考、单刀追溯和可查数据',
     items: [
-      { label: '备刀规划', query: '根据近期换刀消耗和磨损趋势，给出下一阶段备刀建议' },
-      { label: '滚刀备刀', query: '给出滚刀备刀建议，列出重点规格和关注刀位' },
-      { label: '刮刀备刀', query: '给出刮刀备刀建议，列出重点规格和关注刀位' },
-      { label: '高风险备刀', query: '结合高频异常刀位，给出应急备刀建议' },
-    ],
-  },
-  {
-    title: '综合诊断',
-    desc: '跨模块联合分析与风险清单',
-    items: [
-      { label: '开仓-地层联动', query: '结合最近开仓记录和地层分布，分析哪些开仓异常率高以及对应地层' },
-      { label: '参数-换刀联动', query: '结合掘进参数和换刀记录，分析近期异常磨损的可能原因' },
-      { label: '全面体检', query: '综合换刀、开仓、地层、刀位、厂家和寿命数据，生成近期风险清单和处理建议' },
+      { label: '滚刀服役环数', query: '统计滚刀平均寿命和集中更换环段' },
+      { label: '刮刀服役环数', query: '统计刮刀平均寿命和集中更换环段' },
+      { label: '滚刀选型参考', query: '推荐滚刀型号，列出平均服役环数、样本数和新刀报价区间' },
+      { label: '刮刀选型参考', query: '推荐刮刀型号，列出平均服役环数、样本数和新刀报价区间' },
+      { label: '追溯刀具', query: '追溯刀具 {id} 的安装、检查、拆下和返修过程', textKey: 'id' },
+      { label: '可查数据', query: '现在有哪些数据可以查，各类数据覆盖到哪里' },
     ],
   },
 ];
 
 // Which backend parameter each {n} feeds: recent ring window, segment interval, recent opening count, ranking size.
 const NUMBER_PHRASES = {
-  ringWindow: '最近{n}环',
-  interval: '按{n}环为一段',
-  openingLimit: '最近{n}次开仓',
-  topN: '前{n}个',
+  ringWindow: /最近(?:有记录的)?\{n\}环/,
+  interval: /按\{n\}环为一段/,
+  openingLimit: /最近\{n\}次开仓/,
+  topN: /前\{n\}个/,
 };
 
 test('quick questions, model prompts and section titles match the verified wording exactly', () => {
@@ -214,33 +208,41 @@ test('quick questions, model prompts and section titles match the verified wordi
   assert.equal(Object.values(modelPromptLibrary).flat().length, 21);
 });
 
-test('every {n} question declares bounds and a parameter that matches its wording', () => {
+test('every {n} question declares bounds, its own default and a parameter that matches its wording', () => {
   const items = loadConstants().quickQuestionGroups.flatMap(group => group.items);
+  assert.equal(new Set(items.map(item => item.label)).size, items.length, 'labels are unique because parameters are kept per label');
   const numbered = items.filter(item => item.numKey || item.query.includes('{n}') || item.label.includes('{n}'));
-  assert.equal(numbered.length, 6);
+  assert.equal(numbered.length, 11);
   for (const item of numbered) {
-    assert.ok(item.query.includes('{n}') && item.label.includes('{n}'), `${item.label} must show {n} in label and query`);
-    assert.equal(item.query.split('{n}').length, 2, `${item.label} must use {n} once`);
+    assert.equal(item.query.split('{n}').length, 2, `${item.label} must use {n} once in the question`);
     assert.ok(Object.hasOwn(NUMBER_PHRASES, item.numKey), `${item.label} has unknown numKey ${item.numKey}`);
     assert.ok(Number.isInteger(item.min) && Number.isInteger(item.max) && item.min < item.max, `${item.label} needs integer min < max`);
+    assert.ok(Number.isInteger(item.defaultValue) && item.defaultValue >= item.min && item.defaultValue <= item.max, `${item.label} default ${item.defaultValue}`);
     for (const [numKey, phrase] of Object.entries(NUMBER_PHRASES)) {
-      assert.equal(item.query.includes(phrase), numKey === item.numKey, `${item.label}: "${phrase}" belongs to ${numKey}`);
+      assert.equal(phrase.test(item.query), numKey === item.numKey, `${item.label}: ${phrase} belongs to ${numKey}`);
     }
   }
 });
 
-test('all six welcome shortcuts resolve to library questions word for word', () => {
+test('only the trace question takes a tool number and it is written into the question once', () => {
+  const items = loadConstants().quickQuestionGroups.flatMap(group => group.items);
+  const withId = items.filter(item => item.textKey || item.query.includes('{id}'));
+  assert.deepEqual(plain(withId.map(item => [item.label, item.textKey, item.query.split('{id}').length])), [['追溯刀具', 'id', 2]]);
+});
+
+test('all six welcome shortcuts resolve to library questions without parameters, word for word', () => {
   const constants = loadConstants();
   const chips = plain(loadMessageList(constants).welcomeChips);
   const expected = [
-    ['换刀/旧刀补录', '换刀汇总'],
-    ['换刀/旧刀补录', '异常磨损'],
-    ['刀位统计', '高频刀位'],
-    ['开仓记录', '开仓间隔'],
-    ['地层信息', '地层分布'],
-    ['寿命预测', '寿命概况'],
+    ['换刀与磨损', '全项目换刀'],
+    ['换刀与磨损', '异常磨损类型'],
+    ['刀位统计', '全刀盘磨损分布'],
+    ['开仓与检查', '开仓间隔'],
+    ['地层', '地层面积占比'],
+    ['服役与选型', '可查数据'],
   ].map(([title, label]) => {
     const item = quickQuestionGroups.find(group => group.title === title).items.find(entry => entry.label === label);
+    assert.equal(item.numKey || item.textKey, undefined, `${label} must not need a parameter`);
     return { label: item.label, query: item.query };
   });
   assert.deepEqual(chips, expected);
