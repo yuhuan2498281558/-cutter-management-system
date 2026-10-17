@@ -1,5 +1,5 @@
 <template>
-  <div class="auto-stratum" :aria-busy="status === 'loading'">
+  <div class="auto-stratum" :title="displayText" :aria-busy="status === 'loading'">
     <el-input :model-value="displayText" disabled :placeholder="placeholder" />
     <div class="auto-stratum-status" :class="{ 'is-error': status === 'error' }" role="status" aria-live="polite">
       <span>{{ statusText }}</span>
