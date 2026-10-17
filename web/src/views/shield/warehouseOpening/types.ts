@@ -43,12 +43,3 @@ export interface StratumInfoBetweenItem {
   stratum_type_name: string;
   ring_count: number;
 }
-
-/**
- * 地层信息数据项（用于表单提交）
- */
-export interface APIResponseData {
-  code?: number;
-  data: any;
-  msg?: string;
-}
