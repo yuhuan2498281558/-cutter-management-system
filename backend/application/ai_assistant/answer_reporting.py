@@ -172,8 +172,9 @@ def _render_refresh_report(kind, data, table, scope):
         report.text(f"未检查：{display(unchecked.get('record_count'))} 条，涉及 {display(unchecked.get('position_count'))} 个刀位。")
         groups = [('未检查明细', unchecked)] if any(w in question for w in ('未检查', '没检查')) else [('需关注未更换明细', attention)]
         if any(w in question for w in ('完成', '检查完', '移动任务')):
-            _refresh_table(report, "各次开仓检查完成情况", ["环号", "明细数", "已检查", "未检查", "已更换", "移动任务状态"], [
+            _refresh_table(report, "各次开仓检查完成情况", ["环号", "明细数", "已检查", "未检查", "已更换", "需关注未换", "移动任务状态"], [
                 [r.get('ring_no'), r.get('position_count'), r.get('checked_count'), r.get('unchecked_count'), r.get('replaced_count'),
+                 r.get('attention_not_replaced_count'),
                  '、'.join(_status_label(s) for s in r.get('task_status') or []) or '暂无'] for r in data.get('opening_completion') or []])
             report.text("移动任务：" + ('、'.join(f"{_status_label(k)} {v} 条" for k, v in (data.get('task_status_counts') or {}).items()) or '暂无') + "。")
         else:

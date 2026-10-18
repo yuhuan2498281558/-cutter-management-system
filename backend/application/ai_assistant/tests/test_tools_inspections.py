@@ -43,6 +43,7 @@ class InspectionToolTests(TestCase):
         self.assertEqual(result['replaced_rows_with_abnormal_wear'], 1)
         self.assertEqual(result['opening_completion'][0]['checked_count'], 3)
         self.assertEqual(result['opening_completion'][0]['position_count'], 4)
+        self.assertEqual(result['opening_completion'][0]['attention_not_replaced_count'], 2)
         labels = {r['check_result']: r['label'] for r in result['check_result_counts']}
         self.assertEqual(labels['ATTENTION'], '需关注')
 

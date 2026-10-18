@@ -45,7 +45,7 @@ class AgentViewTests(SimpleTestCase):
             'nested': {'items': [{'id': i} for i in range(42)]},
             'numbers': list(range(100)), 'strings': [str(i) for i in range(100)],
         }
-        result = json.loads(agent_view(_json(data), page=2))
+        result = json.loads(agent_view(_json(data), page=2, page_size=20))
         for key in ('scope', 'summary', '_analysis_payload', 'numbers', 'strings'):
             self.assertEqual(result[key], data[key])
         self.assertEqual([row['id'] for row in result['rows']], list(range(20, 40)))
@@ -54,10 +54,10 @@ class AgentViewTests(SimpleTestCase):
         self.assertEqual(result['_paging']['rows.0.children'], {'total': 27, 'page': 2, 'page_size': 20, 'has_more': False})
         self.assertEqual(result['_paging']['nested.items']['total'], 42)
         self.assertEqual(result['_paging_note'], '列表只给了第2页（每页20条），各列表总数见 _paging。需要后面的记录时，用相同参数加 page=3 再查。')
-        self.assertEqual(AGENT_PAGE_SIZE, 20)
+        self.assertEqual(AGENT_PAGE_SIZE, 50)
 
     def test_out_of_range_page_and_short_lists(self):
-        result = json.loads(agent_view(_json({'rows': [{'id': i} for i in range(21)], 'short': [{'id': 1}]}), page=50))
+        result = json.loads(agent_view(_json({'rows': [{'id': i} for i in range(21)], 'short': [{'id': 1}]}), page=50, page_size=20))
         self.assertEqual(result['rows'], [])
         self.assertFalse(result['_paging']['rows']['has_more'])
         self.assertEqual(result['short'], [{'id': 1}])
@@ -72,7 +72,7 @@ class AgentViewTests(SimpleTestCase):
         self.assertEqual(result['other'], long + '。')
         self.assertEqual(result['short'], ['说明'] * 2)
         rows = [{'note': long} for _ in range(21)]
-        self.assertEqual(json.loads(agent_view(_json({'rows': rows}), page=2))['rows'][0]['note'], long)
+        self.assertEqual(json.loads(agent_view(_json({'rows': rows}), page=2, page_size=20))['rows'][0]['note'], long)
 
     def test_error_result_is_byte_for_byte_unchanged(self):
         for error in ('失败', ''):
@@ -105,7 +105,7 @@ class AgentViewTests(SimpleTestCase):
             if name in _PAGED:
                 params.update(page=2, page_size=5)
                 properties = tool.args_schema.model_json_schema()['properties']
-                for key, default, minimum in (('page', 1, 1), ('page_size', 20, 5)):
+                for key, default, minimum in (('page', 1, 1), ('page_size', 50, 5)):
                     self.assertEqual({field: properties[key][field] for field in ('type', 'default', 'minimum', 'maximum')},
                                      {'type': 'integer', 'default': default, 'minimum': minimum, 'maximum': 50})
                     self.assertNotIn('description', properties[key])

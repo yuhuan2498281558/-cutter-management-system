@@ -3,7 +3,8 @@
 import json
 
 
-AGENT_PAGE_SIZE = 20
+# 每页 50 条：常见的几十条列表一次给全，122 个刀位、200 条返修这类长列表才翻页。
+AGENT_PAGE_SIZE = 50
 
 
 def agent_view(raw, page=1, page_size=AGENT_PAGE_SIZE):

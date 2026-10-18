@@ -122,7 +122,10 @@ def query_tool_inspections(params_str: str) -> str:
         completion.append({'ring_no': opening._tool_ring, 'summary_status': opening.summary_status,
                            'task_status': sorted(statuses[opening.pk]), 'position_count': len(details),
                            'checked_count': checked, 'unchecked_count': len(details) - checked,
-                           'replaced_count': sum(row.is_replaced for row in details)})
+                           'replaced_count': sum(row.is_replaced for row in details),
+                           'attention_not_replaced_count': sum(
+                               not row.is_replaced and row.check_result in {'ATTENTION', 'ABNORMAL_NOT_REPLACED'}
+                               for row in details)})
     attention = [r for r in rows if not r.is_replaced and r.check_result in {'ATTENTION', 'ABNORMAL_NOT_REPLACED'}]
     unchecked = [r for r in rows if not r.is_checked and not r.is_replaced]
     counts = Counter(r.check_result for r in rows)
