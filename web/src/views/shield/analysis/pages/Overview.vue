@@ -60,7 +60,7 @@ import ScopeSummary from '../components/ScopeSummary.vue';
 import { getCostTrend, getOverview } from '../api';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { analysisExportMeta, formatCurrency, formatNumber, requireAnalysisV2, STATUS_LABELS } from '../utils/presentation';
-import { DEFAULT_GRID, TOOLTIP_STYLE, TOOL_TYPE_COLORS, TOOL_TYPE_LABELS } from '../utils/chartTheme';
+import { buildOverviewTrendOption, buildOverviewTypeOption } from '../utils/overviewChartOptions';
 import { exportAnalysisPdf } from '../utils/pdfExport';
 import type { AnalysisFilter, AnalysisMeta, CostTrendItem, OverviewData } from '../types';
 
@@ -97,32 +97,8 @@ function renderCharts() {
     observer.observe(trendRef.value); observer.observe(typeRef.value);
   }
   const overview = data.value.overview;
-  const monthly = trendMode.value === 'month';
-  const rows = data.value.trend.items;
-  trendChart.setOption({
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis' },
-    legend: { bottom: 0, type: 'scroll' }, grid: { ...DEFAULT_GRID, bottom: 78 },
-    xAxis: { type: 'category', data: monthly ? overview.monthly_trend.map(r => r.month || '日期未记录') : rows.map(r => r.ring_no), name: monthly ? '月份' : '环号' },
-    yAxis: [{ type: 'value', name: '实际更换 / 把次', minInterval: 1 }, { type: 'value', name: '明确金额 / 元' }],
-    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 14, bottom: 28 }],
-    series: [
-      { name: '实际更换', type: 'bar', barMaxWidth: 26, itemStyle: { color: '#5470c6' }, data: monthly ? overview.monthly_trend.map(r => r.total_replacements ?? 0) : rows.map(r => r.replacement_count ?? 0) },
-      { name: '明确金额', type: 'line', yAxisIndex: 1, connectNulls: false, itemStyle: { color: '#c57932' }, data: monthly ? overview.monthly_trend.map(r => r.cost) : rows.map(r => r.total_cost) },
-    ],
-  }, true);
-  const types = ['DISC', 'SCRAPER'];
-  const cumulative = typeMode.value === 'cumulative';
-  const last = overview.type_trend.at(-1);
-  typeChart.setOption({
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis' }, grid: { ...DEFAULT_GRID, bottom: cumulative ? 70 : 35 },
-    legend: { bottom: 0, show: cumulative },
-    xAxis: cumulative ? { type: 'category', name: '环号', data: overview.type_trend.map(r => r.ring_no) } : { type: 'value', name: '把次', minInterval: 1 },
-    yAxis: cumulative ? { type: 'value', name: '累计更换 / 把次', minInterval: 1 } : { type: 'category', data: types.map(t => TOOL_TYPE_LABELS[t]) },
-    series: cumulative ? types.map(t => ({ name: TOOL_TYPE_LABELS[t], type: 'line', color: TOOL_TYPE_COLORS[t], data: overview.type_trend.map(r => r[t as 'DISC' | 'SCRAPER']) })) : [{
-      type: 'bar', barMaxWidth: 34, label: { show: true, position: 'right' },
-      data: types.map(t => ({ value: last?.[t as 'DISC' | 'SCRAPER'] ?? 0, itemStyle: { color: TOOL_TYPE_COLORS[t] } })),
-    }],
-  }, true);
+  trendChart.setOption(buildOverviewTrendOption(overview, data.value.trend.items, trendMode.value), true);
+  typeChart.setOption(buildOverviewTypeOption(overview.type_trend, typeMode.value), true);
   resizeCharts();
 }
 watch([data, trendMode, typeMode], async () => { await nextTick(); renderCharts(); });
