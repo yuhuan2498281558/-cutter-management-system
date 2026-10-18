@@ -4,7 +4,7 @@ const { setup, settle, plain, deferred } = require('./helpers.cjs');
 const meta = { schema_version: 2, generated_at: '2026-09-11T00:00:00Z', summary_status: 'CONFIRMED', scope: { project_name: 'P' } };
 const fields = { dimensions: ['ring_no', 'manufacturer', 'tool_parent_type'].map(value => ({value, label:value, chart_types:['line','matrix']})), metrics: [{ value:'replacement_count',label:'更换数',unit:'把' }, {value:'total_cost',label:'登记费用',unit:'元'}] };
 function result(params) { return { meta, chart_type: params.chart_type, x_field: {value:params.x_field,label:params.x_field}, y_field:{value:'tool_parent_type',label:'刀型'}, metrics:[{value:'replacement_count',label:'更换数',unit:'把'}], categories:['A'], x_categories:['<img>'], y_categories:['滚刀'], series:[{metric:'replacement_count',name:'更换数',unit:'把',data:params.chart_type === 'matrix' ? [[0,0,0],[1,0,null]] : [0]}], rows:[{x:'A',replacement_count:0}], record_count:1 }; }
-function harness(t, request) { const h=setup(t,'pages/CustomAnalysis.vue',{request:request || (async c=>({data:c.url.includes('custom_fields')?fields:result(c.params)}))}); h.state.chartRef.value={}; return h; }
+function harness(t, request, options = {}) { const h=setup(t,'pages/CustomAnalysis.vue',{request:request || (async c=>({data:c.url.includes('custom_fields')?fields:result(c.params)})), ...options}); h.state.chartRef.value={}; return h; }
 test('custom uses categorical bars, time lines and success labels',async t=>{
   const h=harness(t); await h.mount(); assert.equal(h.charts[0].options.at(-1).series[0].type,'line');
   h.state.form.metrics=['replacement_count']; h.state.form.x_field='manufacturer'; await settle();
@@ -38,6 +38,26 @@ test('field failure can be retried and unmount disposes chart',async t=>{
   let fail=true; const h=harness(t,async c=>{if(fail&&c.url.includes('custom_fields')) throw new Error('失败');return {data:c.url.includes('custom_fields')?fields:result(c.params)};});
   await h.mount(); assert.ok(h.state.fieldsError.value); fail=false; await h.state.loadChart(); await settle();
   assert.equal(h.state.ready.value,true); h.unmount(); assert.equal(h.charts[0].disposed,true);
+});
+test('a successful field retry loads the chart without another click', async t => {
+  let fail = true; const h = harness(t, async c => { if (fail && c.url.includes('custom_fields')) throw new Error('失败'); return { data: c.url.includes('custom_fields') ? fields : result(c.params) }; });
+  await h.mount(); assert.ok(h.state.fieldsError.value); assert.ok(h.state.error.value); assert.equal(h.state.ready.value, false);
+  const retry = h.nodes().find(node => node.type?.name === 'el-button' && node.children?.default?.().some(child => String(child.children).includes('重新读取字段')));
+  fail = false; await retry.props.onClick(); await settle(); await settle();
+  assert.equal(h.state.fieldsError.value, ''); assert.equal(h.state.error.value, ''); assert.equal(h.state.ready.value, true);
+  assert.equal(h.requests.filter(r => r.url.includes('custom_chart')).length, 1);
+});
+test('chart size changes keep line options but rebuild width-dependent matrices', async t => {
+  const observers = [];
+  class RecordingResizeObserver { constructor(callback) { this.callback = callback; observers.push(this); } observe() {} disconnect() {} }
+  const h = harness(t, undefined, { globals: { ResizeObserver: RecordingResizeObserver } }); await h.mount();
+  const resizeChart = async () => { observers.at(-1).callback([]); await new Promise(resolve => setTimeout(resolve, 120)); };
+  const chart = h.charts[0]; chart.resizeCount = 0; chart.resize = function () { this.resizeCount += 1; };
+  assert.equal(chart.options.at(-1).series[0].type, 'line'); const lineOptions = chart.options.length;
+  await resizeChart(); assert.equal(chart.options.length, lineOptions); assert.equal(chart.resizeCount, 1);
+  h.state.form.metrics = ['replacement_count']; h.state.form.chart_type = 'matrix'; await settle();
+  const matrixOptions = chart.options.length; chart.width = 320;
+  await resizeChart(); assert.equal(chart.options.length, matrixOptions + 1); assert.ok(chart.options.at(-1).grid.left <= 100);
 });
 test('configuration stays disabled until field choices load', async t => {
   const fieldsPending = deferred();

@@ -68,7 +68,7 @@
       </el-form>
     </el-card>
     <p v-if="validationError" role="alert" class="analysis-note">{{ validationError }}</p>
-    <div v-if="fieldsError" role="alert" class="analysis-note">{{ fieldsError }} <el-button size="small" @click="loadFields">重新读取字段</el-button></div>
+    <div v-if="fieldsError" role="alert" class="analysis-note">{{ fieldsError }} <el-button size="small" @click="retryFields">重新读取字段</el-button></div>
     <ScopeSummary :meta="chartData?.meta" />
     <p v-if="chartData" class="analysis-note">本次聚合 {{ formatNumber(chartData.record_count) }} 条记录，展示 {{ tableRows.length }} 个分组。未记录与零值分别显示；地层分组可能重叠，不能直接加总。</p>
 
@@ -287,6 +287,10 @@ const { data: chartData, loading, error, ready, load: loadChart } = useAnalysisQ
   const res = await getCustomChart(params);
   return requireAnalysisV2<CustomChartData>(res?.data ?? res);
 });
+async function retryFields() {
+  await loadFields();
+  if (!fieldsError.value) loadChart();
+}
 watch(chartData, async () => { await nextTick(); if (alive) renderChart(); });
 
 function ensureChart() {
@@ -334,7 +338,7 @@ function renderMatrixChart(data: CustomChartData) {
 
 let observer: ResizeObserver | null = null;
 let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-function onResize() { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!alive) return; chart?.resize(); renderChart(); }, 80); }
+function onResize() { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!alive) return; chart?.resize(); if (chartData.value?.chart_type === 'matrix') renderChart(); }, 80); }
 watch(chartRef, element => { observer?.disconnect(); if (element && typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(onResize); observer.observe(element); } });
 
 window.addEventListener('resize', onResize);
