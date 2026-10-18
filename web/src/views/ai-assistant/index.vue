@@ -226,6 +226,7 @@ const runStream = async (query: string) => {
   let hasVisibleContent = false;
   let lastFlushTime = 0;
   let hasFinalAnswer = false;
+  let answerRoute = '';
 
   const finishIfReady = () => {
     if (!isCurrent() || !streamFinished || pendingText || flushFrame !== null) return;
@@ -320,6 +321,14 @@ const runStream = async (query: string) => {
       onMemory: (info) => {
         if (!isCurrent()) return;
         memoryInfo.value = { ...memoryInfo.value, ...info };
+      },
+      onMeta: (info) => {
+        if (isCurrent() && info.route) answerRoute = info.route;
+      },
+      onQueryTraces: (traces) => {
+        // 只有模型分析（meta route=llm）的回答显示"本次查询"，规则直答不显示
+        const message = currentMessage();
+        if (isCurrent() && message && answerRoute === 'llm') message.queryTraces = traces;
       },
       onDone: () => {
         if (!isCurrent()) return;

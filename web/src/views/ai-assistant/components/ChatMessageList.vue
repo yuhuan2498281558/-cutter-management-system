@@ -58,6 +58,19 @@
             <span></span>
             <span></span>
           </div>
+          <!-- 模型分析用到的数据：每类一个标签，展开后列出每次查询的类别和范围 -->
+          <div v-if="msg.queryTraces?.length && !msg.streaming" class="query-trace">
+            <div class="query-trace-row">
+              <span class="query-trace-title">本次查询</span>
+              <span v-for="tag in queryTraceTags(msg.queryTraces)" :key="tag" class="query-trace-tag">{{ tag }}</span>
+              <button type="button" class="meta-btn" @click="toggleQueryTrace(msg.id)">
+                {{ expandedTraces.includes(msg.id) ? '收起' : '展开' }}
+              </button>
+            </div>
+            <ul v-if="expandedTraces.includes(msg.id)" class="query-trace-list">
+              <li v-for="(trace, traceIndex) in msg.queryTraces" :key="traceIndex">{{ describeQueryTrace(trace) }}</li>
+            </ul>
+          </div>
           <div class="message-meta">
             <span v-if="msg.streaming" class="message-time generating">正在生成 · {{ elapsedSec }}s</span>
             <span v-else-if="msg.time" class="message-time">{{ msg.time }}</span>
@@ -109,6 +122,7 @@ import { ElMessage } from 'element-plus';
 import { ChatDotRound, User, DocumentCopy, ArrowDown, RefreshRight, Loading } from '@element-plus/icons-vue';
 import { Message } from '../types';
 import { quickQuestionGroups } from '../constants';
+import { describeQueryTrace, queryTraceTags } from '../queryTrace';
 import AnalysisMessage from './AnalysisMessage.vue';
 
 const props = defineProps<{
@@ -146,6 +160,14 @@ const welcomeChips = WELCOME_REFS
 
 const containerRef = ref<HTMLElement>();
 const isNearBottom = ref(true);
+
+// 已展开"本次查询"明细的消息
+const expandedTraces = ref<string[]>([]);
+const toggleQueryTrace = (id: string) => {
+  expandedTraces.value = expandedTraces.value.includes(id)
+    ? expandedTraces.value.filter((item) => item !== id)
+    : [...expandedTraces.value, id];
+};
 
 // 生成用时计时器：模型路径可能耗时较久，给用户"仍在正常工作"的反馈
 const elapsedSec = ref(0);
@@ -382,6 +404,36 @@ defineExpose({
       align-items: center;
       gap: 8px;
       padding: 0 4px;
+    }
+
+    .query-trace {
+      padding: 0 4px;
+      font-size: 12px;
+      color: #64748b;
+
+      .query-trace-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .query-trace-title {
+        color: #94a3b8;
+      }
+
+      .query-trace-tag {
+        padding: 1px 8px;
+        border-radius: 3px;
+        background: #f1f5f9;
+        line-height: 18px;
+      }
+
+      .query-trace-list {
+        margin: 4px 0 0;
+        padding-left: 18px;
+        line-height: 1.7;
+      }
     }
 
     .message-time {

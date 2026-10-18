@@ -1,3 +1,7 @@
+import type { QueryTrace } from '/@/api/ai-assistant';
+
+export type { QueryTrace };
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -6,6 +10,8 @@ export interface Message {
   streaming?: boolean;
   rawError?: boolean;
   aborted?: boolean;
+  // 模型路径回答用到的数据查询，显示在回答下方的"本次查询"
+  queryTraces?: QueryTrace[];
 }
 
 export interface AnalysisSection {

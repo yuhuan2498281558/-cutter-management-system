@@ -298,7 +298,8 @@ const sectionKind = (title: string): AnalysisSection['kind'] => {
   if (title.includes('结论')) return 'conclusion';
   if (title.includes('依据') || title.includes('发现')) return 'evidence';
   if (title.includes('注意')) return 'warning';
-  if (title.includes('建议')) return 'suggestion';
+  // "待复核线索"和"建议"用同一种样式
+  if (title.includes('建议') || title.includes('待复核')) return 'suggestion';
   return 'default';
 };
 

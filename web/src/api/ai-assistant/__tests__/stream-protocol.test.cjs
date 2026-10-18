@@ -107,3 +107,30 @@ test('authoritative answer is delivered separately from transient chunks before 
   h.callbacks.onAnswer = value => h.events.push(['answer', value]);
   await h.run(); assert.deepEqual(h.events, [['chunk', '临时分析'], ['answer', '最终结论'], ['done']]);
 });
+
+test('meta route and query traces from done reach the page before done, without tool names or arguments', async () => {
+  const toolCalls = [
+    { tool: 'query_tool_change_data', args: { ring_range: [388, 487] }, source_label: '换刀与磨损', scope: { ring_range: [388, 487], record_count: 359 } },
+    { tool: 'query_data_catalog', args: {}, source_label: '可查数据', scope: null },
+    { tool: 'legacy_tool', args: {} },
+    { tool: 'odd_scope', source_label: '地层', scope: [1, 2] },
+  ];
+  const h = setup({ payload: `data: {"type":"meta","route":"llm","route_label":"模型分析"}\n\ndata: ${JSON.stringify({ type: 'done', tool_calls: toolCalls })}\n\n` });
+  h.callbacks.onMeta = value => h.events.push(['meta', value]);
+  h.callbacks.onQueryTraces = value => h.events.push(['traces', value]);
+  await h.run();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.events)), [
+    ['meta', { route: 'llm' }],
+    ['traces', [{ sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487], record_count: 359 } }, { sourceLabel: '可查数据', scope: null }, { sourceLabel: '地层', scope: null }]],
+    ['done'],
+  ]);
+});
+
+test('done without tool calls, or with an empty list, reports no query traces', async () => {
+  for (const done of ['{"type":"done"}', '{"type":"done","tool_calls":[]}', '{"type":"done","tool_calls":[{"tool":"old","args":{}}]}']) {
+    const h = setup({ payload: `data: ${done}\n\n` });
+    h.callbacks.onQueryTraces = value => h.events.push(['traces', value]);
+    await h.run();
+    assert.deepEqual(h.events, [['done']]);
+  }
+});

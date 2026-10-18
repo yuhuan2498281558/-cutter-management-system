@@ -7,11 +7,18 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const vue = require('vue');
 
+function loadQueryTrace() {
+  const context = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../queryTrace.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  return context.exports;
+}
+
 function loadComponent(file, props, exports, environment = {}) {
   const context = { exports: {}, defineProps: () => props, defineEmits: () => () => {}, defineExpose() {}, ...environment };
   context.require = name => {
     if (name === 'vue') return { ...vue, onUnmounted() {} };
     if (name === '../constants') return { SECTION_TITLES: ['结论', '关键依据', '注意事项'], quickQuestionGroups: [] };
+    if (name === '../queryTrace') return loadQueryTrace();
     if (name === 'element-plus') return { ElMessage: { success() {}, error() {} } };
     if (name === '@element-plus/icons-vue' || name.endsWith('.vue')) return {};
     throw new Error(`Unexpected import: ${name}`);
@@ -217,9 +224,10 @@ test('the message list marks stopped and failed answers as cut off', () => {
   assert.equal(bindings.truncated, 'msg.aborted || msg.rawError');
 });
 
-async function renderMessageList(props) {
+async function renderMessageList(props, prepare = () => {}) {
   const { renderToString } = require('@vue/server-renderer');
-  const bindings = loadComponent('ChatMessageList.vue', props, 'welcomeChips, containerRef, handleScroll, elapsedSec, canRetry, handleCopy, isNearBottom, scrollToBottom');
+  const bindings = loadComponent('ChatMessageList.vue', props, 'welcomeChips, containerRef, handleScroll, elapsedSec, canRetry, handleCopy, isNearBottom, scrollToBottom, expandedTraces, toggleQueryTrace, describeQueryTrace, queryTraceTags');
+  prepare(bindings);
   const template = require('@vue/compiler-sfc').parse(fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8')).descriptor.template.content;
   const app = vue.createSSRApp({ template, setup: () => ({ ...props, ...bindings }) });
   for (const name of ['ElIcon', 'ElButton', 'AnalysisMessage', 'ChatDotRound', 'User', 'DocumentCopy', 'ArrowDown', 'RefreshRight', 'Loading']) {
@@ -238,4 +246,33 @@ test('the first history load shows a loading state instead of the welcome shortc
   const older = await renderMessageList({ messages: [{ id: 'm1', role: 'user', content: '旧问题', time: '' }], historyLoading: true, hasMoreHistory: true });
   assert.equal(older.includes('正在加载历史对话'), false, 'loading earlier pages keeps the conversation on screen');
   assert.match(older, /旧问题/);
+});
+
+test('query traces are summarised per data type with the first ring range found and the record count', () => {
+  const { describeQueryTrace, queryTraceTags } = loadQueryTrace();
+  const traces = [
+    { sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487], effective_ring_range: [390, 480], record_count: 359 } },
+    { sourceLabel: '换刀与磨损', scope: { ring_range: [1, 50], record_count: 12 } },
+    { sourceLabel: '开仓记录', scope: { ring_range: null, effective_ring_range: [100, 100], observation_count: 12 } },
+    { sourceLabel: '掘进参数', scope: { ring_min: '20', ring_max: 80, record_count: 0 } },
+    { sourceLabel: '地层', scope: null },
+    { sourceLabel: '可查数据', scope: { project_id: 1, tool_models_scope: '共用资料库' } },
+    { sourceLabel: '地层', scope: { ring_range: [100, 300] } },
+  ];
+  assert.deepEqual(Array.from(queryTraceTags(traces)), ['换刀与磨损 · 第388–487环 · 359条', '开仓记录 · 第100环 · 12条', '掘进参数 · 第20–80环 · 0条', '地层 · 第100–300环', '可查数据']);
+  assert.deepEqual(traces.map(describeQueryTrace), ['换刀与磨损 · 第388–487环 · 359条', '换刀与磨损 · 第1–50环 · 12条', '开仓记录 · 第100环 · 12条', '掘进参数 · 第20–80环 · 0条', '地层', '可查数据', '地层 · 第100–300环']);
+});
+
+test('the 本次查询 row appears under finished answers that carry traces and expands to one line per query', async () => {
+  const traced = { id: 'a1', role: 'assistant', content: '结论', time: '', queryTraces: [{ sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487], record_count: 359 } }, { sourceLabel: '换刀与磨损', scope: { ring_range: [1, 50] } }] };
+  const collapsed = await renderMessageList({ messages: [traced] });
+  assert.match(collapsed, /<span class="query-trace-title">本次查询<\/span>/);
+  assert.equal(collapsed.match(/class="query-trace-tag"/g).length, 1);
+  assert.match(collapsed, /<span class="query-trace-tag">换刀与磨损 · 第388–487环 · 359条<\/span>/);
+  assert.equal(collapsed.includes('query-trace-list'), false);
+  const expanded = await renderMessageList({ messages: [traced] }, bindings => bindings.toggleQueryTrace('a1'));
+  assert.match(expanded, /<li>换刀与磨损 · 第388–487环 · 359条<\/li><li>换刀与磨损 · 第1–50环<\/li>/);
+  for (const message of [{ ...traced, queryTraces: [] }, { ...traced, queryTraces: undefined }, { ...traced, streaming: true }]) {
+    assert.equal((await renderMessageList({ messages: [message] })).includes('本次查询'), false);
+  }
 });

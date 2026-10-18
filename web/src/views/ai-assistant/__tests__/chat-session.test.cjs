@@ -209,3 +209,23 @@ test('data types are sent as focus_sources only on the model path and only when 
   h.sendQuery('不限定数据类型'); h.streams[2].callbacks.onDone();
   assert.equal('focus_sources' in h.streams[2].data, false);
 });
+
+test('query traces are kept only on model-analysis answers', () => {
+  const traces = [{ sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487] } }];
+  for (const [route, expected] of [['llm', traces], ['rule', undefined], [undefined, undefined]]) {
+    const h = setup(); h.sendQuery('问题'); const callbacks = h.streams[0].callbacks;
+    if (route) callbacks.onMeta({ route });
+    callbacks.onChunk('回答'); callbacks.onQueryTraces(traces); callbacks.onDone();
+    for (let i = 0; i < 100 && h.frames.size; i++) h.frame();
+    assert.deepEqual(h.messages.value[1].queryTraces, expected, String(route));
+    assert.equal(h.loading.value, false);
+  }
+});
+
+test('late meta or traces from a stopped stream do not touch the next answer', () => {
+  const h = setup(); h.sendQuery('问题1'); const old = h.streams[0].callbacks;
+  h.handleAbort(); h.sendQuery('问题2');
+  old.onMeta({ route: 'llm' }); old.onQueryTraces([{ sourceLabel: '地层', scope: null }]);
+  assert.equal(h.messages.value[1].queryTraces, undefined);
+  assert.equal(h.messages.value[3].queryTraces, undefined);
+});

@@ -48,12 +48,33 @@ aiService.interceptors.request.use(
 	}
 );
 
+// 一次数据查询：类别名和查询范围（scope 字段不固定，可能为 null）
+export interface QueryTrace {
+	sourceLabel: string;
+	scope: Record<string, unknown> | null;
+}
+
 export interface ChatStreamCallbacks {
 	onChunk: (text: string) => void;
 	onDone: () => void;
 	onError: (msg: string) => void;
 	onMemory?: (info: any) => void;
 	onAnswer?: (text: string) => void;
+	// 回答走的路径：route 为 'rule'（规则直答）或 'llm'（模型分析）
+	onMeta?: (info: { route?: string }) => void;
+	// done 事件里的数据查询记录，在 onDone 之前回调；没有记录时不回调
+	onQueryTraces?: (traces: QueryTrace[]) => void;
+}
+
+// 只保留类别名和查询范围，工具名和参数原文不交给页面
+function toQueryTraces(calls: unknown): QueryTrace[] {
+	if (!Array.isArray(calls)) return [];
+	return calls
+		.filter((call) => typeof call?.source_label === 'string' && call.source_label.trim())
+		.map((call) => ({
+			sourceLabel: call.source_label.trim(),
+			scope: call.scope && typeof call.scope === 'object' && !Array.isArray(call.scope) ? call.scope : null,
+		}));
 }
 
 export interface ChatRequest {
@@ -135,8 +156,12 @@ export function useAiAssistantApi() {
 							activeSlots: evt.active_slots,
 							contextMode: evt.context_mode,
 						});
+					} else if (evt.type === 'meta') {
+						callbacks.onMeta?.({ route: typeof evt.route === 'string' ? evt.route : undefined });
 					} else if (evt.type === 'done') {
 						finished = true;
+						const traces = toQueryTraces(evt.tool_calls);
+						if (traces.length) callbacks.onQueryTraces?.(traces);
 						callbacks.onDone();
 					} else if (evt.type === 'error') {
 						finished = true;

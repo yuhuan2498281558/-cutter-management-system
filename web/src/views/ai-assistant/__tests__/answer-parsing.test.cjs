@@ -127,3 +127,12 @@ test('note paragraphs keep their muted style and headings keep their level', asy
   assert.match(html, /<p class="(?=[^"]*\banswer-note\b)(?=[^"]*\bmarkdown-paragraph\b)[^"]*">统计口径：已确认更换<\/p>/);
   assert.match(html, /<p class="markdown-paragraph">正文说明<\/p>/);
 });
+
+test('待复核线索 sections share the 建议 style and 数据范围和限制 is recognised as a section', () => {
+  const h = loadParser();
+  assert.deepEqual(plain(h.parseAnalysisMessage('结论：S1L 异常集中\n待复核线索\n• 复核第120环开仓记录\n数据范围和限制：只覆盖第100–300环')).sections, [
+    { title: '结论', kind: 'conclusion', items: ['S1L 异常集中'] },
+    { title: '待复核线索', kind: 'suggestion', items: ['复核第120环开仓记录'] },
+    { title: '数据范围和限制', kind: 'default', items: ['只覆盖第100–300环'] },
+  ]);
+});

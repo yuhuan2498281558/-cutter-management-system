@@ -24,7 +24,7 @@ function loadMessageList(constants) {
     if (name === 'vue') return { ...vue, onUnmounted() {} };
     if (name === '../constants') return constants;
     if (name === 'element-plus') return { ElMessage: { success() {}, error() {} } };
-    if (name === '@element-plus/icons-vue' || name.endsWith('.vue')) return {};
+    if (name === '@element-plus/icons-vue' || name === '../queryTrace' || name.endsWith('.vue')) return {};
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.component = { welcomeChips };';
@@ -32,7 +32,7 @@ function loadMessageList(constants) {
   return context.exports.component;
 }
 
-const SECTION_TITLES = ['结论', '关键依据', '数据依据', '关键发现', '注意事项', '注意事项/建议', '建议'];
+const SECTION_TITLES = ['结论', '关键依据', '数据依据', '关键发现', '注意事项', '注意事项/建议', '建议', '待复核线索', '数据范围和限制'];
 
 const FOCUS_SOURCES = [
   { value: 'tool_change', label: '换刀与磨损' },

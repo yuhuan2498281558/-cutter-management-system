@@ -8,6 +8,8 @@ export const SECTION_TITLES = [
   '注意事项',
   '注意事项/建议',
   '建议',
+  '待复核线索',
+  '数据范围和限制',
 ];
 
 // 模型路径可选的数据类型；value 作为请求字段 focus_sources 发给后端
