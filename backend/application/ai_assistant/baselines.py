@@ -17,12 +17,16 @@ import logging
 import os
 import re
 import time
+import sqlparse
+from sqlparse.sql import Identifier, IdentifierList, Parenthesis, TokenList
+from sqlparse.tokens import Keyword
 
 from django.apps import apps
-from django.db import connection, transaction
+from django.db import connection
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .llm_provider import create_chat_model
+from .evaluation.current_data_suite import readonly_database
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,39 @@ _ALLOWED_TABLES = {
     "shield_new_tool_record",
     "shield_old_tool_record",
 }
+
+_DATA_CONTRACT = """有效刀位共122个：DISC为1–79、80A、80B、Y1、Y3、Y5，SCRAPER为S1L–S19L及S1R–S19R，编号去首尾空白、大写并去数字前导零，刀型须匹配。
+现场观测记录是有效刀位上is_checked或is_replaced为真的明细。
+开仓summary_status区分CONFIRMED和DRAFT，只有已确认汇总使用checked_tool_count及replaced_tool_count。
+旧刀inspection_status区分PENDING_VENDOR_FEEDBACK（待反馈）、CONFIRMED（已确认）、CLOSED（已归档），已报废只计后两种状态且disposition为SCRAP。
+地层longitudinal_type_ratios为纵断面六类面积，stratum_type_ratios为横断面岩性占比，两者不同于历史标签stratum_type_codes。
+成本库cost_type区分NEW_TOOL新刀价和REPAIR维修价，共用报价不是项目实际支出，项目金额称登记金额。"""
+
+
+def _check_tables(tokens):
+    source = False
+    for token in tokens.tokens:
+        if token.is_whitespace or token.ttype in sqlparse.tokens.Comment:
+            continue
+        if token.ttype in Keyword and (token.normalized == 'FROM' or 'JOIN' in token.normalized):
+            source = True
+            continue
+        if source:
+            identifiers = list(token.get_identifiers()) if isinstance(token, IdentifierList) else [token]
+            for identifier in identifiers:
+                subquery = isinstance(identifier, Parenthesis) or (
+                    isinstance(identifier, Identifier) and any(isinstance(t, Parenthesis) for t in identifier.tokens))
+                if not subquery:
+                    if not isinstance(identifier, Identifier) or identifier.get_real_name() not in _ALLOWED_TABLES:
+                        raise ValueError('SQL引用了名单外的表')
+                    if identifier.get_parent_name() not in (None, 'public'):
+                        raise ValueError('SQL引用了名单外的schema')
+                elif not any(t.ttype is sqlparse.tokens.DML and t.normalized == 'SELECT'
+                             for t in identifier.flatten()):
+                    raise ValueError('FROM只允许业务表或SELECT子查询')
+            source = False
+        if isinstance(token, TokenList):
+            _check_tables(token)
 
 
 def _usage_callback():
@@ -119,7 +156,7 @@ def build_schema_prompt() -> str:
                 desc += f"->{field.related_model._meta.db_table}.id"
             columns.append(desc)
         lines.append(f"TABLE {table}({', '.join(columns)})")
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n" + _DATA_CONTRACT
 
 
 SQL_SYSTEM_TEMPLATE = """你是 SQL 生成器。根据下面的 PostgreSQL schema，把用户的中文问题翻译成一条 SELECT 语句。
@@ -134,7 +171,7 @@ SQL_SYSTEM_TEMPLATE = """你是 SQL 生成器。根据下面的 PostgreSQL schem
 3. 默认限定项目：shield_project_info.project_id = '{project_id}'。
 4. shield_stratum_basic_info.stratum_type_codes 是逗号分隔的多值字段。
 5. 结果行数不要超过 200。
-"""
+""" + "\n" + _DATA_CONTRACT
 
 
 class TextToSQLBaseline:
@@ -171,19 +208,18 @@ class TextToSQLBaseline:
             raise ValueError("不允许多语句")
         if _FORBIDDEN.search(sql):
             raise ValueError("包含写操作关键字")
+        _check_tables(sqlparse.parse(sql)[0])
         if " limit " not in sql.lower():
             sql += " LIMIT 200"
         return sql
 
     @staticmethod
     def _execute(sql: str):
-        # 只读执行：整个事务强制回滚，即使护栏被绕过也不会留下副作用
-        with transaction.atomic():
+        with readonly_database():
             with connection.cursor() as cursor:
                 cursor.execute(sql)
                 columns = [c[0] for c in cursor.description]
                 rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
-            transaction.set_rollback(True)
         return rows
 
     def chat(self, user_query: str, context: dict = None) -> dict:

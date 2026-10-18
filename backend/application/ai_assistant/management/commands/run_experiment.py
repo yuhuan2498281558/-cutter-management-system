@@ -178,11 +178,12 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _ground_truth(self, unit):
+        from application.ai_assistant.evaluation.current_data_suite import readonly_database
         sql = unit.get("gt_sql")
         if not sql:
             return None, ""
         try:
-            with connection.cursor() as cursor:
+            with readonly_database(), connection.cursor() as cursor:
                 cursor.execute(sql)
                 columns = [c[0] for c in cursor.description]
                 return [dict(zip(columns, r)) for r in cursor.fetchall()], ""

@@ -2,8 +2,9 @@ import io
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -11,6 +12,78 @@ from django.test import SimpleTestCase
 
 
 class EvaluationCommandTests(SimpleTestCase):
+    def test_sql_guard_checks_join_comma_and_nested_tables_without_model(self):
+        from application.ai_assistant.baselines import TextToSQLBaseline
+        baseline = object.__new__(TextToSQLBaseline)
+        allowed = 'shield_project_info'
+        self.assertIn('LIMIT 200', baseline._guard(f'SELECT * FROM {allowed}'))
+        self.assertIn('LIMIT 200', baseline._guard(f'SELECT * FROM (SELECT * FROM public."{allowed}") p'))
+        for sql in ('SELECT * FROM auth_user',
+                    f'SELECT * FROM {allowed} p JOIN auth_user u ON p.id=u.id',
+                    f'SELECT * FROM {allowed} p, auth_user u',
+                    'SELECT * FROM (SELECT * FROM auth_user) hidden',
+                    f'SELECT * FROM {allowed} WHERE EXISTS (SELECT 1 FROM auth_user)',
+                    f'SELECT * FROM private.{allowed}',
+                    'SELECT * FROM query_to_xml(\'SELECT * FROM auth_user\', true, false, \'\')'):
+            with self.subTest(sql=sql), self.assertRaises(ValueError):
+                baseline._guard(sql)
+
+    def test_ground_truth_and_baseline_execute_inside_readonly_guard(self):
+        from application.ai_assistant.baselines import TextToSQLBaseline
+        from application.ai_assistant.management.commands.run_experiment import Command
+        active = []
+        @contextmanager
+        def readonly():
+            active.append(True)
+            try:
+                yield
+            finally:
+                active.pop()
+        cursor = MagicMock()
+        cursor.description = [('value',)]
+        cursor.fetchall.return_value = [(2,)]
+        cursor.execute.side_effect = lambda *_: self.assertTrue(active)
+        for module, run in (
+            ('application.ai_assistant.baselines', lambda: TextToSQLBaseline._execute('SELECT 2')),
+            ('application.ai_assistant.management.commands.run_experiment', lambda: Command()._ground_truth({'gt_sql': 'SELECT 2'})),
+        ):
+            target = (module + '.readonly_database' if module.endswith('baselines') else
+                      'application.ai_assistant.evaluation.current_data_suite.readonly_database')
+            with patch(target, readonly), patch(module + '.connection') as connection:
+                connection.cursor.return_value.__enter__.return_value = cursor
+                self.assertTrue(run())
+        self.assertFalse(active)
+
+    def test_verify_requires_explicit_snapshot_path(self):
+        with self.assertRaisesMessage(CommandError, '--output'):
+            call_command('verify_ground_truth', stdout=io.StringIO())
+
+    def test_verify_executes_bank_sql_inside_readonly_transaction(self):
+        module = 'application.ai_assistant.management.commands.verify_ground_truth'
+        active = []
+        @contextmanager
+        def readonly():
+            active.append(True)
+            try:
+                yield
+            finally:
+                active.pop()
+        cursor = MagicMock(description=[('count',)])
+        cursor.fetchall.return_value = [(2,)]
+        cursor.execute.side_effect = lambda *_: self.assertTrue(active)
+        with tempfile.TemporaryDirectory(prefix='ai-gt-test-') as directory:
+            bank, output = os.path.join(directory, 'bank.json'), os.path.join(directory, 'snapshot.json')
+            with open(bank, 'w', encoding='utf-8') as target:
+                json.dump([{'id': 'read_only', 'gt_sql': 'SELECT 2 AS count'}], target)
+            with patch(module + '.readonly_database', readonly), patch(module + '.connection') as connection, patch(
+                module + '.Command._fingerprint', return_value=('fixture', {})
+            ):
+                connection.cursor.return_value.__enter__.return_value = cursor
+                call_command('verify_ground_truth', bank=bank, output=output, stdout=io.StringIO())
+            with open(output, encoding='utf-8') as source:
+                self.assertEqual(json.load(source)['ground_truth']['read_only'], [{'count': 2}])
+        self.assertFalse(active)
+
     def test_commands_require_project_before_any_assistant_call(self):
         for command in ("benchmark_ai_assistant", "regression_ai_assistant"):
             with self.subTest(command=command), patch(
