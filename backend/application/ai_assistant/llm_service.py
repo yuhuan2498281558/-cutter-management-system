@@ -1813,7 +1813,7 @@ class ToolAssistant:
 
     def _is_opening_query(self, query: str) -> bool:
         has_opening = "开仓" in query or ("开" in query and "仓" in query)
-        return has_opening and any(kw in query for kw in ("最近", "记录", "平均", "间隔", "多少", "时长", "情况", "异常", "已确认", "未确认", "草稿"))
+        return has_opening and any(kw in query for kw in ("最近", "记录", "平均", "间隔", "多少", "几次", "时长", "情况", "异常", "已确认", "未确认", "草稿"))
 
     def _is_opening_stratum_change_query(self, query: str) -> bool:
         return "开仓" in query and "地层" in query and any(
@@ -1828,7 +1828,7 @@ class ToolAssistant:
 
     def _is_tool_change_summary_query(self, query: str) -> bool:
         return any(kw in query for kw in ("换刀", "更换", "磨损", "损坏", "撕裂刀", "滚刀", "刮刀")) and any(
-            kw in query for kw in ("统计", "情况", "数据", "多少", "分布", "汇总", "更换率")
+            kw in query for kw in ("统计", "情况", "数据", "多少", "分布", "汇总", "更换率", "观测", "有没有")
         )
 
     def _is_stratum_distribution_query(self, query: str) -> bool:
@@ -2006,6 +2006,10 @@ class ToolAssistant:
     def _answer_table(headers, rows) -> list[str]:
         def cell(value):
             text = '暂无' if value is None or value == '' else str(value)
+            if isinstance(value, float) and text not in ('nan', 'inf', '-inf'):
+                # 小数最多保留 3 位，去掉 11918.614430000001 这类浮点尾数；10.0 仍写成 10.0。
+                text = f"{value:.3f}".rstrip('0')
+                text += '0' if text.endswith('.') else ''
             # 保持表格边界；前端解码这些字面转义后仍先做 HTML 转义。
             return text.replace('\\', '\\\\').replace('|', '\\|').replace('\r', ' ').replace('\n', ' ')
         return [
@@ -2076,7 +2080,8 @@ class ToolAssistant:
             lines.append("按已分类异常率从高到低排列；没有分类数据的记录列在末尾，异常率为暂无。")
         status_counts = data.get('summary_status_counts')
         if status_counts:
-            lines.append(f"汇总状态：已确认 {display(status_counts.get('CONFIRMED'))} 次，草稿 {display(status_counts.get('DRAFT'))} 次。")
+            # 按状态分组计数，没有出现的状态就是 0 次
+            lines.append(f"汇总状态：已确认 {display(status_counts.get('CONFIRMED', 0))} 次，草稿 {display(status_counts.get('DRAFT', 0))} 次。")
 
         classified_records = [item for item in records if item.get('abnormal_rate') is not None]
         counted_records = [item for item in records if item.get('tool_change_replaced') is not None]

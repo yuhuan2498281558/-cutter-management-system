@@ -69,3 +69,7 @@ class RulePresentationTests(SimpleTestCase):
     def test_table_cell_escapes_delimiters_without_losing_zero(self):
         rows = self.assistant._answer_table(['刀位', '次数'], [['A|B\\C\n备注', 0]])
         self.assertEqual(rows[-1], '| A\\|B\\\\C 备注 | 0 |')
+
+    def test_table_cell_rounds_float_tails(self):
+        rows = self.assistant._answer_table(['参数', '平均值', '最大值'], [['总推力', 11918.614430000001, 12787.1351]])
+        self.assertEqual(rows[-1], '| 总推力 | 11918.614 | 12787.135 |')

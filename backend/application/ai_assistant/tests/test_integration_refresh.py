@@ -216,6 +216,16 @@ class IntegrationRoutingTests(SimpleTestCase):
             self.ask('只看草稿状态的开仓记录')
             self.assertEqual(json.loads(query.call_args.args[0])['summary_status'], 'DRAFT')
 
+    def test_how_many_openings_colloquial_goes_to_opening(self):
+        with patch.object(service, 'query_opening_records', return_value='{}'):
+            self.assertEqual(self.ask('开了几次仓？')['rule_branch'], 'opening')
+
+    def test_ripper_observation_question_stays_on_rules(self):
+        # 模型工具不接受 RIPPER，交给模型会因参数校验失败而整段报错；规则查询直接返回 0 条。
+        with patch.object(service, 'query_tool_change_data', return_value='{}') as query:
+            self.assertEqual(self.ask('当前有效刀位范围内有没有撕裂刀刀型的现场观测记录')['rule_branch'], 'tool_change_summary')
+            self.assertEqual(json.loads(query.call_args.args[0])['tool_type'], 'RIPPER')
+
     def test_lifecycle_basis_and_missing_steps(self):
         data = {'results': [{'query': 'UID-1', 'missing_steps': ['厂家尚未确认'], 'service_segments': [
             {'install_ring': 10, 'removal_ring': 20, 'removal_basis': basis, 'service_rings': 10}

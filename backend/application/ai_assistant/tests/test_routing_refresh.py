@@ -260,6 +260,9 @@ class RoutingRefreshTests(SimpleTestCase):
                 summary_missing_fields=['tool_change_duration'], count_difference={'checked': 2, 'replaced': -1})]}))
         for text in ('已确认 1 次，草稿 0 次', '汇总确认时间 2026-01-01', '汇总缺少换刀时长', '检查 2 把，更换 -1 把'):
             self.assertIn(text, answer)
+        answer = self.assistant._format_opening_answer(_json({'total_openings': 15,
+            'summary_status_counts': {'CONFIRMED': 15}, 'recent_records': [_opening()]}))
+        self.assertIn('已确认 15 次，草稿 0 次', answer)
 
     def test_thirty_positions_and_all_positions_are_not_truncated(self):
         positions = [{'cutter_position_no': str(i), 'replacement_count': i, 'tool_parent_type': 'DISC',
