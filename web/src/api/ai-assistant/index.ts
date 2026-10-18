@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { Session } from '/@/utils/storage';
+import { redirectToLogin } from '/@/utils/service';
 
 // 创建专用的axios实例，不使用全局拦截器
 const aiService = axios.create({
@@ -118,6 +119,8 @@ export function useAiAssistantApi() {
 					signal,
 				});
 				if (!res.ok) {
+					// 登录过期时和其他页面一样：清登录态、跳登录页
+					if (res.status === 401) redirectToLogin('登录授权过期，请重新登录');
 					throw new Error(await httpErrorMessage(res));
 				}
 				if (res.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream') {

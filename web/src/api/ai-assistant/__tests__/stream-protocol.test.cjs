@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8', status = 200, fetchImpl, response } = {}) {
-  const requests = [];
+  const requests = [], redirects = [];
   const context = { exports: {}, TextDecoder, fetch: async (url, options) => {
     requests.push({ url, options });
     return fetchImpl ? fetchImpl(url, options) : new Response(payload, { status, headers: { 'Content-Type': contentType } });
@@ -20,6 +20,7 @@ function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8',
       post: async () => ({ data: response || { code: 2000, data: {} } }),
     }) };
     if (name === '/@/utils/storage') return { Session: { get: () => 'test-token' } };
+    if (name === '/@/utils/service') return { redirectToLogin: message => redirects.push(message) };
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(path.resolve(__dirname, '../index.ts'), 'utf8').replaceAll('import.meta.env.VITE_API_URL', "''");
@@ -27,7 +28,7 @@ function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8',
   const api = context.exports.useAiAssistantApi();
   const events = [];
   const callbacks = { onChunk: value => events.push(['chunk', value]), onDone: () => events.push(['done']), onError: value => events.push(['error', value]), onMemory: value => events.push(['memory', value]) };
-  return { api, requests, events, callbacks, run: signal => api.chatStream({ query: '当前项目换刀汇总', route_mode: 'rule' }, callbacks, signal) };
+  return { api, requests, redirects, events, callbacks, run: signal => api.chatStream({ query: '当前项目换刀汇总', route_mode: 'rule' }, callbacks, signal) };
 }
 
 test('preserves POST/JWT/query/mode and parses split UTF-8, CRLF, comments, memory and an unterminated final done event', async () => {
@@ -132,5 +133,17 @@ test('done without tool calls, or with an empty list, reports no query traces', 
     h.callbacks.onQueryTraces = value => h.events.push(['traces', value]);
     await h.run();
     assert.deepEqual(h.events, [['done']]);
+  }
+});
+
+test('an expired login on the stream uses the shared redirect to the login page, other errors do not', async () => {
+  const expired = setup({ status: 401, contentType: 'application/json', payload: JSON.stringify({ code: 4010, msg: '未授权' }) });
+  await expired.run();
+  assert.deepEqual(expired.redirects, ['登录授权过期，请重新登录']);
+  assert.deepEqual(expired.events, [['error', '未授权（401）']]);
+  for (const status of [400, 403, 500]) {
+    const other = setup({ status });
+    await other.run();
+    assert.deepEqual(other.redirects, [], String(status));
   }
 });
