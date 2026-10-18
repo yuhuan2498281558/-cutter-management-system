@@ -1789,6 +1789,16 @@ def query_cutter_position_stats(params_str: str) -> str:
             )
 
         total = query.count()
+        # 异常合计直接由全部筛选记录计算，避免模型把分段数相加出错。
+        observation_wear = list(query.values('wear_condition').annotate(count=Count('id')).order_by())
+        buckets = classify_wear_counts(observation_wear, count_key='count')
+        classified = buckets['normal'] + buckets['abnormal']
+        summary = {
+            'total_records': total,
+            'abnormal_observation_count': buckets['abnormal'],
+            'classified_observation_count': classified,
+            'abnormal_observation_rate': round(buckets['abnormal'] / classified * 100, 1) if classified else None,
+        }
         # 按刀位统计更换次数和磨损分布
         position_stats = list(
             query.values('_ai_position')
@@ -1836,7 +1846,7 @@ def query_cutter_position_stats(params_str: str) -> str:
             "truncated": len(position_stats) < matched_count, "sort_by": sort_by,
             "scope": {**params, 'cutter_position_no': position or None, 'top_n': top_n, 'observation_count': total},
             "note": "更换次数反映所选范围的记录数量，不等于磨损严重程度；wear_distribution 仅统计更换行，observation_wear_distribution 统计全部现场观测记录。",
-            **_analysis_payload(summary={'total_records': total, 'position_count': matched_count},
+            **_analysis_payload(summary={**summary, 'position_count': matched_count},
                                 facts=[f'共查询到 {total} 条现场观测记录，匹配 {matched_count} 个刀位，返回 {len(position_stats)} 个']),
         }
         if not total:
@@ -1893,11 +1903,18 @@ def query_tool_change_trend(params_str: str) -> str:
         records = list(
             query.values('ring_int', 'is_replaced', 'wear_condition')
         )
+        # 异常合计直接由全部筛选记录计算，避免模型把分段数相加出错。
+        buckets = classify_wear_counts(records)
+        classified = buckets['normal'] + buckets['abnormal']
         summary = {
             "segment_count": 0,
             "nonempty_segment_count": 0,
             "total_records": len(records),
             "replaced_count": sum(1 for row in records if row['is_replaced']),
+            "normal_count": buckets['normal'],
+            "abnormal_count": buckets['abnormal'],
+            "unknown_count": buckets['unknown'],
+            "abnormal_rate": f"{buckets['abnormal']/classified*100:.1f}%" if classified else None,
             "requested_ring_range": ring_range,
             "effective_ring_range": None,
             "project_id": project_id,

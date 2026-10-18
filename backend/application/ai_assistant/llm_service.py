@@ -1841,9 +1841,16 @@ class ToolAssistant:
         ))
 
     def _is_tunneling_trend_query(self, query: str) -> bool:
-        return self._is_tunneling_query(query) and any(kw in query for kw in (
-            "趋势", "变化", "阶段", "分段", "上升", "下降", "波动", "分析", "情况", "怎么样"
-        ))
+        if not self._is_tunneling_query(query):
+            return False
+        if (any(kw in query for kw in ("趋势", "变化", "阶段", "上升", "下降", "波动"))
+                or self._extract_interval(query, 0)
+                or re.search(rf"(?:按|每)\s*(?:{_QUERY_NUMBER}\s*环|环号|环段|区间)", query)):
+            return True
+        # 仅出现"分段"不算要看变化：库里的掘进记录本身就是分段均值。
+        if any(kw in query for kw in ("最大", "最小", "平均", "均值", "多少")):
+            return False
+        return any(kw in query for kw in ("分析", "情况", "怎么样"))
 
     def _is_tunneling_anomaly_query(self, query: str) -> bool:
         return self._is_tunneling_query(query) and any(kw in query for kw in (
