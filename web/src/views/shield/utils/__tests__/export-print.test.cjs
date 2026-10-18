@@ -5,17 +5,26 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function exportHtml(format, columnCount = 18, printWidths = []) {
-  const documents = [], blobs = [];
+function loadExport(window) {
+  const documents = [], blobs = [], notices = [], timers = [];
   const source = fs.readFileSync(process.env.EXPORT_PRINT_TEST_FILE || path.resolve(__dirname, '../export.ts'), 'utf8');
   const context = {
     exports: {}, Blob,
+    require(name) {
+      if (name === 'element-plus') return { ElMessage: { warning: text => notices.push(text) } };
+      throw new Error(`Unexpected import: ${name}`);
+    },
     URL: { createObjectURL(blob) { blobs.push(blob); return 'blob:export'; }, revokeObjectURL() {} },
     document: { createElement: () => ({ style: {}, click() {} }), body: { appendChild() {}, removeChild() {} } },
-    window: { open: () => ({ document: { write: html => documents.push(html), close() {} }, focus() {}, print() {} }) },
-    setTimeout: fn => fn(),
+    window: window || { open: () => ({ document: { write: html => documents.push(html), close() {} }, focus() {}, print() {} }) },
+    setTimeout: fn => { timers.push(fn); fn(); },
   };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  return { exportTableData: context.exports.exportTableData, documents, blobs, notices, timers };
+}
+
+function exportHtml(format, columnCount = 18, printWidths = []) {
+  const { exportTableData, documents, blobs } = loadExport();
   const options = {
     format, title: '换刀明细 <验收>', filename: 'print-test',
     columns: Array.from({ length: columnCount }, (_, i) => ({ key: `column${i}`, title: `字段${i}`, printWidth: printWidths[i] })),
@@ -23,7 +32,7 @@ function exportHtml(format, columnCount = 18, printWidths = []) {
     rows: Array.from({ length: 122 }, (_, row) => Object.fromEntries(Array.from({ length: columnCount }, (_, col) => [`column${col}`, col === 0 ? `POS-${row}` : col === 1 ? '第一行\n第二行 <b>文字</b>' : 0]))),
   };
   const before = JSON.stringify(options);
-  context.exports.exportTableData(options);
+  exportTableData(options);
   assert.equal(JSON.stringify(options), before);
   return { html: documents[0], blobs };
 }
@@ -73,4 +82,17 @@ test('relative print widths allocate more room to long fields without changing c
   assert.deepEqual(widths, [20, 60, 20]);
   assert.ok(html.includes('<td>POS-121</td>'));
   assert.ok(html.includes('第一行\n第二行 &lt;b&gt;文字&lt;/b&gt;'));
+});
+
+test('a blocked print window shows a notice and schedules no printing', () => {
+  const options = { format: 'pdf', title: '换刀明细', filename: 'blocked', columns: [{ key: 'position', title: '刀位号' }], rows: [{ position: '80A' }] };
+  const opened = [];
+  const blocked = loadExport({ open: (...args) => { opened.push(args); return null; } });
+  blocked.exportTableData(options);
+  assert.equal(opened.length, 1);
+  assert.deepEqual(blocked.notices, ['打印窗口被浏览器拦截，请允许弹出窗口后重试']);
+  assert.equal(blocked.timers.length, 0);
+  const allowed = loadExport();
+  allowed.exportTableData(options);
+  assert.deepEqual(allowed.notices, []); assert.equal(allowed.timers.length, 1); assert.equal(allowed.documents.length, 1);
 });
