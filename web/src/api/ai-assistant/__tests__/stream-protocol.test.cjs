@@ -7,17 +7,27 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8', status = 200, fetchImpl, response } = {}) {
+function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8', status = 200, fetchImpl, response, axiosStatus } = {}) {
   const requests = [], redirects = [];
+  let responseInterceptor;
+  // axios stand-in: runs the client's response interceptor; axiosStatus simulates an HTTP error for history/reset/chat.
+  const send = async () => {
+    if (axiosStatus) {
+      const error = Object.assign(new Error(`Request failed with status code ${axiosStatus}`), { response: { status: axiosStatus } });
+      return responseInterceptor ? responseInterceptor.rejected(error) : Promise.reject(error);
+    }
+    const result = { data: response || { code: 2000, data: {} } };
+    return responseInterceptor ? responseInterceptor.fulfilled(result) : result;
+  };
   const context = { exports: {}, TextDecoder, fetch: async (url, options) => {
     requests.push({ url, options });
     return fetchImpl ? fetchImpl(url, options) : new Response(payload, { status, headers: { 'Content-Type': contentType } });
   }};
   context.require = name => {
     if (name === 'axios') return { create: () => ({
-      interceptors: { request: { use() {} } },
-      get: async () => ({ data: response || { code: 2000, data: {} } }),
-      post: async () => ({ data: response || { code: 2000, data: {} } }),
+      interceptors: { request: { use() {} }, response: { use(fulfilled, rejected) { responseInterceptor = { fulfilled, rejected }; } } },
+      get: send,
+      post: send,
     }) };
     if (name === '/@/utils/storage') return { Session: { get: () => 'test-token' } };
     if (name === '/@/utils/service') return { redirectToLogin: message => redirects.push(message) };
@@ -145,5 +155,18 @@ test('an expired login on the stream uses the shared redirect to the login page,
     const other = setup({ status });
     await other.run();
     assert.deepEqual(other.redirects, [], String(status));
+  }
+});
+
+test('an expired login on history, reset or chat also uses the shared redirect, and the request still fails', async () => {
+  for (const call of ['history', 'reset', 'chat']) {
+    const h = setup({ axiosStatus: 401 });
+    await assert.rejects(h.api[call]({ query: 'test' }), /status code 401/);
+    assert.deepEqual(h.redirects, ['登录授权过期，请重新登录'], call);
+  }
+  for (const axiosStatus of [403, 500]) {
+    const h = setup({ axiosStatus });
+    await assert.rejects(h.api.reset(), new RegExp(`status code ${axiosStatus}`));
+    assert.deepEqual(h.redirects, [], String(axiosStatus));
   }
 });

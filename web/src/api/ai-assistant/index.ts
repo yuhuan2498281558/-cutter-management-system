@@ -49,6 +49,15 @@ aiService.interceptors.request.use(
 	}
 );
 
+// 历史、重置等接口登录过期时和其他页面一样跳登录页；错误仍交给调用方按原方式处理
+aiService.interceptors.response.use(
+	(response) => response,
+	(error) => {
+		if (error?.response?.status === 401) redirectToLogin('登录授权过期，请重新登录');
+		return Promise.reject(error);
+	}
+);
+
 // 一次数据查询：类别名和查询范围（scope 字段不固定，可能为 null）
 export interface QueryTrace {
 	sourceLabel: string;
