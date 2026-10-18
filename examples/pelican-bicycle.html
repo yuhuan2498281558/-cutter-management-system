@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>鹈鹕骑自行车</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #1b3d52;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .stage {
+      width: min(100vw, calc(100vh * 16 / 9));
+      height: min(100vh, calc(100vw * 9 / 16));
+      overflow: hidden;
+      background: #3d7eb8;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .spin { transform-box: fill-box; transform-origin: center; animation: spin 0.5s linear infinite; }
+    .crank { transform-box: fill-box; transform-origin: center; animation: spin 1.05s linear infinite; }
+    .drift { animation: move 48s linear infinite; }
+    .wave { animation: move 10s linear infinite; }
+    .scroll { animation: move 0.55s linear infinite; }
+    .bob { animation: bob 0.52s ease-in-out infinite; }
+    .nod { transform-box: fill-box; transform-origin: 15% 85%; animation: nod 1.05s ease-in-out infinite; }
+    .sway { transform-box: fill-box; transform-origin: 50% 100%; animation: sway 3.2s ease-in-out infinite; }
+
+    .paused * { animation-play-state: paused !important; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes move { to { transform: translateX(-180px); } }
+    @keyframes bob { 50% { transform: translateY(-4px); } }
+    @keyframes nod { 50% { transform: rotate(3deg); } }
+    @keyframes sway { 50% { transform: rotate(5deg); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <svg viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+      <title id="title">鹈鹕骑自行车</title>
+      <desc id="desc">一只大白鹈鹕沿海边公路骑自行车的二维 SVG 动画。</desc>
+
+      <defs>
+        <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#2f6ea6" />
+          <stop offset="55%" stop-color="#7ebde0" />
+          <stop offset="100%" stop-color="#f3c98a" />
+        </linearGradient>
+        <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#4fa4b8" />
+          <stop offset="100%" stop-color="#1d5368" />
+        </linearGradient>
+        <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#fffdf8" />
+          <stop offset="100%" stop-color="#e8d7b8" />
+        </linearGradient>
+        <linearGradient id="bike" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#2a8f86" />
+          <stop offset="100%" stop-color="#14584f" />
+        </linearGradient>
+        <pattern id="lane" width="90" height="16" patternUnits="userSpaceOnUse">
+          <rect width="48" height="7" y="4" rx="3" fill="#f4d35e" />
+        </pattern>
+        <g id="wheel">
+          <circle r="58" fill="#1c1f24" />
+          <circle r="51" fill="none" stroke="#d7dde4" stroke-width="7" />
+          <g stroke="#8d939c" stroke-width="1.3">
+            <line y2="-45" /><line y2="45" />
+            <line x1="-45" x2="45" />
+            <line x1="-32" y1="-32" x2="32" y2="32" />
+            <line x1="-32" y1="32" x2="32" y2="-32" />
+          </g>
+          <circle r="8" fill="#c9a227" />
+        </g>
+        <filter id="soft">
+          <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#1b3344" flood-opacity="0.22" />
+        </filter>
+      </defs>
+
+      <rect width="1200" height="675" fill="url(#sky)" />
+      <circle cx="930" cy="168" r="92" fill="#ffe7a3" opacity="0.35" />
+      <circle cx="930" cy="168" r="46" fill="#ffcc66" />
+
+      <g class="drift" fill="#fff8ec" opacity="0.85">
+        <ellipse cx="160" cy="96" rx="44" ry="18" />
+        <ellipse cx="198" cy="90" rx="28" ry="14" />
+        <ellipse cx="520" cy="72" rx="50" ry="20" />
+        <ellipse cx="562" cy="66" rx="30" ry="14" />
+        <ellipse cx="980" cy="108" rx="36" ry="15" />
+        <ellipse cx="1340" cy="96" rx="44" ry="18" />
+        <ellipse cx="1378" cy="90" rx="28" ry="14" />
+        <ellipse cx="1700" cy="72" rx="50" ry="20" />
+        <ellipse cx="1742" cy="66" rx="30" ry="14" />
+      </g>
+
+      <path d="M40 338 C80 288 130 278 180 318 C210 288 260 284 310 328 V358 H40 Z" fill="#6d8b7a" />
+      <rect x="228" y="286" width="16" height="40" fill="#f3efe6" />
+      <polygon points="222,286 236,270 250,286" fill="#c23b3b" />
+
+      <rect y="338" width="1200" height="100" fill="url(#sea)" />
+      <g class="wave" fill="#67b8c9" opacity="0.4">
+        <path d="M-180 368 q45-16 90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 t90 0 V400 H-180 Z" />
+      </g>
+
+      <path d="M0 428 C220 412 500 440 1200 418 V470 H0 Z" fill="#e2c48a" />
+      <rect y="452" width="1200" height="108" fill="#4d5158" />
+      <rect y="448" width="1200" height="10" fill="#d8c089" />
+      <g class="scroll">
+        <rect x="-90" y="498" width="1470" height="16" fill="url(#lane)" />
+      </g>
+      <rect y="548" width="1200" height="127" fill="#3f6a48" />
+
+      <ellipse class="bob" cx="470" cy="538" rx="130" ry="11" fill="#1a2430" opacity="0.25" />
+
+      <g class="bob" filter="url(#soft)">
+        <g transform="translate(360,478)"><g class="spin"><use href="#wheel" /></g></g>
+        <g transform="translate(580,478)"><g class="spin"><use href="#wheel" /></g></g>
+
+        <g fill="none" stroke="url(#bike)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M360 478 L450 478 L408 400 Z" />
+          <path d="M450 478 L538 396 L408 400" />
+          <path d="M538 396 L580 478" />
+        </g>
+        <path d="M532 392 L550 370" stroke="#1e3d3a" stroke-width="7" stroke-linecap="round" />
+        <path d="M528 366 H568" stroke="#d8c089" stroke-width="6" stroke-linecap="round" />
+        <ellipse cx="406" cy="394" rx="22" ry="8" fill="#2b2420" transform="rotate(-16 406 394)" />
+
+        <g id="leg-far" stroke="#d97830" stroke-width="8" stroke-linecap="round">
+          <line id="far-upper" x1="408" y1="388" x2="432" y2="432" />
+          <line id="far-lower" x1="432" y1="432" x2="450" y2="478" />
+        </g>
+        <ellipse id="far-foot" cx="450" cy="506" rx="15" ry="7" fill="#c86a28" />
+
+        <g transform="translate(450,478)"><g class="crank">
+          <circle r="15" fill="none" stroke="#c9a227" stroke-width="5" />
+        </g></g>
+        <line id="crank-a" x1="450" y1="478" x2="450" y2="506" stroke="#1e3d3a" stroke-width="5" stroke-linecap="round" />
+        <line id="crank-b" x1="450" y1="478" x2="450" y2="450" stroke="#1e3d3a" stroke-width="5" stroke-linecap="round" />
+        <rect id="pedal-a" x="438" y="502" width="24" height="7" rx="2" fill="#2b2420" />
+        <rect id="pedal-b" x="438" y="446" width="24" height="7" rx="2" fill="#2b2420" />
+
+        <ellipse cx="400" cy="358" rx="76" ry="42" fill="url(#body)" transform="rotate(-12 400 358)" />
+        <ellipse cx="338" cy="352" rx="20" ry="13" fill="#1b1d22" transform="rotate(-24 338 352)" />
+        <ellipse cx="418" cy="348" rx="48" ry="22" fill="#fff8ee" transform="rotate(-18 418 348)" />
+
+        <g class="nod">
+          <path d="M448 332 C478 304 508 286 536 296" fill="none" stroke="url(#body)" stroke-width="26" stroke-linecap="round" />
+          <circle cx="540" cy="292" r="20" fill="#fffdf8" />
+          <path d="M554 298 C590 368 640 360 666 312 C628 348 586 346 554 304 Z" fill="#f2b44d" />
+          <path d="M548 282 C596 266 636 272 672 288 L674 298 C636 284 594 278 548 296 Z" fill="#e07a32" />
+          <ellipse cx="668" cy="292" rx="8" ry="5" fill="#b4471c" />
+          <circle cx="536" cy="286" r="4.2" fill="#1b1d22" />
+          <circle cx="537.4" cy="284.8" r="1.4" fill="#fff" />
+        </g>
+
+        <g id="leg-near" stroke="#f09a48" stroke-width="9" stroke-linecap="round">
+          <line id="near-upper" x1="422" y1="392" x2="454" y2="438" />
+          <line id="near-lower" x1="454" y1="438" x2="450" y2="506" />
+        </g>
+        <ellipse id="near-foot" cx="450" cy="506" rx="16" ry="8" fill="#e08434" />
+      </g>
+
+      <g class="sway" fill="#2f5a38">
+        <path d="M50 640 C56 600 42 580 54 560 C58 588 66 610 60 640 Z" />
+        <path d="M68 640 C74 596 60 576 72 562 C78 590 84 612 76 640 Z" />
+        <path d="M1080 640 C1088 598 1070 576 1086 554 C1092 584 1100 608 1092 640 Z" />
+        <path d="M1100 640 C1108 594 1090 572 1104 556 C1112 586 1118 610 1108 640 Z" />
+      </g>
+
+      <text x="36" y="56" fill="#fffdf6" font-size="36" font-family="Songti SC, STSong, serif" letter-spacing="6">鹈鹕骑行</text>
+      <text x="36" y="84" fill="#fffdf6" fill-opacity="0.85" font-size="16">一只大白鹈鹕正沿海边公路踩着自行车</text>
+      <text id="hint" x="1164" y="652" text-anchor="end" fill="#fffdf6" fill-opacity="0.75" font-size="14">点击画面可暂停 / 继续</text>
+    </svg>
+  </div>
+
+  <script>
+    const CRANK = { x: 450, y: 478 };
+    const HIP = { far: { x: 408, y: 388 }, near: { x: 422, y: 392 } };
+    const R = 28;
+    const UPPER = 52;
+    const LOWER = 50;
+
+    const $ = (id) => document.getElementById(id);
+    const stage = $("stage");
+    const hint = $("hint");
+    const parts = {
+      ca: $("crank-a"),
+      cb: $("crank-b"),
+      pa: $("pedal-a"),
+      pb: $("pedal-b"),
+      fu: $("far-upper"),
+      fl: $("far-lower"),
+      nu: $("near-upper"),
+      nl: $("near-lower"),
+      ff: $("far-foot"),
+      nf: $("near-foot"),
+    };
+
+    const pedal = (a) => ({ x: CRANK.x + Math.sin(a) * R, y: CRANK.y + Math.cos(a) * R });
+
+    function knee(hip, target, flip) {
+      let dx = target.x - hip.x;
+      let dy = target.y - hip.y;
+      let d = Math.hypot(dx, dy);
+      const max = UPPER + LOWER - 0.8;
+      if (d > max) {
+        dx *= max / d;
+        dy *= max / d;
+        d = max;
+      }
+      const base = Math.atan2(dy, dx);
+      const bend = Math.acos(Math.min(1, Math.max(-1, (UPPER ** 2 + d ** 2 - LOWER ** 2) / (2 * UPPER * d))));
+      const ang = base + (flip ? bend : -bend);
+      return { x: hip.x + Math.cos(ang) * UPPER, y: hip.y + Math.sin(ang) * UPPER };
+    }
+
+    function line(el, a, b) {
+      el.setAttribute("x1", a.x);
+      el.setAttribute("y1", a.y);
+      el.setAttribute("x2", b.x);
+      el.setAttribute("y2", b.y);
+    }
+
+    function pose(angle) {
+      const a = pedal(angle);
+      const b = pedal(angle + Math.PI);
+      parts.ca.setAttribute("x2", a.x);
+      parts.ca.setAttribute("y2", a.y);
+      parts.cb.setAttribute("x2", b.x);
+      parts.cb.setAttribute("y2", b.y);
+      parts.pa.setAttribute("x", a.x - 12);
+      parts.pa.setAttribute("y", a.y - 3);
+      parts.pb.setAttribute("x", b.x - 12);
+      parts.pb.setAttribute("y", b.y - 3);
+      const fk = knee(HIP.far, a, true);
+      const nk = knee(HIP.near, b, false);
+      line(parts.fu, HIP.far, fk);
+      line(parts.fl, fk, a);
+      line(parts.nu, HIP.near, nk);
+      line(parts.nl, nk, b);
+      parts.ff.setAttribute("cx", a.x);
+      parts.ff.setAttribute("cy", a.y + 4);
+      parts.nf.setAttribute("cx", b.x);
+      parts.nf.setAttribute("cy", b.y + 4);
+    }
+
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let playing = !reduce;
+    let origin = performance.now();
+    let pausedAt = 0;
+    let raf = 0;
+
+    function tick(now) {
+      if (!playing) return;
+      pose(((now - origin) / 1050) * Math.PI * 2);
+      raf = requestAnimationFrame(tick);
+    }
+
+    function setPlaying(on) {
+      if (on === playing) return;
+      playing = on;
+      stage.classList.toggle("paused", !on);
+      hint.textContent = on ? "点击画面可暂停 / 继续" : "已暂停 · 再次点击继续";
+      if (on) {
+        origin += performance.now() - pausedAt;
+        raf = requestAnimationFrame(tick);
+      } else {
+        pausedAt = performance.now();
+        cancelAnimationFrame(raf);
+      }
+    }
+
+    stage.addEventListener("click", () => setPlaying(!playing));
+    if (playing) raf = requestAnimationFrame(tick);
+    else {
+      stage.classList.add("paused");
+      pose(0);
+    }
+  </script>
+</body>
+</html>
