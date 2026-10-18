@@ -12,6 +12,46 @@ from django.test import SimpleTestCase
 
 
 class EvaluationCommandTests(SimpleTestCase):
+    def test_experiment_focus_sources_and_rubric_numeric_scoring(self):
+        from application.ai_assistant.management.commands.run_experiment import Command, resolve_refs
+
+        cases = [
+            {'id': 'analysis', 'question': '登记金额多少', 'task_type': 'rubric',
+             'focus_sources': ['cost', 'repair'], 'gt_sql': 'SELECT 12 AS amount',
+             'answer_extract': {'amount': r'登记金额(\d+)'}, 'rubric': '0=错误；1=遗漏；2=完整'},
+            {'id': 'free', 'question': '解释覆盖范围', 'task_type': 'rubric',
+             'focus_sources': [], 'rubric': '0=错误；1=遗漏；2=完整'},
+            {'id': 'plain', 'question': '解释覆盖范围', 'task_type': 'rubric'},
+        ]
+        with tempfile.TemporaryDirectory(prefix='ai-v4-test-') as directory:
+            bank = os.path.join(directory, 'bank.json')
+            with open(bank, 'w', encoding='utf-8') as target:
+                json.dump(cases, target)
+            with open(bank, encoding='utf-8') as source:
+                loaded = resolve_refs(json.load(source))
+        command = Command()
+        runner = Mock()
+        runner.chat.return_value = {'success': True, 'answer': '登记金额12'}
+        for arm in Command.ARMS:
+            for case in loaded:
+                with self.subTest(arm=arm, case=case['id']):
+                    self.assertFalse(command._is_todo(case))
+                    truth = [{'amount': 12}] if case.get('gt_sql') else None
+                    with patch.object(command, '_ground_truth', return_value=(truth, '')):
+                        record = command._run_case(runner, arm, case, 0, 'isolated', {'project': 'fixture'})[0]
+                    context = runner.chat.call_args.args[1]
+                    if arm in ('agent', 'hybrid') and 'focus_sources' in case:
+                        self.assertEqual(context['focus_sources'], case['focus_sources'])
+                    else:
+                        self.assertNotIn('focus_sources', context)
+                    self.assertEqual(record.get('rubric'), case.get('rubric'))
+                    self.assertEqual(record['task_type'], 'rubric')
+                    if truth:
+                        self.assertTrue(record['exact_match'])
+                        self.assertEqual(record['extracted'], {'amount': 12})
+                    else:
+                        self.assertNotIn('exact_match', record)
+
     def test_sql_guard_checks_join_comma_and_nested_tables_without_model(self):
         from application.ai_assistant.baselines import TextToSQLBaseline
         baseline = object.__new__(TextToSQLBaseline)

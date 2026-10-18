@@ -224,6 +224,8 @@ class Command(BaseCommand):
         context = {"user_id": session_id, "project_id": options["project"]}
         if arm in ("agent", "hybrid"):
             context["route_mode"] = arm
+            if "focus_sources" in case:
+                context["focus_sources"] = case["focus_sources"]
 
         started = time.perf_counter()
         try:
@@ -297,6 +299,8 @@ class Command(BaseCommand):
         }
         record.update(scored)
         record.update(routed)
+        if case.get("rubric"):
+            record["rubric"] = case["rubric"]
         return record
 
     @staticmethod
