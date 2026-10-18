@@ -1,6 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { setup, plain, deferred, settle } = require('./helpers.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
+const { setup, plain, deferred, settle, compile } = require('./helpers.cjs');
 
 const meta = scope => ({ schema_version: 2, generated_at: '2026-09-11T00:00:00Z', summary_status: 'CONFIRMED', opening_count: 2, draft_opening_count: 0, excluded_inactive_count: 0, unobserved_count: 0, warnings: [], scope: { project_name: '磨损验收工程', ...scope } });
 const rows = [
@@ -78,4 +80,49 @@ test('real template labels the denominator correctly and exports complete rows w
   assert.ok(!columns.some(node => node.props?.prop === 'total' && node.props.label === '检查刀具数'));
   r.state.exportPdf(); assert.equal(r.exports[0][1], '.wear-page'); assert.ok(r.exports[0][2].some(item => item.value.includes('磨损验收工程')));
   r.state.openOpening(rows[0]); assert.deepEqual(plain(r.routes[0]), { path: '/shield/toolChangeDetail', query: { warehouse_id: '11', mode: 'view' } });
+});
+
+test('page size changes only resize the charts, so legend and zoom state survive', async t => {
+  const observers = [];
+  class RecordingResizeObserver { constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); } observe(target) { this.targets.push(target); } disconnect() {} }
+  const frame = async () => { await settle(); await new Promise(resolve => setTimeout(resolve, 0)); };
+  const r = create(t, { globals: { ResizeObserver: RecordingResizeObserver } });
+  r.state.pageRef.value = { key: 'page' };
+  await r.mount(); charts(r); await frame();
+  assert.equal(observers.length, 1); assert.deepEqual(observers[0].targets, [{ key: 'page' }]);
+  assert.equal(r.charts.length, 2);
+  r.charts.forEach(chart => { chart.resizeCount = 0; chart.resize = function () { this.resizeCount += 1; }; });
+  const setOptionCounts = () => r.charts.map(chart => chart.options.length);
+  const resizeCounts = () => r.charts.map(chart => chart.resizeCount);
+  const before = setOptionCounts();
+  observers[0].callback([]); observers[0].callback([]); observers[0].callback([]); await frame();
+  assert.deepEqual(setOptionCounts(), before);
+  assert.deepEqual(resizeCounts(), [1, 1]);
+  observers[0].callback([]); r.hooks.onDeactivated.forEach(hook => hook()); await frame();
+  assert.deepEqual(resizeCounts(), [1, 1]);
+  r.hooks.onActivated.forEach(hook => hook()); await frame();
+  const options = setOptionCounts(), resizes = resizeCounts();
+  observers[0].callback([]); await frame();
+  assert.deepEqual(setOptionCounts(), options);
+  assert.deepEqual(resizeCounts(), resizes.map(count => count + 1));
+});
+
+function loadWearChartOptions() {
+  function load(file) {
+    return compile(fs.readFileSync(file, 'utf8'), name => load(path.resolve(path.dirname(file), `${name}.ts`)));
+  }
+  return load(path.resolve(__dirname, '../utils/wearChartOptions.ts'));
+}
+
+test('wear option builders read only their arguments and zoom long trends', () => {
+  const { buildWearDistributionOption, buildWearTrendOption } = loadWearChartOptions();
+  const distribution = buildWearDistributionOption({ normal_count: 3, abnormal_count: 1, unrecorded_count: 3 });
+  assert.deepEqual(plain(distribution.yAxis.data), ['正常', '非正常', '未分类']);
+  assert.deepEqual(plain(distribution.series[0].data.map(item => [item.value, item.itemStyle.color])), [[3, '#6f9483'], [1, '#b76558'], [3, '#9ba5b1']]);
+  const trend = buildWearTrendOption(rows);
+  assert.deepEqual(plain(trend.series.map(item => item.name)), ['已分类磨损数', '实际更换数', '非正常比例']);
+  assert.deepEqual(plain(trend.dataZoom), []); assert.equal(trend.yAxis[1].axisLabel.formatter(0.25), '25%');
+  assert.match(trend.tooltip.formatter([{ dataIndex: 1 }]), /200 环 · 2026-02-01.*地层：未记录/);
+  const long = buildWearTrendOption(Array.from({ length: 15 }, (_, index) => ({ ...rows[0], ring_no: String(index + 1) })));
+  assert.deepEqual(plain(long.dataZoom), [{ type: 'inside' }]);
 });

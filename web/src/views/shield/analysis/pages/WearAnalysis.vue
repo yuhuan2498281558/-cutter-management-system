@@ -58,9 +58,9 @@ import * as echarts from 'echarts';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getWearDistribution, getWearTrend } from '../api';
-import { TOOLTIP_STYLE, DEFAULT_GRID } from '../utils/chartTheme';
+import { buildWearDistributionOption, buildWearTrendOption } from '../utils/wearChartOptions';
 import type { AnalysisFilter, AnalysisMeta, WearDistributionItem, WearTrendItem } from '../types';
-import { analysisExportMeta, escapeHtml, formatNumber, formatPercent, requireAnalysisV2 } from '../utils/presentation';
+import { analysisExportMeta, formatNumber, formatPercent, requireAnalysisV2 } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
 
@@ -108,59 +108,38 @@ function renderCharts() {
   if (!ready.value || !wearDist.value) return;
   if (distributionRef.value) {
     distributionChart = ensureChart(distributionChart, distributionRef.value);
-    distributionChart.setOption({
-      tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { ...DEFAULT_GRID, left: 28, right: 46, bottom: 35 },
-      xAxis: { type: 'value', name: '记录数', minInterval: 1 },
-      yAxis: { type: 'category', data: ['正常', '非正常', '未分类'], inverse: true },
-      series: [{ name: '观察明细', type: 'bar', barMaxWidth: 34, label: { show: true, position: 'right' },
-        data: [{ value: wearDist.value.normal_count, itemStyle: { color: '#6f9483' } },
-          { value: wearDist.value.abnormal_count, itemStyle: { color: '#b76558' } },
-          { value: wearDist.value.unrecorded_count, itemStyle: { color: '#9ba5b1' } }] }],
-    }, true);
+    distributionChart.setOption(buildWearDistributionOption(wearDist.value), true);
     distributionChart.resize();
   }
   if (!trendChartRef.value) return;
   trendChart = ensureChart(trendChart, trendChartRef.value);
-  const items = trendRows.value;
-  trendChart.setOption({
-    tooltip: {
-      ...TOOLTIP_STYLE,
-      trigger: 'axis',
-      formatter: (params: any[]) => {
-        const item = items[params[0]?.dataIndex];
-        if (!item) return '';
-        return `${escapeHtml(item.ring_no)} 环 · ${escapeHtml(item.open_time)}<br/>有效观察：${formatNumber(item.checked_count)}<br/>实际更换：${formatNumber(item.replacement_count)}<br/>非正常 / 已分类磨损：${formatNumber(item.abnormal)} / ${formatNumber(item.total)}<br/>非正常比例：${formatPercent(item.abnormal_rate)}<br/>未分类磨损：${formatNumber(item.unrecorded_count)}<br/>地层：${escapeHtml(item.stratum_types || '未记录')}<br/>地质：${escapeHtml(item.geological_conditions || '未记录')}`;
-      },
-    },
-    grid: { ...DEFAULT_GRID, left: 28, right: 44, bottom: 65 },
-    legend: { bottom: 0, type: 'scroll' },
-    xAxis: { type: 'category', data: items.map(item => `${item.ring_no}环`), axisLabel: { hideOverlap: true } },
-    yAxis: [{ type: 'value', name: '记录 / 更换数', minInterval: 1 }, { type: 'value', name: '非正常比例', min: 0, max: 1, axisLabel: { formatter: (value: number) => `${Math.round(value * 100)}%` } }],
-    dataZoom: items.length > 14 ? [{ type: 'inside' }] : [],
-    series: [
-      { name: '已分类磨损数', type: 'bar', color: '#9ba5b1', barMaxWidth: 22, data: items.map(item => item.total) },
-      { name: '实际更换数', type: 'bar', color: '#35689b', barMaxWidth: 22, data: items.map(item => item.replacement_count ?? null) },
-      { name: '非正常比例', type: 'line', yAxisIndex: 1, color: '#b76558', smooth: false, connectNulls: false, symbolSize: 6, data: items.map(item => item.abnormal_rate) },
-    ],
-  }, true);
+  trendChart.setOption(buildWearTrendOption(trendRows.value), true);
   trendChart.resize();
 }
-let activeCharts = true, resizeFrame: number | undefined;
+let activeCharts = true, resizeFrame: number | undefined, renderFrame: number | undefined;
 function scheduleRender() {
   nextTick(() => {
     if (!activeCharts) return;
-    if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
-    resizeFrame = requestAnimationFrame(() => { resizeFrame = undefined; if (activeCharts) renderCharts(); });
+    if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
+    renderFrame = requestAnimationFrame(() => { renderFrame = undefined; if (activeCharts) renderCharts(); });
   });
 }
+function scheduleResize() {
+  if (!activeCharts || resizeFrame !== undefined) return;
+  resizeFrame = requestAnimationFrame(() => { resizeFrame = undefined; if (activeCharts) [distributionChart, trendChart].forEach(chart => chart?.resize()); });
+}
+function cancelChartFrames() {
+  if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+  if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
+  resizeFrame = undefined; renderFrame = undefined;
+}
 let resizeObserver: ResizeObserver | undefined;
-onMounted(() => { resizeObserver = new ResizeObserver(scheduleRender); if (pageRef.value) resizeObserver.observe(pageRef.value); scheduleRender(); });
+onMounted(() => { resizeObserver = new ResizeObserver(scheduleResize); if (pageRef.value) resizeObserver.observe(pageRef.value); scheduleRender(); });
 watch([ready, distributionRef, trendChartRef], scheduleRender, { flush: 'post' });
-onDeactivated(() => { activeCharts = false; if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame); });
+onDeactivated(() => { activeCharts = false; cancelChartFrames(); });
 onActivated(() => { activeCharts = true; scheduleRender(); });
 onBeforeUnmount(() => {
-  activeCharts = false; if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+  activeCharts = false; cancelChartFrames();
   resizeObserver?.disconnect(); [distributionChart, trendChart].forEach(chart => chart?.dispose());
 });
 </script>
