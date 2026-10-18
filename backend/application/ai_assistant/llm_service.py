@@ -1857,8 +1857,10 @@ class ToolAssistant:
         )
 
     def _is_opening_efficiency_query(self, query: str) -> bool:
-        if any(kw in query for kw in ("检查一把", "更换一把", "每把刀", "每把滚刀", "每把刮刀")) and any(
-            kw in query for kw in ("多久", "多长时间", "耗时", "时长", "效率", "小时", "平均")
+        time_words = ("多久", "多长时间", "耗时", "时长", "效率", "小时", "分钟")
+        # "每把"只在带明确时间词时算效率，避免"每把刀平均服役多少环"被劫到本分支。
+        if (any(kw in query for kw in ("检查一把", "更换一把")) and any(kw in query for kw in (*time_words, "平均"))) or (
+            "每把" in query and any(kw in query for kw in time_words)
         ):
             # 「平均更换一把刀多久」这类问句不带"开仓"二字，但问的就是开仓作业效率。
             # 必须同时带时间/效率类限定词——"更换一把X"本身是通用量词短语，
@@ -2454,7 +2456,9 @@ class ToolAssistant:
         if self._is_inventory_query(user_query) or self._extract_tool_numbers(user_query):
             return self._direct_route_result(user_query, context)
         domains = ("换刀", "开仓", "地层", "刀位", "厂家", "寿命")
-        if sum(word in user_query for word in domains) >= 3:
+        hit_domains = {word for word in domains if word in user_query}
+        # 只涉及开仓、地层、刀位三类时由开仓地层联动分支回答；再多一类就按多源问题交给模型。
+        if len(hit_domains) >= 3 and not (hit_domains == {"开仓", "地层", "刀位"} and self._is_opening_stratum_change_query(user_query)):
             return None
 
         # 并列对象分别执行同一条规则，避免只保留首个刀型或首个环号。
