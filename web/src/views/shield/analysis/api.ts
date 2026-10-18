@@ -56,11 +56,6 @@ export function getBrandPerformanceTrend(params: AnalysisFilterParams = {}) {
   return request({ url: API_PREFIX + 'brand_performance_trend/', method: 'get', params: { ...params, include_details: 'false' } });
 }
 
-/** 按刀具完整服役环段的地层比较原安装厂家 */
-export function getBrandStratumPerformance(params: AnalysisFilterParams & { service_stratum?: string } = {}) {
-  return request({ url: API_PREFIX + 'brand_stratum_performance/', method: 'get', params });
-}
-
 /** 磨损等级分布 */
 export function getWearDistribution(params: AnalysisFilterParams = {}) {
   return request({ url: API_PREFIX + 'wear_distribution/', method: 'get', params });

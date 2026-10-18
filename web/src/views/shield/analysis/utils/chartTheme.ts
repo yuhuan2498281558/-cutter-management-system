@@ -10,21 +10,6 @@ export const TOOL_TYPE_LABELS: Record<string, string> = {
   SCRAPER: '刮刀',
 };
 
-export const WEAR_LEVEL_COLORS: Record<string, string> = {
-  正常: '#52c41a',
-  偏磨: '#fadb14',
-  刀圈崩刃: '#fa8c16',
-  刀圈脱落: '#ff4d4f',
-  漏油: '#722ed1',
-  轴承损坏: '#13c2c2',
-};
-
-export const STRATUM_COLORS = [
-  '#5470c6', '#91cc75', '#fac858',
-  '#ee6666', '#73c0de', '#3ba272',
-  '#fc8452', '#9a60b4', '#ea7ccc',
-];
-
 export const TOOLTIP_STYLE = {
   backgroundColor: 'rgba(255,255,255,0.95)',
   borderColor: '#e8e8e8',
