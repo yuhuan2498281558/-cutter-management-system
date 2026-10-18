@@ -45,6 +45,7 @@ function setup(t, filename, options = {}) {
     window: { addEventListener() {}, removeEventListener() {}, innerWidth: 1366, setTimeout, clearTimeout },
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,
+    ...options.globals,
   };
   const vueMock = { ...vue, ...Object.fromEntries(Object.keys(hooks).map(key => [key, fn => hooks[key].push(fn)])) };
   const cache = new Map();
