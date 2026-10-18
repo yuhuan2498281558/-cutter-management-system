@@ -28,14 +28,14 @@
       <div
         v-else-if="block.type === 'table'"
         class="markdown-table-wrap"
-        :style="{ width: `${tableMinWidth(block.headers) + 2}px` }"
+        :style="{ width: `${tableMinWidth(block.headers, block.rows) + 2}px` }"
         tabindex="0"
         role="region"
         aria-label="回答数据表，可横向滚动"
       >
-        <table class="markdown-table" :style="{ minWidth: `${tableMinWidth(block.headers)}px` }">
+        <table class="markdown-table" :style="{ minWidth: `${tableMinWidth(block.headers, block.rows)}px` }">
           <colgroup>
-            <col v-for="(cell, cellIndex) in block.headers" :key="cellIndex" :style="tableColumnStyle(block.headers, cellIndex)" />
+            <col v-for="(cell, cellIndex) in block.headers" :key="cellIndex" :style="tableColumnStyle(block.headers, cellIndex, block.rows)" />
           </colgroup>
           <thead>
             <tr>
@@ -144,8 +144,7 @@ const isNumericColumn = (header: string) => {
     || /^(均值|平均值?|最小值?|最大值?|中位数)([（(]|$)/.test(label);
 };
 
-// 列宽只依赖表头，后续行追加长值时不会重新分配已显示列的宽度。
-const tableColumnWidth = (header: string) => {
+const headerColumnWidth = (header: string) => {
   if (/各地层关联次数/.test(header)) return 600;
   if (/主要磨损|说明|备注|依据|限制|详情|建议/.test(header)) return 400;
   if (isNumericColumn(header)) return Math.max(112, Math.min(168, header.length * 13 + 24));
@@ -154,10 +153,26 @@ const tableColumnWidth = (header: string) => {
   return 180;
 };
 
-const tableMinWidth = (headers: string[]) => headers.reduce((width, header) => width + tableColumnWidth(header), 0);
+// 13px 字号下的估算字宽：全角字符 13px，半角字符按 8px 宽估；加粗和代码标记不占宽度。
+const cellTextWidth = (text: string) => Array.from(text.replace(/\*\*|`/g, ''))
+  .reduce((width, char) => width + (/[⺀-￯]/.test(char) ? 13 : 8), 0);
 
-const tableColumnStyle = (headers: string[], index: number) => {
-  return { width: `${tableColumnWidth(headers[index])}px` };
+// 列宽以表头为准；数值列和短标签列再按最长单元格放宽（最多 220px），
+// 避免"37.4%（43/115）"这类值折行。流式输出时这些列只会随更长的值变宽。
+const tableColumnWidth = (header: string, cells: string[] = []) => {
+  const width = headerColumnWidth(header);
+  if (width >= 180 || !cells.length) return width;
+  return Math.max(width, Math.min(220, Math.max(...cells.map(cellTextWidth)) + 32));
+};
+
+const columnCells = (rows: string[][], index: number) => rows.map((row) => row[index] || '');
+
+const tableMinWidth = (headers: string[], rows: string[][] = []) => headers.reduce(
+  (width, header, index) => width + tableColumnWidth(header, columnCells(rows, index)), 0,
+);
+
+const tableColumnStyle = (headers: string[], index: number, rows: string[][] = []) => {
+  return { width: `${tableColumnWidth(headers[index], columnCells(rows, index))}px` };
 };
 
 const startsBlock = (lines: string[], index: number) => {

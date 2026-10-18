@@ -130,7 +130,7 @@ test('borderless rows and CRLF streams stay inside the same table while their ne
   } finally { h.unmount(); }
 });
 
-test('long later values do not change header-based column sizing', async () => {
+test('long later text values and short numbers do not change column sizing', async () => {
   const h = mountMessage(header + row);
   try {
     const table = h.find('table')[0];

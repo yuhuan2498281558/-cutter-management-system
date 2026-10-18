@@ -60,6 +60,18 @@ test('table width is the sum of column widths and each col gets a fixed pixel wi
   assert.deepEqual(plain(headers.map((_header, index) => h.tableColumnStyle(headers, index))), [{ width: '72px' }, { width: '112px' }, { width: '400px' }]);
 });
 
+test('numeric and short columns widen to their longest cell, text columns keep the header width', async () => {
+  const h = loadParser();
+  assert.equal(h.tableColumnWidth('异常率', ['33.1%（39/118）', '**41.8%（51/122）**']), 146);
+  assert.equal(h.tableColumnWidth('异常率', ['12.5%']), 112);
+  assert.equal(h.tableColumnWidth('刀位', ['S19L（3次）']), 111);
+  assert.equal(h.tableColumnWidth('异常率', ['41.8%（51/122，其中 3 把未检查，另有 2 把待复核）']), 220);
+  assert.equal(h.tableColumnWidth('高频刀位', ['11、13、1、12、14、10、S1L、S2R、S3L']), 180);
+  const html = await render('| 环号 | 异常率 |\n| --- | --- |\n| 400 | **41.8%（51/122）** |');
+  assert.match(html, /<div class="markdown-table-wrap" style="width:328px;"/);
+  assert.match(html, /<col style="width:180px;"><col style="width:146px;">/);
+});
+
 test('the rendered table wrapper is two pixels wider than the table and cols use header widths', async () => {
   const html = await render('| 刀位 | 更换次数 | 主要磨损类型 |\n| --- | --- | --- |\n| S1L | 2 | 偏磨 |');
   assert.match(html, /<div class="markdown-table-wrap" style="width:586px;"/);
