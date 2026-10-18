@@ -24,16 +24,30 @@ from .tools import (
     query_tunneling_trend,
     query_tunneling_anomaly,
     query_tunneling_wear_correlation,
+    STRATUM_TYPE_NAMES,
+    classify_wear_counts,
+    is_abnormal_wear,
 )
 from .prompts import SYSTEM_PROMPT, ANSWER_POLICY
+from .tools_inspections import query_tool_inspections
+from .tools_repairs import query_old_tool_repairs
+from .tools_lifecycle import trace_tool_lifecycle
+from .tools_manufacturer import compare_manufacturer_service
+from .tools_stratum_area import query_stratum_area, query_opening_stratum
+from .tools_costs import query_tool_cost_catalog, query_registered_amounts
+from .tools_catalog import query_data_catalog
 from .tool_contracts import (
     RingQuery, ToolQuery, ChangeQuery, RecordQuery, PositionQuery,
     ChangeTrendQuery, TunnelingTrendQuery, AnomalyQuery,
     PerformanceQuery, RecommendationQuery, tool_validation_error,
+    OpeningQuery, PositionImpactQuery, InspectionQuery, RepairQuery, LifecycleQuery,
+    ManufacturerServiceQuery, StratumAreaQuery, OpeningStratumQuery,
+    CostCatalogQuery, RegisteredAmountsQuery, DataCatalogQuery,
 )
 from .memory_service import MemoryService, MemorySnapshot
 from .summary_worker import schedule_summary
-from .answer_reporting import render_report, render_abnormal_cause
+from .answer_reporting import render_report, render_abnormal_cause, display, number, percent
+from application.shield.stratum_ratios import STRATUM_LABELS
 from asgiref.sync import sync_to_async
 from contextlib import aclosing
 import logging
@@ -55,6 +69,59 @@ except ImportError:  # 旧版本不提供该回调，token 统计降级为空
 logger = logging.getLogger(__name__)
 
 
+def _data_coverage(project_id: str, domain: str, ring_range=None) -> dict:
+    """只查记录覆盖范围，不重复工具的业务统计。"""
+    from django.db.models import Count, IntegerField, Min, Max
+    from django.db.models.functions import Cast
+    from application.shield.models import WarehouseOpeningBasicInfo, ShieldTunnelingData, StratumBasicInfo
+    from .tools import _active_detail_query
+
+    if domain == "换刀":
+        query = _active_detail_query({"project_id": project_id})
+        ring_field, time_field = "warehouse__ring_no", "warehouse__open_time"
+    else:
+        model, time_field = {
+            "开仓": (WarehouseOpeningBasicInfo, "open_time"),
+            "掘进": (ShieldTunnelingData, "record_time"),
+            "地层": (StratumBasicInfo, None),
+        }[domain]
+        query = model.objects.filter(project__project_id=project_id)
+        ring_field = "ring_no"
+    query = query.filter(**{f"{ring_field}__regex": r"^\d+$"}).annotate(
+        coverage_ring=Cast(ring_field, IntegerField()))
+    if ring_range:
+        query = query.filter(coverage_ring__gte=ring_range[0], coverage_ring__lte=ring_range[1])
+    fields = {"record_count": Count("pk"), "ring_min": Min("coverage_ring"), "ring_max": Max("coverage_ring")}
+    if time_field:
+        fields.update(time_min=Min(time_field), time_max=Max(time_field))
+    result = query.aggregate(**fields)
+    return {**result, "time_min": display(result.get("time_min")), "time_max": display(result.get("time_max"))}
+
+
+def _query_number(value: str) -> int:
+    if value.isdigit():
+        return int(value)
+    digits = dict(zip("零〇一二两三四五六七八九", (0, 0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9)))
+    if not any(char in value for char in "十百千万"):
+        return int("".join(str(digits[char]) for char in value))
+    total = section = digit = 0
+    for char in value:
+        if char.isdigit():
+            digit = digit * 10 + int(char)
+        elif char in digits:
+            digit = digits[char]
+        elif char == "万":
+            total += (section + digit) * 10000
+            section = digit = 0
+        else:
+            section += (digit or 1) * {"十": 10, "百": 100, "千": 1000}[char]
+            digit = 0
+    return total + section + digit
+
+
+_QUERY_NUMBER = r"[0-9零〇一二两三四五六七八九十百千万]+"
+
+
 # ---------------------------------------------------------------------------
 # 工具调用埋点
 #
@@ -63,34 +130,54 @@ logger = logging.getLogger(__name__)
 # intermediate_steps。这里在模块层给 14 个领域工具套一层记录器：
 #   - 规则直答路径：函数被直接调用，记录器命中；
 #   - Agent 路径：@tool 包装器内部同样调用这些模块级名字，记录器也命中。
-# 记录写在 threading.local 上，按请求隔离；不开启记录（未调用 _trace_start）时
+# 记录通过 ContextVar 在同步、异步和工具线程间传递，按请求隔离；不开启记录时
 # 记录器只是透传，运行时开销可忽略。
 # ---------------------------------------------------------------------------
-_TRACE = threading.local()
+_TRACE = ContextVar("ai_assistant_tool_calls", default=None)
+
+FOCUS_SOURCE_LABELS = {
+    "tool_change": "换刀与磨损", "opening": "开仓记录", "inspection": "现场检查",
+    "position": "刀位", "stratum": "地层", "tunneling": "掘进参数",
+    "manufacturer": "厂家表现", "cost": "报价与登记金额", "repair": "旧刀返修",
+    "lifecycle": "单把刀追溯",
+}
+_TOOL_SOURCES = {
+    "query_tool_change_data": "tool_change", "query_tool_change_trend": "tool_change",
+    "analyze_stratum_wear_correlation": "stratum", "query_stratum_data": "stratum",
+    "query_stratum_area": "stratum", "query_opening_stratum": "stratum",
+    "query_opening_records": "opening", "query_tool_inspections": "inspection",
+    "query_cutter_position_stats": "position", "query_position_stratum_impact": "position",
+    "query_tunneling_summary": "tunneling", "query_tunneling_trend": "tunneling",
+    "query_tunneling_anomaly": "tunneling", "query_tunneling_wear_correlation": "tunneling",
+    "compare_manufacturer_service": "manufacturer", "compare_manufacturer_performance": "manufacturer",
+    "query_tool_cost_catalog": "cost", "query_registered_amounts": "cost", "recommend_tools": "cost",
+    "query_old_tool_repairs": "repair", "trace_tool_lifecycle": "lifecycle",
+    "calculate_tool_performance": "lifecycle",
+}
 
 
 _TRACE_RESULT_LIMIT = 20000
 
 
 def _trace_start():
-    _TRACE.calls = []
+    _TRACE.set([])
 
 
 def _trace_calls(include_results: bool = False) -> list:
-    calls = getattr(_TRACE, "calls", []) or []
+    calls = _TRACE.get() or []
     if include_results:
         return [dict(c) for c in calls]
     return [{k: v for k, v in c.items() if k != "result"} for c in calls]
 
 
 def _trace_stop():
-    _TRACE.calls = None
+    _TRACE.set(None)
 
 
 def _traced_tool(func):
     @functools.wraps(func)
     def wrapper(params_str):
-        calls = getattr(_TRACE, "calls", None)
+        calls = _TRACE.get()
         try:
             args = json.loads(params_str) if isinstance(params_str, str) else params_str
         except Exception:
@@ -110,6 +197,8 @@ def _traced_tool(func):
             calls.append({
                 "tool": func.__name__,
                 "args": args,
+                "source_label": "可查数据" if func.__name__ == "query_data_catalog" else FOCUS_SOURCE_LABELS[_TOOL_SOURCES[func.__name__]],
+                "scope": payload.get("scope") if isinstance(payload, dict) else None,
                 "result": result[:_TRACE_RESULT_LIMIT] if isinstance(result, str) else result,
             })
         return result
@@ -130,6 +219,15 @@ query_tunneling_summary = _traced_tool(query_tunneling_summary)
 query_tunneling_trend = _traced_tool(query_tunneling_trend)
 query_tunneling_anomaly = _traced_tool(query_tunneling_anomaly)
 query_tunneling_wear_correlation = _traced_tool(query_tunneling_wear_correlation)
+query_tool_inspections = _traced_tool(query_tool_inspections)
+query_old_tool_repairs = _traced_tool(query_old_tool_repairs)
+trace_tool_lifecycle = _traced_tool(trace_tool_lifecycle)
+compare_manufacturer_service = _traced_tool(compare_manufacturer_service)
+query_stratum_area = _traced_tool(query_stratum_area)
+query_opening_stratum = _traced_tool(query_opening_stratum)
+query_tool_cost_catalog = _traced_tool(query_tool_cost_catalog)
+query_registered_amounts = _traced_tool(query_registered_amounts)
+query_data_catalog = _traced_tool(query_data_catalog)
 
 
 def _new_usage_callback():
@@ -190,7 +288,7 @@ def _flag_enabled(name: str, default: str = "0") -> bool:
 
 # 消融 / 实验开关。全部默认关闭，线上行为与改造前一致。
 #   AI_STRICT_AGENT        旧实验兼容字段；模型路径现已不再使用规则直答例外
-#   AI_ABLATE_TOOL_GROUP   关闭工具分组裁剪，一律注入全部 14 个工具
+#   AI_ABLATE_TOOL_GROUP   关闭工具分组裁剪，一律注入全部 21 个工具
 #   AI_ABLATE_TEMPLATE     关闭模板化格式化，规则路由改为把工具原始返回交给 LLM 复述
 #   AI_ABLATE_MEMORY       关闭多轮记忆与追问合并，每轮独立
 #   AI_TRACE_TOOL_RESULTS  在响应里带上工具原始返回（仅评测用，会显著增大响应体）
@@ -258,7 +356,7 @@ def _bind_tools_to_project(tools: list, project_id: str) -> list:
     if not project_id:
         return tools
     return [
-        StructuredTool(
+        type(item)(
             name=item.name,
             description=item.description,
             args_schema=item.args_schema,
@@ -401,7 +499,7 @@ def tool_calculate_tool_performance(tool_numbers: list) -> str:
     tool_numbers: 刀具实例编号列表，格式形如 "487-S14R-01"（环号-刀位-序号），指的是某一把具体的刀。
     注意区分三种编号，选错工具会答非所问：
       - 刀具实例编号（487-S14R-01）→ 用本工具；
-      - 刀位编号（S14R、1、80A）→ 用 tool_query_cutter_position_stats；
+      - 刀位编号（S14R、1、80A）→ 用 tool_query_tool_change_data 的 cutter_position_no 参数；
       - 刀具型号（如"17寸单刃滚刀"）横向比较 → 用 tool_recommend_tools。
     在役未拆的刀不会给出服役环数（只知道下界），这是正确行为，不要自行推算。
     """
@@ -415,14 +513,18 @@ def tool_recommend_tools(
     ring_range: list = [],
     max_unit_price: float = 0,
     top_n: int = 5,
+    stratum_basis: str = "label",
+    min_samples: int = 3,
 ) -> str:
-    """刀具选型/备刀参考：按型号的历史平均服役环数排序，不代表质量、性价比或未来寿命。
-    stratum_types: 历史地层标签代码列表，按原始标签匹配服役环段；不支持横断面岩性或ZONE_*工程分区面积筛选，不限定时传空数组。
+    """刀具选型参考：按型号的历史平均服役环数排序，不代表质量、性价比或未来寿命。
+    stratum_types: 地层编码列表，不限定时传空数组。
+    stratum_basis: label（默认）按历史地层标签筛选，编码如 CLAY_SAND；longitudinal_area 按纵断面面积筛选，编码如 AREA_BOULDER。
+    min_samples: 参与排名所需的最少确认样本数，默认3，不要为了凑出排名而调低。
+    平均服役环数只用厂家已确认的拆下记录；报价是各厂家的新刀报价区间（new_tool_price_min_yuan–new_tool_price_max_yuan），不要用维修价。样本不足的型号在 insufficient_evidence 里，不要当作推荐结果。
     tool_type 可选值: DISC/SCRAPER，不知道传空字符串；当前统计不纳入撕裂刀。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     max_unit_price: 单价上限（元），不限价传 0。
     top_n: 返回条数，默认5。
-    注意：排名依据的是历史平均服役环数（型号维度），不是对在役刀具剩余寿命的预测；样本量不足的型号会单独列在 insufficient_evidence 中，不要把它们当作推荐结果。
     """
     return recommend_tools(_to_json({
         "stratum_types": stratum_types,
@@ -430,6 +532,7 @@ def tool_recommend_tools(
         "ring_range": ring_range,
         "max_unit_price": max_unit_price,
         "top_n": top_n,
+        "stratum_basis": stratum_basis, "min_samples": min_samples,
     }))
 
 
@@ -452,20 +555,28 @@ def tool_analyze_stratum_wear_correlation(tool_type: str = "", ring_range: list 
     return _with_analysis_payload(raw, "stratum_wear")
 
 
-@tool(args_schema=RecordQuery)
-def tool_query_opening_records(ring_range: list = [], limit: int = 10) -> str:
-    """查询开仓记录，返回每次开仓的环号、换刀统计、高频刀位等。适用于"最近几次开仓"、"平均多少环开一次仓"、"开仓时长"等问题。
-    limit: 返回最近几次开仓，按环号从大到小排序。用户说"最近N次"就传N，默认10。"""
-    raw = query_opening_records(_to_json({"ring_range": ring_range, "limit": limit}))
+@tool(args_schema=OpeningQuery)
+def tool_query_opening_records(ring_range: list = [], limit: int = 10, summary_status: str = "") -> str:
+    """查询开仓记录：每次开仓的环号、开仓间隔、开仓时长、换刀总时长、检查数、更换数、异常率和高频刀位。适用于"最近几次开仓""平均多少环开一次仓""开仓时长"。
+    limit: 返回最近几次开仓，按环号从大到小排序。用户说"最近N次"就传N，默认10。
+    summary_status: 只看已确认汇总传 CONFIRMED，只看草稿传 DRAFT，不限定传空字符串。
+    每条记录同时给人工汇总数和有效刀位明细数，两者不同时都要说明，不要只说一个。确认时间为空不代表未确认。
+    """
+    raw = query_opening_records(_to_json({"ring_range": ring_range, "limit": limit, "summary_status": summary_status}))
     return _with_analysis_payload(raw, "opening")
 
 
 @tool(args_schema=PositionQuery)
-def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_range: list = []) -> str:
-    """统计各刀位的磨损和更换情况，找出高频更换刀位。适用于"哪个刀位最容易坏"、"刀盘磨损分布"等问题。
+def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_range: list = [], cutter_position_no: str = "", include_all: bool = False, sort_by: str = "replaced") -> str:
+    """统计各刀位的更换次数和全部现场观测的磨损情况。适用于"哪些刀位更换次数最多""异常磨损集中在哪些刀位""全刀盘磨损分布"。
+    cutter_position_no: 只查一个刀位时传入，如 "S14R"、"1"、"80A"；不限定传空字符串。
+    include_all: 要列出全部有效刀位时传 true。
+    sort_by: replaced 按更换次数排序（默认），abnormal 按异常观测数排序。
+    wear_distribution 只统计更换行，observation_wear_distribution 统计全部现场观测；truncated 为 true 表示只返回了一部分刀位。更换次数多不等于磨损严重。
     tool_type 可选值: DISC/SCRAPER，不知道传空字符串；当前统计不纳入撕裂刀。
     """
-    raw = query_cutter_position_stats(_to_json({"tool_type": tool_type, "top_n": top_n, "ring_range": ring_range}))
+    raw = query_cutter_position_stats(_to_json({"tool_type": tool_type, "top_n": top_n, "ring_range": ring_range,
+                                              "cutter_position_no": cutter_position_no, "include_all": include_all, "sort_by": sort_by}))
     return _with_analysis_payload(raw, "cutter_position")
 
 
@@ -475,23 +586,27 @@ def tool_query_tool_change_trend(tool_type: str = "", ring_range: list = [], int
     summary直接给出total_records、replaced_count、replacement_rate_pct、segment_count及请求/实际环段；总计直接引用，不需累加segments。改变范围或刀型须重新查询。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     interval 为每段环数，默认50环一段。
+    trend 只比较首末两段，不是趋势检验；为"数据不足"时不要判断趋势。每段的 abnormal_rate 是已分类异常率。
     """
     return query_tool_change_trend(_to_json({"tool_type": tool_type, "ring_range": ring_range, "interval": interval}))
 
 
-@tool(args_schema=PositionQuery)
+@tool(args_schema=PositionImpactQuery)
 def tool_query_position_stratum_impact(tool_type: str = "", ring_range: list = [], top_n: int = 10) -> str:
     """对照各刀位在开仓点地层标签下的更换次数；不能据此推断地层影响强度或因果。
     tool_type 可选值: DISC/SCRAPER，不知道传空字符串；当前统计不纳入撕裂刀。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     top_n: 返回前N个刀位，默认10。
+    replacement_count 是实际更换次数，total 是地层标签关联次数，一次更换可能对应多个标签，两者不能互换。
     """
     return query_position_stratum_impact(_to_json({"tool_type": tool_type, "ring_range": ring_range, "top_n": top_n}))
 
 
 @tool(args_schema=RecordQuery)
 def tool_query_tunneling_summary(ring_range: list = [], limit: int = 10) -> str:
-    """查询掘进动态数据概览。适用于总推力、刀盘扭矩、刀盘转速、贯入力、最近掘进记录等问题。"""
+    """查询掘进动态数据概览：总推力、刀盘扭矩、刀盘转速、贯入力的均值和范围，以及最近记录。
+    limit: 返回最近几条记录，默认10。均值按已导入的分段记录计算，不是原始采样点；贯入力单位未标注。
+    """
     return query_tunneling_summary(_to_json({"ring_range": ring_range, "limit": limit}))
 
 
@@ -505,22 +620,112 @@ def tool_query_tunneling_trend(ring_range: list = [], interval: int = 50) -> str
 
 @tool(args_schema=AnomalyQuery)
 def tool_query_tunneling_anomaly(ring_range: list = [], threshold_k: float = 1.5) -> str:
-    """查询掘进动态异常。适用于推力、扭矩、贯入力异常偏高或异常波动等问题。"""
+    """分段均值偏高筛查：找出推力、扭矩、贯入力超过均值 threshold_k 倍的分段记录。
+    anomaly_records 列出命中的环号、段号、起止时间和数值。这不是故障诊断，库里没有原始采样点，不能回答瞬时峰值或波动。
+    """
     return query_tunneling_anomaly(_to_json({"ring_range": ring_range, "threshold_k": threshold_k}))
 
 
 @tool(args_schema=TunnelingTrendQuery)
 def tool_query_tunneling_wear_correlation(ring_range: list = [], interval: int = 50) -> str:
-    """关联分析掘进动态、换刀磨损和地层数据。适用于推力/扭矩异常是否和换刀、磨损、地层有关的问题。"""
+    """把掘进、换刀和地层数据按环段并列。先看 coverage（各类数据各自覆盖的环号和时间）和 comparable_segment_count；可比分段少于2个时只分别列出，不做对照。并列数据不能用来判断关联或原因。"""
     return query_tunneling_wear_correlation(_to_json({"ring_range": ring_range, "interval": interval}))
+
+
+@tool(args_schema=InspectionQuery)
+def tool_query_tool_inspections(ring_range: list = [], tool_type: str = "", cutter_position_no: str = "", shield_machine_id: int | None = None, recent_openings: int | None = None, check_result: str | None = None, list_limit: int = 20) -> str:
+    """查询现场检查结果：需关注但没更换的刀、还没检查的刀位、每次开仓的检查完成情况和移动任务状态。适用于"哪些刀需要关注""哪些刀位还没检查""这次开仓检查完了没有"。
+    记录数按明细行计，同一刀位在不同开仓各算一次；position_count 是去重后的刀位数，两者不能互换。
+    更换行的检查结果 NORMAL 是移动端保存时的默认值，不代表磨损正常；磨损看 wear_condition。
+    recent_openings 和 ring_range 只能给一个。
+    """
+    return query_tool_inspections(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+
+
+@tool(args_schema=RepairQuery)
+def tool_query_old_tool_repairs(ring_range: list = [], tool_type: str = "", cutter_position_no: str = "", shield_machine_id: int | None = None, inspection_status: str | None = None, disposition: str | None = None, list_limit: int = 20) -> str:
+    """查询拆下旧刀的厂家返修记录：待反馈、已确认、已归档各多少，报废还是可维修，登记维修金额，轴承、刀圈等部件失效原因，照片数。
+    "已报废"只看 scrapped_count（厂家已确认或已归档、且处置为报废）；scrap_suggestion_count 是还在等厂家反馈的报废建议，不能说成已报废。
+    金额是登记金额，不是实际支出。一把刀可能有多个失效原因，原因计数会多于刀数。
+    """
+    return query_old_tool_repairs(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+
+
+@tool(args_schema=LifecycleQuery)
+def tool_trace_tool_lifecycle(tool_ids: list) -> str:
+    """按刀具 UID、显示编号或旧刀编号追溯一把刀：装在哪个刀位、哪一环安装和拆下、期间的检查、拆下后的返修结果。
+    只有 removal_basis 为 confirmed 时才有服役环数；建议身份、推断和在役都不给服役环数，不要自行推算。
+    missing_steps 列出缺的环节，照实转述；"没有安装记录"不等于刀不存在。
+    查某个刀位（如 S14R、1、80A）的情况不用本工具，用 tool_query_tool_change_data 的 cutter_position_no。
+    """
+    return trace_tool_lifecycle(_to_json({"tool_ids": tool_ids}))
+
+
+@tool(args_schema=ManufacturerServiceQuery)
+def tool_compare_manufacturer_service(tool_type: str = "", ring_range: list = [], shield_machine_id: int | None = None, manufacturers: list = [], min_samples: int = 3) -> str:
+    """按刀具原安装时的厂家，比较已确认拆下记录的服役环数和异常磨损率；另列各厂家本次新装的供货次数和登记金额。问厂家刀具的寿命、表现、异常率对比都用本工具。
+    只有厂家已确认或已归档的记录进平均值；待反馈和缺确认身份的在 unconfirmed 里单列。样本少的厂家在 insufficient_samples 里，差异不能说明质量高低。
+    """
+    return compare_manufacturer_service(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+
+
+@tool(args_schema=StratumAreaQuery)
+def tool_query_stratum_area(ring_range: list = [], rings: list = [], basis: str = "longitudinal_area") -> str:
+    """查询逐环的地层面积组成。basis=longitudinal_area（默认）是纵断面六类面积（AREA_* 编码），basis=cross_section 是横断面岩性占比。
+    问"占比、面积、占多少"用本工具；问"地层标签、工程条件"用 tool_query_stratum_data。
+    share_pct 是这段范围的平均面积占比，positive_ring_count 是这一类出现过的环数，两者不能互换。
+    面积来自图纸估算，部分环是展示补齐，回答时注明来源；不能据此判断刀具磨损的原因。
+    ring_range 和 rings 只能给一个。
+    """
+    return query_stratum_area(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+
+
+@tool(args_schema=OpeningStratumQuery)
+def tool_query_opening_stratum(shield_machine_id: int | None = None, ring_no: int | None = None, recent_openings: int | None = None) -> str:
+    """查询某次开仓所在环的地层，以及从上次开仓到这次之间经过的地层（首次开仓从第 1 环算起）。
+    同时返回开仓录入时保存的地层快照和现在按地层表重算的结果，两者不一致时都要说明，不要只说一个。
+    """
+    return query_opening_stratum(_to_json({k: v for k, v in locals().items() if v is not None}))
+
+
+@tool(args_schema=CostCatalogQuery)
+def tool_query_tool_cost_catalog(tool_type: str | None = None, tool_model: str | None = None, brand: str | None = None, manufacturer: str | None = None, cost_type: str | None = None, list_limit: int = 50) -> str:
+    """查询成本库里各型号的新刀报价和维修报价，按品牌、厂家列出。
+    新刀选型看新刀报价，不要用维修报价。报价库每个组合只有一条登记，看不出价格涨跌；这里不提供库存。
+    """
+    return query_tool_cost_catalog(_to_json({k: v for k, v in locals().items() if v is not None}))
+
+
+@tool(args_schema=RegisteredAmountsQuery)
+def tool_query_registered_amounts(ring_range: list = [], tool_type: str | None = None, shield_machine_id: int | None = None, group_by: str = "none") -> str:
+    """汇总系统里的登记金额：新装登记金额、厂家已确认的返修金额、还在等厂家反馈的返修金额。
+    total_registered_cost_yuan = 新装 + 已确认返修；待反馈的单列，不加进合计。这些都是登记金额，不是实际支出。
+    group_by 可选 manufacturer（新装归本次新装的厂家，返修归拆下旧刀的原安装厂家）、tool_type、opening。
+    """
+    return query_registered_amounts(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+
+
+class _DataCatalogTool(StructuredTool):
+    def _to_args_and_kwargs(self, tool_input, tool_call_id):
+        # LangChain 的零参数工具跳过 schema 校验，目录仍须拒绝项目注入。
+        self.args_schema.model_validate(tool_input)
+        return (), {}
+
+
+def tool_query_data_catalog() -> str:
+    """列出当前能查的数据：刀型、型号、三套地层编码，以及开仓、换刀、掘进、地层、报价、返修、移动任务各自覆盖的环号和时间范围。
+    不确定某个编码是否存在，或者要说明某类数据覆盖到哪里时，先查本工具。not_available 里列出的内容库里没有，直接说明不能回答。
+    """
+    return query_data_catalog(_to_json({}))
+
+
+tool_query_data_catalog = _DataCatalogTool.from_function(tool_query_data_catalog, args_schema=DataCatalogQuery)
 
 
 TOOLS = [
     tool_query_tool_change_data,
     tool_query_stratum_data,
-    tool_calculate_tool_performance,
     tool_recommend_tools,
-    tool_compare_manufacturer_performance,
     tool_analyze_stratum_wear_correlation,
     tool_query_opening_records,
     tool_query_cutter_position_stats,
@@ -530,6 +735,9 @@ TOOLS = [
     tool_query_tunneling_trend,
     tool_query_tunneling_anomaly,
     tool_query_tunneling_wear_correlation,
+    tool_query_tool_inspections, tool_query_old_tool_repairs, tool_trace_tool_lifecycle,
+    tool_compare_manufacturer_service, tool_query_stratum_area, tool_query_opening_stratum,
+    tool_query_tool_cost_catalog, tool_query_registered_amounts, tool_query_data_catalog,
 ]
 
 for _registered_tool in TOOLS:
@@ -543,10 +751,14 @@ TOOL_GROUPS = {
         tool_query_tool_change_trend,
         tool_query_cutter_position_stats,
         tool_query_opening_records,
-        tool_calculate_tool_performance,
+        tool_trace_tool_lifecycle,
+        tool_query_tool_inspections,
+        tool_query_old_tool_repairs,
         tool_recommend_tools,
     ],
     "opening": [
+        tool_query_tool_inspections,
+        tool_query_opening_stratum,
         tool_query_opening_records,
         tool_query_tool_change_data,
         tool_query_tool_change_trend,
@@ -557,11 +769,14 @@ TOOL_GROUPS = {
         tool_query_tool_change_data,
     ],
     "manufacturer": [
-        tool_compare_manufacturer_performance,
-        tool_analyze_stratum_wear_correlation,
-        tool_query_stratum_data,
+        tool_compare_manufacturer_service,
+        tool_query_tool_cost_catalog,
+        tool_query_registered_amounts,
+        tool_recommend_tools,
     ],
     "stratum": [
+        tool_query_stratum_area,
+        tool_query_opening_stratum,
         tool_query_stratum_data,
         tool_analyze_stratum_wear_correlation,
         tool_query_position_stratum_impact,
@@ -572,7 +787,12 @@ TOOL_GROUPS = {
         tool_query_tunneling_anomaly,
         tool_query_tunneling_wear_correlation,
     ],
+    "repair": [tool_query_old_tool_repairs, tool_trace_tool_lifecycle, tool_query_registered_amounts],
+    "cost": [tool_query_tool_cost_catalog, tool_query_registered_amounts, tool_recommend_tools],
 }
+for _group_tools in TOOL_GROUPS.values():
+    _group_tools.append(tool_query_data_catalog)
+del _group_tools
 
 class ToolAssistant:
     """刀具管理智能助手"""
@@ -683,35 +903,47 @@ class ToolAssistant:
             agent=agent,
             tools=tools,
             verbose=False,
-            max_iterations=6,
+            max_iterations=10,
             handle_parsing_errors=True,
             return_intermediate_steps=True,
         )
 
     def _is_multi_source_query(self, query: str) -> bool:
         sources = [
-            "换刀", "换刀明细", "磨损",
-            "地层",
-            "厂家", "厂商", "品牌",
-            "刀位", "刀盘",
-            "寿命", "累计推进",
-            "备刀", "推荐",
-            "掘进", "推力", "扭矩", "转速", "贯入力",
-            "开仓",
+            ("换刀", "更换", "磨损"), ("地层", "岩性", "纵断面", "横断面", "孤石"),
+            ("厂家", "厂商", "品牌"), ("刀位", "刀盘"), ("寿命", "追溯", "服役"),
+            ("报价", "单价", "登记金额", "费用", "成本", "推荐", "选型"),
+            ("掘进", "推力", "扭矩", "转速", "贯入力"), ("开仓",),
+            ("返修", "报废", "厂家反馈", "失效原因", "轴承", "刀圈损坏"),
+            ("需关注", "没换", "未检查", "还没检查", "检查完成", "完成度", "移动任务"),
         ]
-        hit_count = sum(1 for word in sources if word in query)
+        hit_count = sum(any(word in query for word in words) for words in sources)
         return hit_count >= 3 or ("结合" in query and hit_count >= 2) or ("综合" in query and hit_count >= 2)
     def _tool_group_for_query(self, query: str) -> str:
         if self._is_multi_source_query(query):
             return "all"
+        if any(word in query for word in ("返修", "报废", "厂家反馈", "失效原因", "轴承", "刀圈损坏")):
+            return "repair"
+        if any(word in query for word in ("报价", "单价", "登记金额", "费用", "成本")):
+            return "cost"
+        if any(word in query for word in ("需关注", "没换", "未检查", "还没检查", "检查完成", "完成度", "移动任务")):
+            return "opening"
+        if self._extract_tool_numbers(query):
+            return "tool_change"
         if self._is_tunneling_query(query):
             return "tunneling"
         if self._is_position_followup_query(query):
             return "tool_change"
-        if self._is_tool_recommendation_query(query) or self._is_tool_performance_query(query):
+        if self._is_tool_recommendation_query(query):
             return "tool_change"
         if self._is_manufacturer_query(query):
             return "manufacturer"
+        if self._is_tool_performance_query(query):
+            return "tool_change"
+        if self._is_stratum_area_query(query):
+            return "stratum"
+        if "开仓" in query and "地层" in query:
+            return "opening"
         if self._is_position_stratum_query(query) or self._is_stratum_wear_query(query) or self._is_stratum_distribution_query(query):
             return "stratum"
         if self._is_opening_query(query):
@@ -730,7 +962,7 @@ class ToolAssistant:
         model_selects_tools: bool = False,
     ):
         self._ensure_agent_runtime()
-        # 消融：关闭工具分组裁剪后一律注入全部 14 个工具，用于量化裁剪对
+        # 消融：关闭工具分组裁剪后一律注入全部 21 个工具，用于量化裁剪对
         # 工具选择准确率与 prompt token 的贡献。
         group = "all" if model_selects_tools or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(query)
         selected_tools = TOOLS if group == "all" else TOOL_GROUPS[group]
@@ -1149,14 +1381,16 @@ class ToolAssistant:
         """Limit inherited slots to parameters understood by this intent."""
         slots = (context or {}).get("memory_slots") or {}
         if self._is_actual_total_cost_query(query):
-            return {}
+            return {key: value for key, value in slots.items() if key in {"ring_range", "tool_type"}}
+        if any(word in query for word in ("需关注", "需要关注", "没换", "未检查", "没检查", "检查完成", "检查完", "完成度", "移动任务")):
+            return {key: value for key, value in slots.items() if key in {"ring_range", "tool_type", "cutter_position_no"}}
         if self._is_recent_abnormal_wear_cause_query(query):
             return {key: value for key, value in slots.items() if key in {"ring_range", "tool_type"}}
-        if self._is_tool_performance_query(query) and not self._is_manufacturer_query(query):
+        if self._is_tool_performance_query(query) and self._extract_tool_numbers(query) and not self._is_tool_recommendation_query(query) and not self._is_manufacturer_query(query):
             return {}
         if self._is_opening_efficiency_query(query) or self._is_opening_stratum_change_query(query) or self._is_stratum_distribution_query(query):
             return {key: value for key, value in slots.items() if key == "ring_range"}
-        if self._is_tool_recommendation_query(query):
+        if self._is_tool_recommendation_query(query) or self._is_group_service_query(query):
             policy = {"ring_range", "tool_type"}
             return {key: value for key, value in slots.items() if key in policy}
         group = self._tool_group_for_query(query)
@@ -1167,6 +1401,8 @@ class ToolAssistant:
             "position": {"ring_range", "tool_type"},
             "tool_change": {"ring_range", "tool_type", "cutter_position_no"},
             "manufacturer": {"ring_range", "tool_type"},
+            "repair": {"ring_range", "tool_type", "cutter_position_no"},
+            "cost": {"ring_range", "tool_type"},
             "all": {"ring_range", "tool_type", "cutter_position_no"},
         }.get(group, set())
         is_point = (self._extract_cutter_position_no(query) or self._is_position_followup_query(query)) and not any(
@@ -1242,6 +1478,9 @@ class ToolAssistant:
         if not context:
             return None
         parts = []
+        if context.get("focus_sources") and self._route_mode_for_context(context) != "rule":
+            labels = "、".join(FOCUS_SOURCE_LABELS[key] for key in context["focus_sources"])
+            parts.append(f'用户在界面上选择了这些数据：{labels}。优先用这些数据回答；问题确实需要其他数据时也可以查询。')
 
         # 基础信息
         if context.get("project_id"):
@@ -1265,13 +1504,17 @@ class ToolAssistant:
         if context.get("snapshot_total_openings") is not None:
             snap_parts.append(f"累计开仓 {context['snapshot_total_openings']} 次")
         if context.get("snapshot_latest_ring") not in (None, '未知', ''):
-            snap_parts.append(f"最新环号 {context['snapshot_latest_ring']} 环")
+            snap_parts.append(f"最新开仓第 {context['snapshot_latest_ring']} 环")
         if context.get("snapshot_total_changes") is not None:
-            snap_parts.append(f"换刀明细共 {context['snapshot_total_changes']} 条")
+            snap_parts.append(f"现场观测记录 {context['snapshot_total_changes']} 条")
         if context.get("snapshot_total_replaced") is not None:
             snap_parts.append(f"实际更换 {context['snapshot_total_replaced']} 次")
         if context.get("snapshot_total_positions") is not None:
-            snap_parts.append(f"刀位总数 {context['snapshot_total_positions']} 个")
+            snap_parts.append(f"有效刀位 {context['snapshot_total_positions']} 个")
+        for key, label in (("tunneling", "掘进数据"), ("stratum", "地层资料")):
+            coverage = context.get(f"snapshot_{key}_coverage") or {}
+            if coverage.get("ring_min") is not None:
+                snap_parts.append(f"{label}覆盖第 {coverage['ring_min']}–{coverage['ring_max']} 环")
 
         if snap_parts:
             parts.append("【项目数据概况】" + "，".join(snap_parts))
@@ -1310,6 +1553,7 @@ class ToolAssistant:
         "查询", "查一下", "分析", "统计", "换刀", "开仓", "磨损", "刀位",
         "厂家", "地层", "环号", "更换", "多少", "哪个", "最近", "趋势",
         "记录", "次数", "情况", "数据",
+        "返修", "报废", "反馈", "追溯", "报价", "登记金额", "费用", "成本", "检查", "需关注", "需要关注",
     )
 
     def _needs_tool_call(self, query: str) -> bool:
@@ -1334,8 +1578,7 @@ class ToolAssistant:
         # Mixed requests still enter the evidence path for supported data parts.
         capability_only = re.fullmatch(
             r"\s*(?:请问|请查询|查询|查一下)?(?:"
-            r"(?:本项目|本工程|当前项目|项目)?的?(?:实际总支出|实际总成本|实际采购与返修总支出)(?:是多少|多少)?"
-            r"|(?:你|助手)(?:能否|能|可以)(?:帮我)?(?:修改|删除|新增)(?:换刀记录|业务数据)(?:吗)?"
+            r"(?:你|助手)(?:能否|能|可以)(?:帮我)?(?:修改|删除|新增)(?:换刀记录|业务数据)(?:吗)?"
             r"|(?:你|助手)(?:能否|能|可以)(?:查询)?(?:库存台账|实际支出台账)(?:吗)?"
             r")[！!。？?\s]*", query,
         )
@@ -1383,14 +1626,21 @@ class ToolAssistant:
 
     def _opening_params(self, user_query: str, context: dict = None) -> dict:
         # 人工确认的开仓数量是整仓汇总，不能冒充按刀型或刀位拆分的统计。
-        return self._context_params(
-            user_query, context, limit=self._extract_limit(user_query, 10),
+        params = self._context_params(
+            user_query, context, limit=min(self._extract_limit(user_query, 10), 20),
             tool_type=None, cutter_position_no=None,
         )
+        if "已确认" in user_query or re.search(r"(?:排除|不含|不看|去掉)草稿", user_query):
+            params["summary_status"] = "CONFIRMED"
+        elif "未确认" in user_query or "草稿" in user_query:
+            params["summary_status"] = "DRAFT"
+        return params
     def _extract_cutter_position_no(self, query: str) -> str:
         match = re.search(r"([A-Za-z]+\d+[A-Za-z]*|\d+[A-Za-z]*)\s*(?:号)?\s*刀位", query, re.IGNORECASE)
         if not match:
             match = re.search(r"刀位\s*([A-Za-z]+\d+[A-Za-z]*|\d+[A-Za-z]*)(?![A-Za-z0-9])", query, re.IGNORECASE)
+        if not match:
+            match = re.search(r"(?<![A-Za-z0-9_-])(S(?:[1-9]|1[0-9])[LR]|80[AB]|Y[135])(?![A-Za-z0-9_-])", query, re.IGNORECASE)
         return match.group(1).upper() if match else ""
 
     def _tool_type_label(self, tool_type: str) -> str:
@@ -1401,9 +1651,6 @@ class ToolAssistant:
         project_id = params.get("project_id")
         if project_id and project_id in user_query:
             scope.append(f"项目：{project_id}")
-        named_manufacturers = [name for name in ("铁建重工", "中铁装备", "海瑞克", "维尔特", "罗宾斯", "盾安重工") if name in user_query]
-        if named_manufacturers:
-            scope.append("对比厂家：" + "、".join(named_manufacturers))
         tool_label = self._tool_type_label(params.get("tool_type"))
         if tool_label:
             scope.append(f"刀具类型：{tool_label}")
@@ -1435,6 +1682,9 @@ class ToolAssistant:
         return not any(token in compact for token in entity_tokens)
 
     def _extract_ring_range(self, query: str) -> list:
+        query = re.sub(_QUERY_NUMBER, lambda match: str(_query_number(match.group())), query)
+        if len(self._extract_discrete_rings(query)) > 1:
+            return []
         # "第100环到第300环"这类两端都带"环"字的写法：旧模式要求数字紧邻"到"，
         # 会漏掉中间的"环"，落到单环分支得出 [100,100]（鲁棒性校准实测）
         match = re.search(r"第?\s*(\d+)\s*环?\s*(?:-|~|到|至)\s*第?\s*(\d+)\s*环", query)
@@ -1448,10 +1698,7 @@ class ToolAssistant:
 
         # 相对窗口和分段步长中的数字不是绝对环号。必须在单环匹配前排除，
         # 否则“最近100环”会变成 [100,100]，“按50环为一段”会变成 [50,50]。
-        if self._is_recent_ring_window_query(query) or re.search(
-            r"(?:按|每)?\s*\d+\s*环\s*(?:为|作为)?\s*(?:一段|每段|分段)",
-            query,
-        ):
+        if self._is_recent_ring_window_query(query) or self._extract_interval(query, 0):
             return []
 
         single_match = re.search(r"(?:第\s*)?(\d+)\s*环", query)
@@ -1459,109 +1706,47 @@ class ToolAssistant:
             ring = int(single_match.group(1))
             return [ring, ring]
 
-        cn_digits = {
-            "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-            "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
-        }
-
-        def parse_cn_number(value: str):
-            value = value.strip()
-            if not value:
-                return None
-            if value == "十":
-                return 10
-            if "十" in value:
-                left, _, right = value.partition("十")
-                tens = cn_digits.get(left, 1 if left == "" else None)
-                ones = cn_digits.get(right, 0 if right == "" else None)
-                if tens is None or ones is None:
-                    return None
-                return tens * 10 + ones
-            total = 0
-            for char in value:
-                if char not in cn_digits:
-                    return None
-                total = total * 10 + cn_digits[char]
-            return total
-
-        cn_match = re.search(r"(?:第\s*)?([零〇一二两三四五六七八九十]{1,6})\s*环", query)
-        if cn_match:
-            ring = parse_cn_number(cn_match.group(1))
-            if ring is not None:
-                return [ring, ring]
         return []
 
     @staticmethod
     def _is_recent_ring_window_query(query: str) -> bool:
         return bool(re.search(
-            r"(?:最近|近)\s*(?:\d+|[一二两三四五六七八九十百]+)\s*环",
+            rf"(?:最近|近)(?:有记录的)?\s*{_QUERY_NUMBER}\s*环",
             query,
         ))
 
     @staticmethod
     def _extract_interval(query: str, default: int = 50) -> int:
+        query = re.sub(_QUERY_NUMBER, lambda match: str(_query_number(match.group())), query)
         match = re.search(
-            r"(?:按|每)?\s*(\d+)\s*环\s*(?:为|作为)?\s*(?:一段|每段|分段)",
+            r"(?:按|每)?\s*(\d+)\s*环\s*(?:为|作为)?\s*(?:一段|1段|每段|分段)|(?:按|每)\s*(\d+)\s*环\s*(?:统计|对比|比较)",
             query,
         )
         if not match:
             return default
-        return max(1, min(int(match.group(1)), 500))
+        return max(1, min(int(match.group(1) or match.group(2)), 500))
 
     def _extract_limit(self, query: str, default: int = 10) -> int:
-        match = re.search(r"(?:最近|前)\s*(\d+)\s*(?:次|条|个)", query)
+        query = re.sub(_QUERY_NUMBER, lambda match: str(_query_number(match.group())), query)
+        match = re.search(r"(?:最近|近|前)\s*(\d+)\s*(?:次|条|个|种|名)|top\s*(\d+)", query, re.I)
         if match:
-            return max(1, min(int(match.group(1)), 50))
+            return max(1, min(int(match.group(1) or match.group(2)), 122))
 
-        cn_match = re.search(r"(?:最近|近|前)\s*([一二两三四五六七八九十]+)\s*(?:次|条|个)", query)
-        if not cn_match:
-            return default
-
-        cn_number = cn_match.group(1)
-        digit_map = {
-            "一": 1,
-            "二": 2,
-            "两": 2,
-            "三": 3,
-            "四": 4,
-            "五": 5,
-            "六": 6,
-            "七": 7,
-            "八": 8,
-            "九": 9,
-        }
-        if cn_number == "十":
-            value = 10
-        elif cn_number.startswith("十"):
-            value = 10 + digit_map.get(cn_number[1:], 0)
-        elif "十" in cn_number:
-            tens, ones = cn_number.split("十", 1)
-            value = digit_map.get(tens, 1) * 10 + digit_map.get(ones, 0)
-        else:
-            value = digit_map.get(cn_number, default)
-        return max(1, min(value, 50))
+        return default
 
     def _extract_recent_ring_window(self, query: str, default: int = 100) -> int:
-        match = re.search(r"(?:最近|近)\s*(\d+)\s*环", query)
+        query = re.sub(_QUERY_NUMBER, lambda match: str(_query_number(match.group())), query)
+        match = re.search(r"(?:最近|近)(?:有记录的)?\s*(\d+)\s*环", query)
         if match:
             return max(1, min(int(match.group(1)), 2000))
-        cn_match = re.search(r"(?:最近|近)\s*([一二两三四五六七八九十百]+)\s*环", query)
-        if not cn_match:
-            return default
-        cn = cn_match.group(1)
-        digit_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-        if cn == "百":
-            return 100
-        if cn.endswith("百"):
-            return max(1, min(digit_map.get(cn[:-1], 1) * 100, 2000))
-        if "十" in cn:
-            left, _, right = cn.partition("十")
-            value = digit_map.get(left, 1 if not left else 0) * 10 + digit_map.get(right, 0)
-            return max(1, min(value, 2000))
-        return max(1, min(digit_map.get(cn, default), 2000))
+        return default
 
     def _recent_ring_range(self, user_query: str, context: dict = None) -> list:
         window = self._extract_recent_ring_window(user_query, 100)
+        if "有记录的" in user_query and self._is_tunneling_query(user_query):
+            coverage = _data_coverage((context or {}).get("project_id") or _DEFAULT_PROJECT_ID, "掘进")
+            latest = coverage.get("ring_max")
+            return [max(1, latest - window + 1), latest] if latest is not None else []
         params = {"project_id": (context or {}).get("project_id") or _DEFAULT_PROJECT_ID, "limit": 1}
         raw = query_opening_records(json.dumps(params, ensure_ascii=False))
         data = json.loads(raw)
@@ -1577,11 +1762,16 @@ class ToolAssistant:
         return [max(1, latest_ring - window + 1), latest_ring]
 
     def _is_recent_ring_tool_change_query(self, query: str) -> bool:
-        return bool(re.search(r"(?:最近|近)\s*(?:\d+|[一二两三四五六七八九十百]+)\s*环", query)) and any(
+        return self._is_recent_ring_window_query(query) and any(
             kw in query for kw in ("换刀", "更换", "磨损", "刀位")
-        ) and not any(kw in query for kw in ("每", "趋势", "分段"))
+        ) and not any(kw in query for kw in ("每", "趋势", "分段", "变化", "首末", "开仓")) and not any((
+            self._is_manufacturer_query(query), self._is_stratum_wear_query(query),
+            self._is_tunneling_query(query), self._is_tool_recommendation_query(query),
+            self._is_group_service_query(query), self._is_cutter_position_query(query),
+            bool(self._extract_cutter_position_no(query)),
+        ))
     def _is_stratum_wear_query(self, query: str) -> bool:
-        return "地层" in query and any(kw in query for kw in ("磨损", "关联", "影响", "损刀"))
+        return ("地层" in query or bool(self._extract_stratum_types(query))) and any(kw in query for kw in ("磨损", "关联", "影响", "损刀", "换刀", "更换率", "更换数量"))
 
     def _is_manufacturer_query(self, query: str) -> bool:
         known_manufacturers = ("铁建重工", "中铁装备", "海瑞克", "维尔特", "罗宾斯", "盾安重工")
@@ -1592,14 +1782,18 @@ class ToolAssistant:
             "性能", "对比", "质量", "表现", "好", "差", "异常", "成本",
             # 补：计数/概览类问法。题库用例「有几家刀具厂家的数据」原先只满足前半条件，
             # 实测 10/10 落到 Agent 路径——这是"写了用例却到不了分支"的一例。
-            "几家", "多少家", "数据", "情况", "统计",
+            "几家", "多少家", "数据", "情况", "统计", "磨损", "换刀", "寿命", "服役",
         ))
 
     def _is_position_stratum_query(self, query: str) -> bool:
         return "刀位" in query and "地层" in query and any(kw in query for kw in ("影响", "关联", "损耗", "磨损"))
 
     def _is_cutter_position_query(self, query: str) -> bool:
-        return "刀位" in query and any(
+        if "更换率" in query or ("频率" in query and "环段" in query) or self._extract_interval(query, 0):
+            return False
+        if self._is_recent_ring_window_query(query) and "汇总" in query:
+            return False
+        return ("刀位" in query or "刀盘" in query) and any(
             kw in query for kw in ("排行", "排名", "最", "容易", "高频", "磨损", "更换", "风险", "分布")
         )
 
@@ -1615,24 +1809,26 @@ class ToolAssistant:
 
     def _is_opening_query(self, query: str) -> bool:
         has_opening = "开仓" in query or ("开" in query and "仓" in query)
-        return has_opening and any(kw in query for kw in ("最近", "记录", "平均", "间隔", "多少", "时长", "情况", "异常"))
+        return has_opening and any(kw in query for kw in ("最近", "记录", "平均", "间隔", "多少", "时长", "情况", "异常", "已确认", "未确认", "草稿"))
 
     def _is_opening_stratum_change_query(self, query: str) -> bool:
         return "开仓" in query and "地层" in query and any(
             kw in query for kw in ("换刀", "刀位", "异常", "联动", "结合", "对应")
         )
     def _is_change_trend_query(self, query: str) -> bool:
-        return any(kw in query for kw in ("趋势", "阶段", "频率", "增加", "下降", "变化")) and any(
+        # "按50环为一段""分段""首末环段"也是分段统计的问法。
+        return (any(kw in query for kw in ("趋势", "阶段", "频率", "增加", "下降", "变化", "分段", "首末"))
+                or bool(self._extract_interval(query, 0))) and any(
             kw in query for kw in ("换刀", "更换", "磨损")
         )
 
     def _is_tool_change_summary_query(self, query: str) -> bool:
         return any(kw in query for kw in ("换刀", "更换", "磨损", "损坏", "撕裂刀", "滚刀", "刮刀")) and any(
-            kw in query for kw in ("统计", "情况", "数据", "多少", "分布", "汇总")
+            kw in query for kw in ("统计", "情况", "数据", "多少", "分布", "汇总", "更换率")
         )
 
     def _is_stratum_distribution_query(self, query: str) -> bool:
-        return "地层" in query and any(kw in query for kw in ("分布", "类型", "占比", "有哪些", "什么地层", "主要"))
+        return "工程条件" in query or ("地层" in query and any(kw in query for kw in ("分布", "类型", "标签", "占比", "有哪些", "什么地层", "主要")))
 
     def _is_tunneling_query(self, query: str) -> bool:
         return any(kw in query for kw in (
@@ -1651,13 +1847,13 @@ class ToolAssistant:
         ))
 
     def _is_recent_abnormal_wear_cause_query(self, query: str) -> bool:
-        return any(kw in query for kw in ("异常磨损", "磨损原因", "可能原因", "原因分析")) and any(
+        return any(kw in query for kw in ("原因", "为什么", "导致", "成因")) and any(kw in query for kw in ("异常磨损", "磨损原因", "可能原因", "原因分析")) and any(
             # 补「近期/最近」：该分支本身就以最近 100 环为窗口，时间限定与地层/掘进限定同样合格
             kw in query for kw in ("地层", "掘进", "换刀", "开仓", "近期", "最近")
         )
 
     def _is_opening_efficiency_query(self, query: str) -> bool:
-        if any(kw in query for kw in ("检查一把", "更换一把")) and any(
+        if any(kw in query for kw in ("检查一把", "更换一把", "每把刀", "每把滚刀", "每把刮刀")) and any(
             kw in query for kw in ("多久", "多长时间", "耗时", "时长", "效率", "小时", "平均")
         ):
             # 「平均更换一把刀多久」这类问句不带"开仓"二字，但问的就是开仓作业效率。
@@ -1667,11 +1863,13 @@ class ToolAssistant:
             # 压在 tool_recommendation 与 tool_performance 之前）。
             return True
         return "开仓" in query and any(kw in query for kw in (
-            "效率", "检查一把", "更换一把", "检查刀具数量", "更换刀具数量", "检查数", "更换数", "多长时间"
+            "效率", "耗时", "多长时间"
         ))
 
     def _is_tool_recommendation_query(self, query: str) -> bool:
-        return any(kw in query for kw in ("备刀", "备件", "采购", "库存", "推荐", "准备", "下一阶段")) and any(
+        if not any(word in query for word in ("推荐", "选型", "备刀", "备件")) and any(word in query for word in ("成本", "费用", "登记金额", "支出", "付款")):
+            return False
+        return any(kw in query for kw in ("备刀", "备件", "采购", "库存", "推荐", "选型", "准备", "下一阶段")) and any(
             kw in query for kw in ("刀", "刀具", "刀位", "厂家", "地层", "换刀", "型号", "建议")
         )
 
@@ -1682,6 +1880,46 @@ class ToolAssistant:
             # 不必再要求问句里出现"刀"字。分支内部仍会校验能否抽到编号，抽不到自然下沉。
             or bool(re.search(r"(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9-])", query))
         )
+
+    @staticmethod
+    def _extract_tool_numbers(query: str) -> list:
+        values = re.findall(r"(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9-])", query)
+        values += re.findall(r"(?:UID|显示编号|旧刀编号|刀具编号|追溯)\s*[:：]?\s*([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*)(?![A-Za-z0-9_-])", query, re.I)
+        if not values and "刀位" not in query:
+            values = re.findall(r"\bT\d+\b", query)
+        from application.shield.cutter_position_scope import ACTIVE_CUTTER_POSITION_CODES
+        return list(dict.fromkeys(value for value in values if value.upper() not in ACTIVE_CUTTER_POSITION_CODES and not re.fullmatch(r"\d+-\d+", value)))
+
+    def _is_group_service_query(self, query: str) -> bool:
+        return any(word in query for word in ("平均寿命", "平均服役", "服役环数")) and not any((
+            self._extract_tool_numbers(query), self._extract_cutter_position_no(query),
+            self._is_manufacturer_query(query), self._is_tool_recommendation_query(query),
+        ))
+
+    @staticmethod
+    def _extract_discrete_rings(query: str) -> list:
+        if not re.search(r"环\s*(?:和|及|与|、|，|,)\s*第?", query):
+            return []
+        return list(dict.fromkeys(_query_number(value) for value in re.findall(rf"第?\s*({_QUERY_NUMBER})\s*环", query)))
+
+    @staticmethod
+    def _extract_stratum_types(query: str) -> list:
+        query = query.replace("粘", "黏")
+        return [code for code, label in STRATUM_TYPE_NAMES.items()
+                if label in query or label.replace("地层", "").replace("全断面", "") in query]
+
+    def _recommendation_params(self, query: str, context: dict = None) -> dict:
+        params = self._context_params(query, context, top_n=self._extract_limit(query, 5))
+        strata = self._extract_stratum_types(query)
+        params["stratum_basis"] = "longitudinal_area" if "面积" in query else "label"
+        params["stratum_types"] = [f"AREA_{code}" for code in strata] if "面积" in query else strata
+        price = re.search(r"(?:单价|报价|价格)\s*(?:上限|不超过|不高于|最多|低于|小于|≤|<=|为)?\s*(\d+(?:\.\d+)?)\s*(万)?", query)
+        if price:
+            params["max_unit_price"] = float(price.group(1)) * (10000 if price.group(2) else 1)
+        samples = re.search(rf"(?:最少|至少|不低于)\s*(?:完成服役)?\s*(?:样本)?\s*({_QUERY_NUMBER})\s*把?", query)
+        if samples:
+            params["min_samples"] = _query_number(samples.group(1))
+        return params
 
     def _is_tunneling_wear_correlation_query(self, query: str) -> bool:
         return self._is_tunneling_query(query) and any(kw in query for kw in (
@@ -1721,41 +1959,37 @@ class ToolAssistant:
             replaced = item.get("tool_change_replaced")
             if replaced is None:
                 replaced = item.get("replaced_tool_count")
-            checked = checked or 0
-            replaced = replaced or 0
-            try:
-                duration = float(duration) if duration is not None else None
-            except Exception:
-                duration = None
-            check_hours = round(duration / checked, 2) if duration and checked else None
-            replace_hours = round(duration / replaced, 2) if duration and replaced else None
-            rows.append({"item": item, "checked": checked, "replaced": replaced, "check_hours": check_hours, "replace_hours": replace_hours})
+            duration = number(duration)
+            change_duration = number(item.get("tool_change_duration_hours"))
+            check_minutes = round(duration * 60 / checked, 1) if duration is not None and checked else None
+            replace_minutes = round(change_duration * 60 / replaced, 1) if change_duration is not None and replaced else None
+            rows.append({"item": item, "checked": checked, "replaced": replaced, "duration": duration,
+                         "change_duration": change_duration, "check_minutes": check_minutes, "replace_minutes": replace_minutes})
 
-        valid_check = [r["check_hours"] for r in rows if r["check_hours"] is not None]
-        valid_replace = [r["replace_hours"] for r in rows if r["replace_hours"] is not None]
-        avg_check = round(sum(valid_check) / len(valid_check), 2) if valid_check else "暂无"
-        avg_replace = round(sum(valid_replace) / len(valid_replace), 2) if valid_replace else "暂无"
+        valid_check = [r for r in rows if r["check_minutes"] is not None]
+        valid_replace = [r for r in rows if r["replace_minutes"] is not None]
+        avg_check = f'{sum(r["duration"] for r in valid_check) * 60 / sum(r["checked"] for r in valid_check):.1f}' if valid_check else "暂无"
+        avg_replace = f'{sum(r["change_duration"] for r in valid_replace) * 60 / sum(r["replaced"] for r in valid_replace):.1f}' if valid_replace else "暂无"
 
         lines = [
             f"开仓作业效率统计：本次分析最近 {len(records)} 次开仓。",
             "",
             "结论：",
-            f"- 平均检查一把刀约 {avg_check} 小时；平均更换一把刀约 {avg_replace} 小时。",
+            f"- 平均检查一把刀约 {avg_check} 分钟；平均更换一把刀约 {avg_replace} 分钟。",
             "",
             "关键依据（数量为整仓汇总，不按刀型或刀位拆分）：",
         ]
-        for r in rows[:8]:
-            item = r["item"]
-            lines.append(
-                f"- 环号 {item.get('ring_no')}：开仓 {item.get('opening_duration') if item.get('opening_duration') is not None else '暂无'} 小时，"
-                f"检查 {r['checked']} 把，更换 {r['replaced']} 把，"
-                f"检查效率 {r['check_hours'] if r['check_hours'] is not None else '暂无'} 小时/把，"
-                f"更换效率 {r['replace_hours'] if r['replace_hours'] is not None else '暂无'} 小时/把，"
-                f"数量来源：{'已确认汇总' if item.get('count_source') == 'confirmed_summary' else '现场明细（未确认）'}。"
-            )
+        lines.extend(self._answer_table(
+            ["环号", "开仓时长（h）", "换刀时长（h）", "检查（把）", "更换（把）", "检查效率（分钟/把）", "更换效率（分钟/把）", "数量来源"],
+            [[r["item"].get("ring_no"), r["duration"], r["change_duration"], r["checked"], r["replaced"],
+              f'{r["check_minutes"]:.1f}' if r["check_minutes"] is not None else None,
+              f'{r["replace_minutes"]:.1f}' if r["replace_minutes"] is not None else None,
+              "已确认汇总" if r["item"].get("count_source") == "confirmed_summary" else "现场明细（未确认）"] for r in rows],
+        ))
         lines.extend([
             "",
-            "建议：检查效率异常偏低时，优先核对开仓组织、刀具检查流程和异常刀位集中度；更换效率异常偏低时，重点看高频刀位、备刀准备和吊装/拆装耗时。",
+            "平均值 = 总时长 ÷ 总把数，是按开仓（换刀）总时长折算的，不是每把刀的实际作业工时。",
+            f"{sum(r['change_duration'] is None for r in rows)} 次开仓缺少换刀总时长，未计入平均更换效率；检查效率使用开仓时长。缺少时长或把数为 0 的记录不参与对应平均值。",
         ])
         return "\n".join(lines)
 
@@ -1782,15 +2016,21 @@ class ToolAssistant:
             return data.get("message", "未找到符合条件的换刀记录。")
 
         lines = ['## 换刀统计', '',
-                 f"共 **{data.get('total_records')}** 条现场观测记录，实际更换 **{data.get('replaced_count')}** 次，更换率 **{data.get('replacement_rate') or '暂无'}**。"]
+                 f"共 **{data.get('total_records')}** 条现场观测记录，实际更换 **{data.get('replaced_count')}** 次，更换率 **{display(data.get('replacement_rate'))}**。"]
         wear = data.get('wear_distribution') or []
         if wear:
             lines.extend(['', '### 磨损分布', ''])
             lines.extend(self._answer_table(['磨损状态', '记录数'], [
-                [item.get('wear_condition') or '未填写', item.get('count')] for item in wear[:8]
+                [item.get('wear_condition') or '未填写', item.get('count')] for item in wear
             ]))
-            if len(wear) > 8:
-                lines.extend(['', f'显示前 8 类，共 {len(wear)} 类磨损状态。'])
+            buckets = classify_wear_counts(wear, count_key='count')
+            denominator = buckets['normal'] + buckets['abnormal']
+            lines.extend(['', f"异常合计 {buckets['abnormal']} 条；占比的分母为已分类的观测记录数（{denominator} 条）。", ''])
+            lines.extend(self._answer_table(['异常类型', '数量', '占已分类观测记录'], [
+                [item.get('wear_condition'), item.get('count'), percent(round(item.get('count', 0) / denominator * 100, 1)) if denominator else '暂无']
+                for item in wear if is_abnormal_wear(item.get('wear_condition'))
+            ]))
+            lines.append(f"正常 {buckets['normal']} 条；未分类 {buckets['unknown']} 条。两者不列入异常类型占比，未分类也不计入分母。")
         positions = data.get("top_replaced_positions") or []
         if positions:
             lines.extend(['', '### 高频更换刀位', ''])
@@ -1798,6 +2038,8 @@ class ToolAssistant:
                 [pos.get('cutter_position_no'), pos.get('replacement_count')] for pos in positions
             ]))
         lines.extend(['', '统计口径：仅纳入有效刀位的已检查或已更换记录；次数为累计记录数，不代表不同刀具数量。'])
+        if data.get('scope_note'):
+            lines.extend(['', data.get('scope_note')])
         for warning in (data.get('warnings') or []):
             lines.extend(['', f'提示：{warning}'])
         return "\n".join(lines)
@@ -1805,7 +2047,7 @@ class ToolAssistant:
     def _format_manufacturer_answer(self, raw: str, scope: dict = None) -> str:
         return render_report("manufacturer", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
 
-    def _format_opening_answer(self, raw: str) -> str:
+    def _format_opening_answer(self, raw: str, sort_abnormal: bool = False) -> str:
         data = json.loads(raw)
         if data.get("error"):
             return f"开仓记录查询失败：{data['error']}"
@@ -1813,6 +2055,8 @@ class ToolAssistant:
             return data.get("message", "未找到开仓记录。")
 
         records = data.get("recent_records", []) or []
+        if sort_abnormal:
+            records = sorted(records, key=lambda item: (number(item.get("abnormal_rate")) is not None, number(item.get("abnormal_rate")) or 0), reverse=True)
         total_openings = data.get("total_openings", data.get("total", 0))
         avg_interval = data.get("avg_rings_between_openings")
         avg_duration = data.get("avg_opening_duration_hours")
@@ -1822,6 +2066,11 @@ class ToolAssistant:
             f"共 **{total_openings}** 次开仓，本次展示最近 **{len(records)}** 次。",
             f"平均开仓间隔 {avg_interval if avg_interval is not None else '暂无'} 环；平均开仓时长 {avg_duration if avg_duration is not None else '暂无'} 小时。",
         ]
+        if sort_abnormal:
+            lines.append("按已分类异常率从高到低排列；没有分类数据的记录列在末尾，异常率为暂无。")
+        status_counts = data.get('summary_status_counts')
+        if status_counts:
+            lines.append(f"汇总状态：已确认 {display(status_counts.get('CONFIRMED'))} 次，草稿 {display(status_counts.get('DRAFT'))} 次。")
 
         classified_records = [item for item in records if item.get('abnormal_rate') is not None]
         counted_records = [item for item in records if item.get('tool_change_replaced') is not None]
@@ -1844,13 +2093,13 @@ class ToolAssistant:
                 [[item.get('ring_no'), item.get('open_time'), item.get('rings_between_openings'), item.get('opening_duration'),
                   item.get('tool_change_total'), item.get('tool_change_replaced'), item.get('replacement_rate'),
                   '已确认汇总' if item.get('count_source') == 'confirmed_summary' else '现场明细（未确认）']
-                 for item in records[:10]],
+                 for item in records],
             ))
             lines.extend(['', '统计口径：上表为整仓数量，不按刀型或刀位拆分；已确认记录采用人工确认汇总。', '', '### 现场明细', ''])
 
         detail_rows = []
         warnings = []
-        for item in records[:10]:
+        for item in records:
             positions = item.get("top_replaced_positions") or []
             positions_text = "、".join(str(p) for p in positions if p) or "暂无"
             wear_distribution = item.get("wear_distribution") or {}
@@ -1864,6 +2113,14 @@ class ToolAssistant:
             ])
             for warning in item.get('warnings', []):
                 warnings.append(f"- 环号 {item.get('ring_no')}：{warning}")
+            if item.get('summary_confirmed_at') or item.get('summary_withdrawn_at'):
+                warnings.append(f"- 环号 {item.get('ring_no')}：汇总确认时间 {display(item.get('summary_confirmed_at'))}，撤回时间 {display(item.get('summary_withdrawn_at'))}。")
+            if item.get('summary_missing_fields'):
+                labels = {'checked_tool_count': '检查数', 'replaced_tool_count': '更换数', 'opening_duration': '开仓时长', 'tool_change_duration': '换刀时长'}
+                warnings.append(f"- 环号 {item.get('ring_no')}：汇总缺少" + '、'.join(labels.get(key, key) for key in item.get('summary_missing_fields')) + '。')
+            difference = item.get('count_difference')
+            if difference and any(difference.get(key) not in (None, 0) for key in ('checked', 'replaced')):
+                warnings.append(f"- 环号 {item.get('ring_no')}：汇总与明细的数量差额，检查 {display(difference.get('checked'))} 把，更换 {display(difference.get('replaced'))} 把。")
 
         if detail_rows:
             lines.extend(self._answer_table(
@@ -1903,7 +2160,7 @@ class ToolAssistant:
                 last_ring = int(item.get("last_ring_no")) if item.get("last_ring_no") else None
             except Exception:
                 last_ring = None
-            start_ring = last_ring + 1 if last_ring is not None else ring_no
+            start_ring = last_ring + 1 if last_ring is not None else 1
             ring_range = [min(start_ring, ring_no), max(start_ring, ring_no)]
             stratum_raw = query_stratum_data(json.dumps({"project_id": project_id, "ring_range": ring_range}, ensure_ascii=False))
             stratum = json.loads(stratum_raw)
@@ -1914,8 +2171,11 @@ class ToolAssistant:
             ) or "暂无地层数据"
             rows.append({"item": item, "ring_range": ring_range, "strata": strata_text})
 
-        rows.sort(key=lambda row: _pct_to_float(row["item"].get("abnormal_rate")), reverse=True)
-        high_rows = [row for row in rows if _pct_to_float(row["item"].get("abnormal_rate")) >= 30] or rows[:5]
+        classified = [row for row in rows if number(row["item"].get("abnormal_rate")) is not None]
+        classified.sort(key=lambda row: number(row["item"].get("abnormal_rate")), reverse=True)
+        high_rows = [row for row in classified if number(row["item"].get("abnormal_rate")) >= 30]
+        label = "高异常开仓" if high_rows else "异常率最高的几次开仓"
+        high_rows = high_rows or classified[:5]
 
         lines = [
             f"开仓-地层-换刀联动分析：共查询到 {data.get('total_openings')} 次开仓，本次分析最近 {len(records)} 次。",
@@ -1923,8 +2183,8 @@ class ToolAssistant:
             "",
             "关键发现：",
         ]
-        if rows:
-            top = rows[0]["item"]
+        if classified:
+            top = classified[0]["item"]
             top_positions = "、".join(top.get("top_replaced_positions") or []) or "暂无"
             lines.append(f"- 异常磨损率最高的是环号 {top.get('ring_no')}，异常率 {top.get('abnormal_rate')}，高频刀位 {top_positions}。")
             repeated_positions = {}
@@ -1934,26 +2194,28 @@ class ToolAssistant:
             repeated_text = "、".join(
                 f"{pos}({count}次)" for pos, count in sorted(repeated_positions.items(), key=lambda kv: kv[1], reverse=True)[:5]
             ) or "暂无"
-            lines.append(f"- 高异常开仓中重复出现的高频刀位：{repeated_text}。")
+            lines.append(f"- {label}中重复出现的高频刀位：{repeated_text}。")
 
-        lines.extend(["", "高异常开仓对应地层与刀位："])
-        for index, row in enumerate(high_rows[:8], start=1):
+        lines.extend(["", f"{label}对应地层与刀位："])
+        if not classified:
+            lines.append("暂无已分类磨损数据，异常率为暂无，不能排列异常率高低。")
+        for index, row in enumerate(high_rows + [row for row in rows if number(row["item"].get("abnormal_rate")) is None], start=1):
             item = row["item"]
             positions = "、".join(item.get("top_replaced_positions") or []) or "暂无"
             wear = item.get("wear_distribution") or {}
             wear_text = "、".join(f"{name} {count}次" for name, count in list(wear.items())[:3] if name) or "暂无"
             lines.append(
                 f"{index}. 环号 {item.get('ring_no')}（环段 {row['ring_range'][0]}-{row['ring_range'][1]}）："
-                f"异常率 {item.get('abnormal_rate')}，换刀 {item.get('tool_change_replaced')}/{item.get('tool_change_total')}，"
+                f"异常率 {display(item.get('abnormal_rate'))}，换刀 {display(item.get('tool_change_replaced'))}/{display(item.get('tool_change_total'))}，"
                 f"高频刀位 {positions}，对应地层 {row['strata']}，主要磨损 {wear_text}。"
             )
 
         lines.extend([
             "",
-            "结论：异常率高的开仓应优先回看对应环段地层变化和重复出现的高频刀位；同一刀位在多个高异常开仓反复出现时，优先检查该刀位安装、相邻刀位联动和对应地层冲击。",
+            "地层标签与开仓记录按环段并列展示，不能据此判断地层导致磨损。",
         ])
         return "\n".join(lines)
-    def _format_cutter_position_answer(self, raw: str) -> str:
+    def _format_cutter_position_answer(self, raw: str, params: dict = None) -> str:
         data = json.loads(raw)
         if data.get("error"):
             return f"刀位统计失败：{data['error']}"
@@ -1961,19 +2223,44 @@ class ToolAssistant:
             return data.get("message", "未找到换刀记录。")
 
         positions = data.get('top_positions') or []
-        lines = ['## 刀位更换排行', '', f"共分析 **{data.get('total_records')}** 条记录，展示 **{min(len(positions), 10)}** 个刀位。", '']
+        params = params or {}
+        abnormal = data.get('sort_by', params.get('sort_by')) == 'abnormal'
+        can_rank_abnormal = all(item.get('abnormal_observation_count') is not None for item in positions)
+        if abnormal and can_rank_abnormal:
+            positions = sorted(positions, key=lambda item: item.get('abnormal_observation_count'), reverse=True)
+        title = '刀位异常观测排行' if abnormal else '全刀盘磨损分布' if params.get('include_all') else '刀位更换排行'
+        if abnormal and not can_rank_abnormal:
+            title = '刀位异常观测统计'
+        lines = [f'## {title}', '', f"共分析 **{data.get('total_records')}** 条现场观测记录，展示 **{len(positions)}** 个刀位。", '']
+        if params.get('include_all'):
+            lines.append(f"共 {display(data.get('matched_position_count'))} 个刀位。")
+            if data.get('matched_position_count') is None:
+                lines.append('当前工具未返回匹配刀位总数，暂不能确认已覆盖全刀盘。')
         rows = []
-        for item in positions[:10]:
-            wear = item.get("wear_distribution") or []
-            wear_text = "、".join(f"{w.get('wear_condition')} {w.get('count')}次" for w in wear[:3])
-            rows.append([item.get('cutter_position_no'), item.get('replacement_count'),
+        show_observations = abnormal or params.get('include_all') or any(item.get('observation_count') is not None for item in positions)
+        for item in positions:
+            wear = item.get("observation_wear_distribution") if show_observations else item.get("wear_distribution")
+            wear = wear or []
+            if isinstance(wear, dict):
+                wear = [{'wear_condition': key, 'count': count} for key, count in wear.items()]
+            wear_text = "、".join(f"{w.get('wear_condition')} {w.get('count')}次" for w in wear if not abnormal or is_abnormal_wear(w.get('wear_condition')))
+            row = [item.get('cutter_position_no'), item.get('replacement_count'),
                          self._tool_type_label(item.get('tool_parent_type')) or item.get('tool_parent_type') or '未填写',
-                         wear_text or '未填写'])
+                         wear_text or '暂无']
+            if show_observations:
+                row += [item.get('observation_count'), item.get('abnormal_observation_count'), item.get('classified_observation_count'), percent(item.get('abnormal_observation_rate'))]
+            rows.append(row)
         if rows:
-            lines.extend(self._answer_table(['刀位', '更换次数', '刀具类型', '主要磨损'], rows))
+            headers = ['刀位', '更换次数', '刀具类型', '异常类型' if abnormal else '主要磨损']
+            if show_observations:
+                headers += ['现场观测数', '异常观测数', '已分类观测数', '已分类异常率']
+            lines.extend(self._answer_table(headers, rows))
         else:
             lines.append('当前范围没有已更换刀位。')
-        lines.extend(['', '统计口径：按更换次数排序。高频更换本身不等同于异常或寿命不足，应结合服役环数和磨损记录复核。'])
+        order_note = ('按异常观测数排序。' if can_rank_abnormal else '异常观测数暂无，当前返回顺序不能用于异常排行。') if abnormal else '按更换次数排序。'
+        lines.extend(['', order_note + '高频更换本身不等同于异常或寿命不足，应结合服役环数和磨损记录复核。'])
+        if show_observations and any(item.get('observation_count') is None for item in positions):
+            lines.append('现场观测数、异常观测数及对应磨损类型暂无：当前工具版本未提供这些字段，待工具更新后展示。')
         for warning in (data.get('warnings') or []):
             lines.extend(['', f'提示：{warning}'])
         return "\n".join(lines)
@@ -2160,10 +2447,75 @@ class ToolAssistant:
         return "hybrid"
 
     def _direct_route(self, user_query: str, context: dict = None) -> dict | None:
-        if self._is_actual_total_cost_query(user_query):
-            return {"rule_branch": "unsupported_actual_total_cost", "type": "text", "answer": "当前智能助手没有按项目汇总实际采购与返修支出的台账查询工具，无法给出实际总成本。现有刀型成本表中的参考单价、返修单价和每环成本不能替代实际发生的采购与返修台账；需要按实际数量、返修记录和对应金额汇总，不能用型号推荐或单价估算冒充总支出。"}
+        if self._is_inventory_query(user_query) or self._extract_tool_numbers(user_query):
+            return self._direct_route_result(user_query, context)
+        domains = ("换刀", "开仓", "地层", "刀位", "厂家", "寿命")
+        if sum(word in user_query for word in domains) >= 3:
+            return None
+
+        # 并列对象分别执行同一条规则，避免只保留首个刀型或首个环号。
+        tool_types = [name for name in ("滚刀", "刮刀", "撕裂刀") if name in user_query]
+        rings = self._extract_discrete_rings(user_query)
+        if len(tool_types) > 1 or (len(rings) > 1 and not self._is_stratum_area_query(user_query)):
+            answers = []
+            for tool_type in tool_types if len(tool_types) > 1 else [None]:
+                for ring in rings if len(rings) > 1 else [None]:
+                    query = user_query
+                    if tool_type:
+                        for other in tool_types:
+                            if other != tool_type:
+                                query = query.replace(other, "")
+                    if ring is not None:
+                        query = re.sub(rf"第?\s*{_QUERY_NUMBER}\s*环(?:\s*(?:和|及|与|、|，|,)\s*第?\s*{_QUERY_NUMBER}\s*环)+", f"第{ring}环", query)
+                    child_context = {**(context or {}), "query_context_resolved": False}
+                    result = self._direct_route(query, child_context)
+                    if result is None:
+                        return None
+                    answers.append(f"### {' · '.join(filter(None, [tool_type, f'第 {ring} 环' if ring is not None else None]))}\n\n{result['answer']}")
+            return {"rule_branch": "multiple_scopes", "type": "analysis", "answer": "\n\n".join(answers)}
+
+        context = context or {}
+        recent = self._is_recent_ring_window_query(user_query) and not self._ring_range_cleared(user_query, context)
+        ring_range = None
+        if recent:
+            ring_range = (context.get("memory_slots") or {}).get("ring_range") if context.get("query_context_resolved") else None
+            ring_range = ring_range or self._recent_ring_range(user_query, context)
+            context["memory_slots"] = {**(context.get("memory_slots") or {}), **self._extract_explicit_memory_slots(user_query), "ring_range": ring_range}
+            context["ring_range"] = ring_range
+            context["query_context_resolved"] = True
+        result = self._direct_route_result(user_query, context)
+        if result is None:
+            return None
+        empty_domain = result.pop("_empty_domain", None)
+        if recent and ring_range:
+            n = self._extract_recent_ring_window(user_query)
+            start, end = ring_range
+            domain = "掘进" if self._is_tunneling_query(user_query) else "开仓" if self._is_opening_query(user_query) else "地层" if self._is_stratum_distribution_query(user_query) else "换刀"
+            if "有记录的" in user_query:
+                # 地层是预加载资料，仍使用开仓作为进度终点。
+                anchor_domain = "开仓" if domain == "地层" else domain
+                header = f"统计范围：以{anchor_domain}数据最新的一条记录（第 {end} 环）为终点往前 {n} 环，即第 {start}–{end} 环。"
+            else:
+                header = f"统计范围：以最新一次开仓（第 {end} 环）为终点往前 {n} 环，即第 {start}–{end} 环。"
+            if empty_domain:
+                project_id = context.get("project_id") or _DEFAULT_PROJECT_ID
+                window_coverage = _data_coverage(project_id, empty_domain, ring_range)
+                coverage = _data_coverage(project_id, empty_domain)
+                if window_coverage.get("record_count") == 0 and coverage.get("ring_min") is not None:
+                    result["answer"] = (f"这个范围里没有{empty_domain}数据。库里的{empty_domain}数据只覆盖第 {coverage['ring_min']}–{coverage['ring_max']} 环（{coverage['time_min']} 至 {coverage['time_max']}）。想看这些记录，可以问\"最近有记录的 {n} 环{empty_domain}\"。")
+            notice = "系统里没有实际采购和付款台账，下面是登记金额，不是实际支出。"
+            if result["answer"].startswith(notice):
+                result["answer"] = notice + "\n\n" + header + result["answer"][len(notice):]
+            else:
+                result["answer"] = header + "\n\n" + result["answer"]
+        return result
+
+    def _direct_route_result(self, user_query: str, context: dict = None) -> dict | None:
         if self._is_inventory_query(user_query):
             return {"rule_branch": "inventory", "type": "text", "answer": "当前智能助手没有库存台账查询工具，无法确认刀具库存数量。请到库存或仓储模块查看具体库存记录。"}
+        refreshed = self._refresh_route(user_query, context)
+        if refreshed:
+            return refreshed
         if self._is_ambiguous_followup_query(user_query):
             return {"rule_branch": "ambiguous_followup", "type": "text", "answer": "这个问题缺少具体对象。请说明具体是哪种刀具、刀位、磨损类型、厂家或环号范围，我再按对应数据分析原因。"}
         if self._is_recent_abnormal_wear_cause_query(user_query):
@@ -2171,41 +2523,43 @@ class ToolAssistant:
         if self._is_opening_efficiency_query(user_query):
             params = self._opening_params(user_query, context)
             raw = query_opening_records(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "opening_efficiency", "type": "analysis", "answer": self._prepend_query_scope(self._format_opening_efficiency_answer(raw), params, user_query)}
+            data = json.loads(raw)
+            return {"rule_branch": "opening_efficiency", "type": "analysis", "_empty_domain": "开仓" if data.get("total_openings", data.get("total")) == 0 else None, "answer": self._prepend_query_scope(self._format_opening_efficiency_answer(raw), params, user_query)}
         if self._is_recent_ring_tool_change_query(user_query):
             params = self._context_params(user_query, context)
             if not (context or {}).get("query_context_resolved") and not self._ring_range_cleared(user_query, context):
                 params["ring_range"] = self._recent_ring_range(user_query, context)
             raw = query_tool_change_data(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "recent_ring_tool_change", "type": "analysis", "answer": self._prepend_query_scope(self._format_tool_change_answer(raw, params.get("ring_range")), params, user_query)}
+            data = json.loads(raw)
+            return {"rule_branch": "recent_ring_tool_change", "type": "analysis", "_empty_domain": "换刀" if data.get("total_records", data.get("total")) == 0 else None, "answer": self._prepend_query_scope(self._format_tool_change_answer(raw, params.get("ring_range")), params, user_query)}
         if self._is_tool_recommendation_query(user_query):
-            # 把问句中能抽到的刀具类型与环号范围一并传下去，
-            # 使规则直答与 Agent 走同一套筛选语义（旧实现只传 project_id）。
-            params = self._context_params(user_query, context)
-            raw = recommend_tools(_to_json({
-                "project_id": params.get("project_id"),
-                "tool_type": params.get("tool_type") or "",
-                "ring_range": params.get("ring_range") or [],
-            }))
-            return {"rule_branch": "tool_recommendation", "type": "analysis", "answer": self._format_recommend_tools_answer(raw, params)}
-        if self._is_tool_performance_query(user_query):
-            # 保留完整连字符编号，兼容 487-S14R-01、R15-S11L-2 及 GD-TEST-1201；
-            # 至少包含一个数字，避免把普通英文短语当作刀具编号。
-            tool_numbers = re.findall(r"(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9-])", user_query)
-            if not tool_numbers:
-                # 退回旧正则：用户只给了不完整编号（如 T12）时仍进入本分支，
-                # 由工具返回"编号格式形如 487-S14R-01"的显式提示，而不是静默落 Agent。
-                tool_numbers = re.findall(r"[A-Za-z]{1,6}[-_]?\d{1,}|T\d+", user_query)
-            if tool_numbers:
-                raw = calculate_tool_performance(json.dumps({"project_id": (context or {}).get("project_id") or _DEFAULT_PROJECT_ID, "tool_numbers": tool_numbers}, ensure_ascii=False))
-                return {"rule_branch": "tool_performance", "type": "analysis", "answer": self._format_tool_performance_answer(raw)}
-
+            params = self._recommendation_params(user_query, context)
+            raw = recommend_tools(_to_json(params))
+            answer = self._format_recommend_tools_answer(raw, params)
+            if "刀位" in user_query:
+                answer += "\n\n关注刀位：暂无，当前型号推荐结果没有返回型号对应的刀位清单。"
+            if "消耗" in user_query or "备刀" in user_query:
+                answer += "\n\n备刀数量：暂无，当前工具只提供型号服役统计，没有下一阶段消耗量预测。"
+            return {"rule_branch": "tool_recommendation", "type": "analysis", "answer": answer}
+        if self._is_group_service_query(user_query):
+            params = self._recommendation_params(user_query, context)
+            params["top_n"] = 50
+            raw = recommend_tools(_to_json(params))
+            answer = self._format_recommend_tools_answer(raw, params).replace("## 刀具选型参考", "## 各型号已拆下刀具的服役环数", 1)
+            answer += "\n\n这是已经拆下的刀从安装到拆下经过的环数，按型号统计；不是在役刀具的剩余寿命预测。"
+            if "集中更换环段" in user_query:
+                trend_params = self._context_params(user_query, context, interval=self._extract_interval(user_query))
+                answer += "\n\n" + self._format_trend_answer(query_tool_change_trend(_to_json(trend_params)), trend_params)
+            if any(word in user_query for word in ("剩余寿命", "已推进")):
+                answer += "\n\n当前工具没有在役刀具的已推进环数和剩余寿命分布，以上仅列出已拆下样本。"
+            return {"rule_branch": "group_service", "type": "analysis", "answer": answer}
         if self._is_opening_stratum_change_query(user_query):
             params = self._opening_params(user_query, context)
             raw = query_opening_records(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "opening_stratum_change", "type": "analysis", "answer": self._format_opening_stratum_change_answer(raw, context)}
+            data = json.loads(raw)
+            return {"rule_branch": "opening_stratum_change", "type": "analysis", "_empty_domain": "开仓" if data.get("total_openings", data.get("total")) == 0 else None, "answer": self._format_opening_stratum_change_answer(raw, context)}
         if self._is_tunneling_wear_correlation_query(user_query):
-            params = self._context_params(user_query, context)
+            params = self._context_params(user_query, context, interval=self._extract_interval(user_query))
             raw = query_tunneling_wear_correlation(json.dumps(params, ensure_ascii=False))
             data = json.loads(raw)
             structured = self._format_analysis_payload_answer(
@@ -2224,17 +2578,17 @@ class ToolAssistant:
                 data, params,
             )
             answer = structured or self._format_tunneling_anomaly_answer(raw, params)
-            return {"rule_branch": "tunneling_anomaly", "type": "analysis", "answer": answer}
+            return {"rule_branch": "tunneling_anomaly", "type": "analysis", "_empty_domain": "掘进" if data.get("total_records") == 0 else None, "answer": answer}
 
         if self._is_tunneling_trend_query(user_query):
-            params = self._context_params(user_query, context)
+            params = self._context_params(user_query, context, interval=self._extract_interval(user_query))
             raw = query_tunneling_trend(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "tunneling_trend", "type": "analysis", "answer": self._format_tunneling_trend_answer(raw, params)}
+            return {"rule_branch": "tunneling_trend", "type": "analysis", "_empty_domain": "掘进" if json.loads(raw).get("total_records") == 0 else None, "answer": self._format_tunneling_trend_answer(raw, params)}
 
         if self._is_tunneling_query(user_query):
-            params = self._context_params(user_query, context)
+            params = self._context_params(user_query, context, limit=self._extract_limit(user_query))
             raw = query_tunneling_summary(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "tunneling", "type": "analysis", "answer": self._format_tunneling_summary_answer(raw, params)}
+            return {"rule_branch": "tunneling", "type": "analysis", "_empty_domain": "掘进" if json.loads(raw).get("total_records") == 0 else None, "answer": self._format_tunneling_summary_answer(raw, params)}
 
         if self._is_position_stratum_query(user_query):
             params = self._context_params(user_query, context, top_n=self._extract_limit(user_query, 10))
@@ -2252,21 +2606,12 @@ class ToolAssistant:
             answer = structured or self._format_stratum_wear_answer(raw, params)
             return {"rule_branch": "stratum_wear", "type": "analysis", "answer": answer}
 
-        if self._is_manufacturer_query(user_query):
-            params = self._context_params(user_query, context)
-            raw = _with_analysis_payload(
-                compare_manufacturer_performance(json.dumps(params, ensure_ascii=False)),
-                "manufacturer",
-            )
-            data = json.loads(raw)
-            structured = self._format_analysis_payload_answer("厂家性能对比分析", data, params)
-            answer = structured or self._format_manufacturer_answer(raw, params)
-            return {"rule_branch": "manufacturer", "type": "analysis", "answer": answer}
-
         if self._is_opening_query(user_query):
             params = self._opening_params(user_query, context)
             raw = query_opening_records(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "opening", "type": "analysis", "answer": self._prepend_query_scope(self._format_opening_answer(raw), params, user_query)}
+            data = json.loads(raw)
+            sort_abnormal = "异常" in user_query and any(word in user_query for word in ("较高", "最高", "排序", "高的"))
+            return {"rule_branch": "opening", "type": "analysis", "_empty_domain": "开仓" if data.get("total_openings", data.get("total")) == 0 else None, "answer": self._prepend_query_scope(self._format_opening_answer(raw, sort_abnormal), params, user_query)}
 
         # 单刀位点查必须排在刀位排行之前。
         # tool_change_summary 下沉到链尾后，它原本承担的"某个具体刀位换了多少次"
@@ -2287,21 +2632,22 @@ class ToolAssistant:
                 "tool_change",
             )
             data = json.loads(raw)
-            structured = self._format_analysis_payload_answer("换刀数据分析", data)
-            answer = structured or self._format_tool_change_answer(raw, params.get("ring_range"))
+            answer = self._format_tool_change_answer(raw, params.get("ring_range"))
             return {"rule_branch": "position_point_query", "type": "analysis",
+                    "_empty_domain": "换刀" if data.get("total_records", data.get("total")) == 0 else None,
                     "answer": self._prepend_query_scope(answer, params, user_query)}
 
         if self._is_cutter_position_query(user_query):
-            params = self._context_params(user_query, context, top_n=self._extract_limit(user_query, 10))
+            include_all = "全刀盘" in user_query or "全部刀位" in user_query or ("刀盘" in user_query and "分布" in user_query)
+            params = self._context_params(user_query, context, top_n=self._extract_limit(user_query, 10),
+                                          include_all=include_all, sort_by="abnormal" if "异常" in user_query else "replaced")
             raw = _with_analysis_payload(
                 query_cutter_position_stats(json.dumps(params, ensure_ascii=False)),
                 "cutter_position",
             )
             data = json.loads(raw)
-            structured = self._format_analysis_payload_answer("刀位风险分析", data)
-            answer = structured or self._format_cutter_position_answer(raw)
-            return {"rule_branch": "cutter_position", "type": "analysis", "answer": self._prepend_query_scope(answer, params, user_query)}
+            answer = self._format_cutter_position_answer(raw, params)
+            return {"rule_branch": "cutter_position", "type": "analysis", "_empty_domain": "换刀" if data.get("total_records", data.get("total")) == 0 else None, "answer": self._prepend_query_scope(answer, params, user_query)}
 
         if self._is_change_trend_query(user_query):
             params = self._context_params(
@@ -2310,7 +2656,21 @@ class ToolAssistant:
                 interval=self._extract_interval(user_query, 50),
             )
             raw = query_tool_change_trend(json.dumps(params, ensure_ascii=False))
-            return {"rule_branch": "change_trend", "type": "analysis", "answer": self._format_trend_answer(raw, params)}
+            answer = self._format_trend_answer(raw, params)
+            if "刀位" in user_query and any(word in user_query for word in ("最高", "最多", "最频繁")):
+                segments = [item for item in json.loads(raw).get("segments", []) if number(item.get("replaced")) is not None]
+                if segments:
+                    peak = max(segments, key=lambda item: number(item.get("replaced")))
+                    bounds = peak.get("ring_range")
+                    bounds = bounds if isinstance(bounds, list) else [int(value) for value in re.findall(r"\d+", str(bounds))]
+                    if len(bounds) == 2:
+                        position_params = {**params, "ring_range": bounds, "top_n": self._extract_limit(user_query), "sort_by": "replaced"}
+                        answer += f"\n\n更换次数最多的环段为第 {bounds[0]}–{bounds[1]} 环，环段长度 {bounds[1] - bounds[0] + 1} 环；按更换次数比较，不代表不同长度环段的单位环频率。\n\n"
+                        answer += self._format_cutter_position_answer(query_cutter_position_stats(_to_json(position_params)), position_params)
+            if "主要磨损" in user_query:
+                answer += "\n\n各段主要磨损类型：暂无，趋势工具不返回各段磨损类型明细。"
+            data = json.loads(raw)
+            return {"rule_branch": "change_trend", "type": "analysis", "_empty_domain": "换刀" if data.get("total_records", data.get("total")) == 0 else None, "answer": answer}
 
         if self._is_stratum_distribution_query(user_query):
             params = self._context_params(user_query, context)
@@ -2330,18 +2690,124 @@ class ToolAssistant:
                 "tool_change",
             )
             data = json.loads(raw)
-            structured = self._format_analysis_payload_answer("换刀数据分析", data)
-            answer = structured or self._format_tool_change_answer(raw, params.get("ring_range"))
-            return {"rule_branch": "tool_change_summary", "type": "analysis", "answer": self._prepend_query_scope(answer, params, user_query)}
+            answer = self._format_tool_change_answer(raw, params.get("ring_range"))
+            return {"rule_branch": "tool_change_summary", "type": "analysis", "_empty_domain": "换刀" if data.get("total_records", data.get("total")) == 0 else None, "answer": self._prepend_query_scope(answer, params, user_query)}
 
         return None
 
     @staticmethod
     def _is_actual_total_cost_query(query: str) -> bool:
-        return bool(
-            re.search(r"总成本|总费用|总支出|总金额|累计(?:采购|返修|维修)?(?:费用|成本|金额)|(?:采购|返修|维修).*合计", query)
-            and re.search(r"项目|实际|采购|购买|返修|维修|台账|支出", query)
-        )
+        return any(word in query for word in ("实际支出", "实际采购", "付款", "总支出")) or bool(re.search(r"实际.*(?:成本|费用|金额)", query))
+
+    def _is_stratum_area_query(self, query: str) -> bool:
+        return not any(word in query for word in ("地层标签", "工程条件", "推荐", "选型", "备刀", "采购")) and any(
+            word in query for word in ("面积", "占比", "占多少", "比例")
+        ) and (any(word in query for word in ("地层", "岩层", "岩性", "横断面", "纵断面"))
+               or bool(self._extract_stratum_types(query))
+               or any(part in query for label in STRATUM_LABELS.values() for part in re.split(r"[（、/]", label) if len(part) > 1))
+
+    @staticmethod
+    def _named_manufacturers(query: str, project_id: str) -> list:
+        from .tools import _active_detail_query
+        names = _active_detail_query({"project_id": project_id}).order_by().values_list("manufacturer", flat=True).distinct()
+        return sorted(name for name in names if name and name in query)
+
+    def _refresh_route(self, query: str, context: dict = None) -> dict | None:
+        params = {key: value for key, value in self._context_params(query, context).items() if value not in (None, "", [])}
+        project = {"project_id": params["project_id"]}
+        branch = None
+        ids = self._extract_tool_numbers(query)
+        if ids:
+            branch, func, params = "tool_lifecycle", trace_tool_lifecycle, {**project, "tool_ids": ids}
+        elif self._is_actual_total_cost_query(query):
+            branch, func = "registered_amounts", query_registered_amounts
+        elif self._is_tool_recommendation_query(query) and not self._is_stratum_area_query(query):
+            return None
+        elif any(word in query for word in ("有哪些数据", "能查什么", "有哪些编码", "地层编码", "数据覆盖到", "哪些数据可以查")):
+            branch, func, params = "data_catalog", query_data_catalog, project
+        elif self._is_stratum_area_query(query):
+            branch, func = "stratum_area", query_stratum_area
+            bounds = params.get("ring_range")
+            rings = self._extract_discrete_rings(query)
+            params = {**project, "basis": "cross_section" if any(word in query for word in ("横断面", "岩性")) else "longitudinal_area"}
+            if rings or (bounds and bounds[0] == bounds[1]):
+                params["rings"] = rings or [bounds[0]]
+            elif bounds:
+                params["ring_range"] = bounds
+        elif "地层" in query and ("开仓" in query or "上次开仓以来" in query) and not self._is_opening_stratum_change_query(query):
+            branch, func = "opening_stratum", query_opening_stratum
+            bounds = params.get("ring_range")
+            params = dict(project)
+            if bounds and bounds[0] == bounds[1]:
+                params["ring_no"] = bounds[0]
+            else:
+                params["recent_openings"] = min(self._extract_limit(query, 1), 20)
+        elif any(word in query for word in ("需关注", "需要关注", "没换", "未检查", "没检查", "检查完成", "检查完", "完成度", "移动任务")):
+            branch, func = "tool_inspections", query_tool_inspections
+            if not params.get("ring_range") and ("最近" in query or "这次开仓" in query):
+                params["recent_openings"] = min(self._extract_limit(query, 1), 100)
+        elif any(word in query for word in ("报价", "单价", "新刀多少钱", "维修价")):
+            from application.shield.models import ToolInfo
+            branch, func = "tool_cost_catalog", query_tool_cost_catalog
+            params = {**project, **({"tool_type": params["tool_type"]} if params.get("tool_type") else {})}
+            models = ToolInfo.objects.order_by().values_list("tool_type_name", flat=True).distinct()
+            matches = [name for name in models if name and name in query]
+            if matches:
+                params["tool_model"] = max(matches, key=len)
+            params["cost_type"] = "REPAIR" if "维修" in query else "NEW_TOOL"
+            if "新刀" in query and "维修" in query:
+                params.pop("cost_type")
+        elif "新装" in query and any(word in query for word in ("金额", "多少钱", "费用", "成本")):
+            branch, func = "registered_amounts", query_registered_amounts
+        elif any(word in query for word in ("返修", "厂家反馈", "报废", "维修金额", "失效原因", "轴承", "刀圈损坏")):
+            branch, func = "old_tool_repairs", query_old_tool_repairs
+            # 只点名一种反馈状态时才筛选；问"进度"或同时列几种状态时要全部计数。
+            statuses = [status for pattern, status in ((r"(?:待|等)(?:厂家)?反馈", "PENDING_VENDOR_FEEDBACK"), (r"已归档", "CLOSED"))
+                        if re.search(pattern, query)]
+            if len(statuses) == 1 and "进度" not in query:
+                params["inspection_status"] = statuses[0]
+            # 问报废数量时不筛选，已报废和报废建议都要按全部记录计数；要名单时才只看报废。
+            if "报废" in query and not re.search(r"多少|几把|数量|进度", query):
+                params["disposition"] = "SCRAP"
+            if any(word in query for word in ("失效原因", "轴承", "刀圈损坏")):
+                params["list_limit"] = 200
+        elif any(word in query for word in ("登记金额", "登记了多少金额", "花了多少钱", "费用", "总金额", "成本")):
+            branch, func = "registered_amounts", query_registered_amounts
+        else:
+            named = self._named_manufacturers(query, params["project_id"]) if self._is_manufacturer_query(query) or re.search(r"(?:对比|比较|与|和).*(?:寿命|表现|耐用|质量)", query) else []
+            if self._is_manufacturer_query(query) or named:
+                branch, func = "manufacturer_service", compare_manufacturer_service
+                params.pop("cutter_position_no", None)
+                if named:
+                    params["manufacturers"] = named
+        if branch is None:
+            return None
+        if branch == "registered_amounts":
+            params.pop("cutter_position_no", None)
+            params["group_by"] = next((key for word, key in (("厂家", "manufacturer"), ("刀型", "tool_type"), ("开仓", "opening")) if word in query), "none")
+        data = json.loads(func(_to_json(params)))
+        if branch == "old_tool_repairs" and any(word in query for word in ("轴承", "刀圈损坏", "刀毂")):
+            # 部件筛选在展示层完成，先补全环段明细，避免只筛前 200 条而漏掉旧刀。
+            pending = [data]
+            records = []
+            while pending:
+                part = pending.pop()
+                part_scope = part.get("scope") or {}
+                bounds = part_scope.get("data_ring_range")
+                part_records = part.get("records") or []
+                if (part_scope.get("record_count", 0) > len(part_records) and bounds and bounds[0] < bounds[1]):
+                    middle = (bounds[0] + bounds[1]) // 2
+                    for window in ([bounds[0], middle], [middle + 1, bounds[1]]):
+                        pending.append(json.loads(func(_to_json({**params, "ring_range": window}))))
+                else:
+                    records.extend(part_records)
+            data["records"] = sorted(records, key=lambda row: -row['ring_no'])
+        answer = render_report(branch, data, self._answer_table, {**params, "question": query})
+        if branch == "registered_amounts" and self._is_actual_total_cost_query(query):
+            answer = "系统里没有实际采购和付款台账，下面是登记金额，不是实际支出。\n\n" + answer
+        if branch == "manufacturer_service" and "刀位" in query:
+            answer += "\n\n按厂家拆分的高频刀位：暂无，当前厂家工具未提供此项。"
+        return {"rule_branch": branch, "type": "analysis", "answer": answer}
     def _invoke_with_retry(self, payload: dict, config: dict, max_retries: int = 2, executor=None) -> dict:
         """带重试的 executor 调用"""
         last_err = None
@@ -2502,6 +2968,8 @@ class ToolAssistant:
         user_id = str(context.get("user_id", "anonymous")) if context else "anonymous"
         memory_snapshot = self._load_memory(user_id)
         working_context = self._prepare_query_context(user_query, memory_snapshot, context)
+        if self._route_mode_for_context(working_context) == "rule":
+            working_context.pop("focus_sources", None)
         resolved_slots = working_context["memory_slots"]
 
         # 记忆服务已经负责上下文裁剪和追问槽位继承；不再从旧会话表拼接整段问题。
@@ -2518,7 +2986,7 @@ class ToolAssistant:
         _trace_start()
         started_at = time.perf_counter()
         model_selects_tools = self._route_mode_for_context(working_context) == "agent"
-        tool_group = "all" if model_selects_tools or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(merged_query)
+        tool_group = "all" if model_selects_tools or working_context.get("focus_sources") or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(merged_query)
         callbacks, get_usage = _new_usage_callback()
         if callbacks:
             config = {**config, "callbacks": callbacks}
@@ -2591,7 +3059,7 @@ class ToolAssistant:
                 merged_query,
                 with_history=False,
                 project_id=working_context.get("project_id", ""),
-                model_selects_tools=model_selects_tools,
+                model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
             )
             history_messages = self._memory_messages(memory_snapshot, working_context)
             result = self._invoke_with_retry(
@@ -2646,9 +3114,12 @@ class ToolAssistant:
         """
         user_id = str(context.get("user_id", "anonymous")) if context else "anonymous"
         original_query = user_query
+        _trace_start()
         try:
             memory_snapshot = await sync_to_async(self._load_memory)(user_id)
             working_context = await sync_to_async(self._prepare_query_context)(user_query, memory_snapshot, context)
+            if self._route_mode_for_context(working_context) == "rule":
+                working_context.pop("focus_sources", None)
             resolved_slots = working_context["memory_slots"]
             user_query = working_context["effective_query"]
             needs_tools = self._model_needs_tools(user_query, working_context)
@@ -2682,13 +3153,13 @@ class ToolAssistant:
             else:
                 yield {"type": "meta", "route": "llm", "route_label": "模型分析",
                        "route_stage": "agent",
-                       "tool_group": "all" if model_selects_tools or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(user_query),
+                       "tool_group": "all" if model_selects_tools or working_context.get("focus_sources") or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(user_query),
                        "estimated_time": "通常 6-8 秒"}
                 executor = await sync_to_async(self._get_executor_for_query)(
                     user_query,
                     with_history=False,
                     project_id=working_context.get("project_id", ""),
-                    model_selects_tools=model_selects_tools,
+                    model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
                 )
                 root_id = None
                 final_result = None
@@ -2757,11 +3228,13 @@ class ToolAssistant:
                 expected_generation=memory_snapshot.generation,
             )
             yield {"type": "memory", **self._memory_diagnostics(stored_snapshot, working_context)}
-            yield {"type": "done"}
+            yield {"type": "done", "tool_calls": _trace_calls(include_results=_flag_enabled("AI_TRACE_TOOL_RESULTS"))}
 
         except Exception as e:
             logger.error(f"[{user_id}] 流式查询失败：{e}")
             yield {"type": "error", "content": self._friendly_error(str(e))}
+        finally:
+            _trace_stop()
 
     def get_history(self, user_id: str, *, before_sequence=None, limit=50) -> dict:
         """返回用户记忆中的对话消息与诊断信息，用于前端刷新后回填。只读，不触发模型调用。"""

@@ -16,7 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-from .llm_service import get_assistant
+from .llm_service import get_assistant, _data_coverage, FOCUS_SOURCE_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,8 @@ def _build_project_snapshot(project_id: str) -> dict:
             'snapshot_total_changes': total_changes,
             'snapshot_total_replaced': total_replaced,
             'snapshot_total_positions': total_positions,
+            'snapshot_tunneling_coverage': _data_coverage(project_id, "掘进"),
+            'snapshot_stratum_coverage': _data_coverage(project_id, "地层"),
         }
     except Exception as e:
         logger.warning(f"项目快照查询失败（project_id={project_id}）：{e}")
@@ -135,6 +137,7 @@ def _context_for_user(user, body, token=None) -> dict:
         ctx["route_mode"] = body["route_mode"]
     ctx["context_mode"] = body.get("context_mode", "auto")
     ctx["clear_slots"] = list(body.get("clear_slots", []))
+    ctx["focus_sources"] = list(dict.fromkeys(body.get("focus_sources", [])))
     return ctx
 
 
@@ -156,6 +159,10 @@ def _validate_body(body):
         return "查询模式格式错误"
     if body.get('context_mode', 'auto') not in ('auto', 'new', 'continue'):
         return "上下文模式必须为 auto、new 或 continue"
+    focus_sources = body.get('focus_sources', [])
+    if (not isinstance(focus_sources, list) or len(focus_sources) > 10
+            or any(not isinstance(source, str) or source not in FOCUS_SOURCE_LABELS for source in focus_sources)):
+        return "focus_sources 只能包含：tool_change、opening、inspection、position、stratum、tunneling、manufacturer、cost、repair、lifecycle"
     clear_slots = body.get('clear_slots', [])
     if (not isinstance(clear_slots, list) or len(clear_slots) > 3
             or any(not isinstance(slot, str) or slot not in (
@@ -195,7 +202,7 @@ def chat(request):
     """
     validation_error = _validate_body(request.data)
     if validation_error:
-        return error(validation_error)
+        return Response({'code': 4000, 'data': None, 'msg': validation_error}, status=400)
     user_query = request.data['query'].strip()
 
     started_at = time.perf_counter()

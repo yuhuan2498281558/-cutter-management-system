@@ -174,14 +174,14 @@ class StreamContractTests(SimpleTestCase):
     async def test_capability_explanation_completes_without_tools(self):
         assistant = ToolAssistant()
         assistant._llm = FakeMessagesListChatModel(responses=[
-            AIMessage(content='当前未接入实际支出台账，无法给出项目实际总支出。'),
+            AIMessage(content='当前未接入库存台账，无法给出库存数量。'),
         ])
         snapshot = MemorySnapshot(scope_key='user:1', backend='legacy')
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
         assistant._get_executor_for_query = Mock(side_effect=AssertionError('Unnecessary tool request'))
         events = [event async for event in assistant.chat_stream(
-            '项目实际总支出', {'user_id': 1, 'route_mode': 'agent', 'require_project': True},
+            '你可以查询库存台账吗', {'user_id': 1, 'route_mode': 'agent', 'require_project': True},
         )]
         self.assertEqual(events[-1]['type'], 'done', events)
         assistant._get_executor_for_query.assert_not_called()

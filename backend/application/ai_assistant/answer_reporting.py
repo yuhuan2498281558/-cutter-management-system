@@ -83,18 +83,253 @@ class Report:
         return "\n".join(self.lines)
 
 
+def _refresh_table(report, title, headers, rows, total=None):
+    count = len(rows) if total is None else total
+    if count > 20:
+        report.text(f"{title}：共 {count} 条，显示前 {min(20, len(rows))} 条。")
+    report.table(title, headers, rows[:20], limit=20)
+
+
+def _money_text(value):
+    amount = number(value)
+    return f"{amount:.2f}" if amount is not None else "暂无"
+
+
+def _ratio_text(items):
+    return "、".join(f"{row.get('label', row.get('code'))} {percent(row.get('pct'))}" for row in items or []) or "暂无"
+
+
+def _render_refresh_report(kind, data, table, scope):
+    titles = {"stratum_area": "地层面积组成", "opening_stratum": "开仓位置和区间地层",
+              "tool_inspections": "现场检查情况", "old_tool_repairs": "旧刀返修记录",
+              "tool_lifecycle": "单把刀追溯", "manufacturer_service": "厂家服役表现和供货登记",
+              "tool_cost_catalog": "新刀和维修报价", "registered_amounts": "项目登记金额",
+              "data_catalog": "可查数据和覆盖范围"}
+    scope = {**(scope or {}), **(data.get("scope") or {})}
+    question = scope.get("question", "")
+    report = Report(titles[kind], data, table, scope)
+    parts = [scope_text(scope)]
+    if scope.get("rings"):
+        parts[0] = "第 " + "、".join(map(str, scope["rings"])) + " 环"
+    elif scope.get("ring_no") is not None:
+        parts[0] = f"第 {scope['ring_no']} 环开仓"
+    elif scope.get("recent_openings"):
+        parts[0] = f"最近 {scope['recent_openings']} 次开仓（环号从大到小）"
+    if scope.get("tool_ids"):
+        parts[0] = "刀具编号：" + "、".join(scope["tool_ids"])
+    if scope.get("manufacturers"):
+        parts.append("厂家：" + "、".join(scope["manufacturers"]))
+    if scope.get("tool_model"):
+        parts.append("型号：" + scope["tool_model"])
+    for key, label in (("inspection_status", "厂家反馈状态"), ("disposition", "处置"), ("check_result", "检查结果")):
+        if scope.get(key):
+            parts.append(f"{label}：{_status_label(scope[key])}")
+    if scope.get("opening_count") is not None:
+        parts.append(f"匹配 {scope['opening_count']} 次开仓")
+    bases = {"tool_inspections": "有效刀位的检查明细（含未检查）", "old_tool_repairs": "现场观测记录对应的旧刀",
+             "manufacturer_service": "原安装厂家的确认服役段；供货另列", "registered_amounts": "现场观测记录的登记金额",
+             "tool_lifecycle": "安装、拆下身份和厂家确认记录", "tool_cost_catalog": "共用报价库",
+             "data_catalog": "现场业务按项目，型号和报价为共用资料库"}
+    parts.append(data.get("basis_label") or bases.get(kind, "开仓快照与现有地层表"))
+    bounds = scope.get("data_ring_range") or [scope.get("ring_min"), scope.get("ring_max")]
+    if len(bounds) == 2 and all(value is not None for value in bounds):
+        parts.append("实际覆盖：" + range_text(bounds))
+    report.lines[2:] = ["查询范围：" + "；".join(parts) + "。"]
+    if data.get("error"):
+        report.text(f"查询失败：{data['error']}")
+        return report.finish("未取得完整数据，不作统计判断。")
+    report.notes.extend([data.get("note"), data.get("source_note")])
+    if kind == "stratum_area":
+        report.text(f"查询 {display(data.get('ring_count_requested'))} 环，有可用面积数据 {display(data.get('ring_count_with_data'))} 环，缺少 {display(data.get('missing_ring_count'))} 环。")
+        _refresh_table(report, "地层面积", ["地层类别", "平均面积占比", "出现的环数", "面积等效环数"], [
+            [r.get('label'), percent(r.get('share_pct')), r.get('positive_ring_count'), r.get('area_equivalent_rings')]
+            for r in data.get('classes') or []])
+        _refresh_table(report, "逐环占比", ["环号", "地层面积占比"], [
+            [r.get('ring_no'), _ratio_text(r.get('ratios'))] for r in data.get('per_ring') or []])
+    elif kind == "opening_stratum":
+        from .tools import STRATUM_TYPE_NAMES
+        for row in data.get('openings') or []:
+            report.text(f"### 第 {row.get('ring_no')} 环开仓\n\n上次开仓环号：{display(row.get('previous_opening_ring'))}；经过区间：{range_text(row.get('interval'))}。")
+            snapshot = row.get('saved_snapshot') or {}
+            saved = snapshot.get('stratum_info_between')
+            saved_text = "、".join(f"{STRATUM_TYPE_NAMES.get(k, k)} {v}" for k, v in saved.items()) if isinstance(saved, dict) else display(saved)
+            report.text(f"当时保存：区间地层 {saved_text or '暂无'}；工程条件 {str(display(snapshot.get('geological_conditions'))).rstrip('。')}。")
+            current = row.get('current_ring') or {}
+            report.text("现在重算的开仓位置：历史标签 " + ("、".join(r['label'] for r in current.get('legacy_labels') or []) or "暂无") + "。")
+            report.text("纵断面六类面积：" + _ratio_text(current.get('longitudinal_area')) + "。")
+            report.text("横断面岩性占比：" + _ratio_text(current.get('cross_section')) + "。")
+            summary = row.get('interval_summary') or {}
+            report.text("现在重算的区间标签：" + ("、".join(f"{STRATUM_TYPE_NAMES.get(k, k)} {v} 环" for k, v in (summary.get('legacy_label_ring_counts') or {}).items()) or "暂无") + "。")
+            basis = 'cross_section' if any(word in question for word in ('横断面', '岩性')) else 'longitudinal_area'
+            _refresh_table(report, "经过区间的平均面积组成", ["地层类别", "平均面积占比", "出现的环数", "面积等效环数"], [
+                [r.get('label'), percent(r.get('share_pct')), r.get('positive_ring_count'), r.get('area_equivalent_rings')]
+                for r in summary.get(basis) or []])
+            if row.get('snapshot_differs_from_current'):
+                report.text("当时保存的地层快照与现在重算的结果不一致，以上分别列出。")
+    elif kind == "tool_inspections":
+        attention, unchecked = data.get('attention_not_replaced') or {}, data.get('unchecked') or {}
+        report.text(f"需关注但未更换：{display(attention.get('record_count'))} 条，涉及 {display(attention.get('position_count'))} 个刀位。")
+        report.text(f"未检查：{display(unchecked.get('record_count'))} 条，涉及 {display(unchecked.get('position_count'))} 个刀位。")
+        groups = [('未检查明细', unchecked)] if any(w in question for w in ('未检查', '没检查')) else [('需关注未更换明细', attention)]
+        if any(w in question for w in ('完成', '检查完', '移动任务')):
+            _refresh_table(report, "各次开仓检查完成情况", ["环号", "明细数", "已检查", "未检查", "已更换", "移动任务状态"], [
+                [r.get('ring_no'), r.get('position_count'), r.get('checked_count'), r.get('unchecked_count'), r.get('replaced_count'),
+                 '、'.join(_status_label(s) for s in r.get('task_status') or []) or '暂无'] for r in data.get('opening_completion') or []])
+            report.text("移动任务：" + ('、'.join(f"{_status_label(k)} {v} 条" for k, v in (data.get('task_status_counts') or {}).items()) or '暂无') + "。")
+        else:
+            for title, group in groups:
+                _refresh_table(report, title, ["环号", "刀位", "检查结果", "磨损状态"], [
+                    [r.get('ring_no'), r.get('cutter_position_no'), _status_label(r.get('check_result')), r.get('wear_condition')]
+                    for r in group.get('records') or []], group.get('record_count'))
+    elif kind == "old_tool_repairs":
+        report.text(f"已报废：{display(data.get('scrapped_count'))} 把。")
+        report.text(f"报废建议：{display(data.get('scrap_suggestion_count'))} 把，仍待厂家反馈。")
+        counts = data.get('status_counts') or {}
+        report.text("返修状态：" + '；'.join(f"{label} {display(counts.get(key))} 条" for key, label in (
+            ('PENDING_VENDOR_FEEDBACK', '待厂家反馈'), ('CONFIRMED', '已确认'), ('CLOSED', '已归档'))) + "。")
+        amounts = data.get('registered_repair_amount') or {}
+        report.text(f"登记维修金额：已确认及已归档 {_money_text(amounts.get('confirmed_yuan'))} 元；待反馈 {_money_text(amounts.get('pending_yuan'))} 元。")
+        component = next((word for word in ('轴承', '刀圈', '刀毂') if word in question), None)
+        reasons = [r for r in data.get('failure_reasons') or [] if not component or r.get('component') == component]
+        if component or '失效原因' in question:
+            _refresh_table(report, "失效原因", ["部件", "原因", "记录数"], [[r.get('component'), r.get('label'), r.get('record_count')] for r in reasons])
+        records = data.get('records') or []
+        if component:
+            available = len(records)
+            records = [r for r in records if any(f.get('component') == component for f in r.get('failure_reasons') or [])]
+            if (scope.get('record_count') or 0) > available:
+                report.notes.append(f"部件明细仅在工具返回的前 {available} 条返修记录中筛选，不能视为全量名单；上面的原因计数按全部匹配记录统计。")
+        _refresh_table(report, "返修明细", ["旧刀编号", "环号", "刀位", "厂家反馈状态", "处置", "登记维修金额（元）", "失效原因"], [
+            [r.get('old_tool_number'), r.get('ring_no'), r.get('cutter_position_no'), _status_label(r.get('inspection_status')),
+             _status_label(r.get('disposition')), _money_text(r.get('repair_price_yuan')),
+             '、'.join(f"{f.get('component')}：{f.get('label')}" for f in r.get('failure_reasons') or []) or '暂无'] for r in records],
+            None if component else scope.get('record_count'))
+    elif kind == "tool_lifecycle":
+        basis_labels = {'confirmed': '确认', 'suggested': '建议身份', 'inferred': '推断', 'in_service': '在役'}
+        for row in data.get('results') or []:
+            report.text(f"### {row.get('query')}\n\n刀具状态：{display((row.get('instance') or {}).get('status_label'))}。")
+            segments = row.get('service_segments') or []
+            _refresh_table(report, "安装与拆下", ["刀位", "安装环", "拆下环", "拆下依据", "服役环数"], [
+                [s.get('cutter_position_no'), s.get('install_ring'), s.get('removal_ring'), basis_labels.get(s.get('removal_basis'), '暂无'),
+                 s.get('service_rings') if s.get('removal_basis') == 'confirmed' else None] for s in segments])
+            _refresh_table(report, "期间检查", ["环号", "检查结果", "磨损状态"], [
+                [r.get('ring_no'), _status_label(r.get('check_result')), r.get('wear_condition')]
+                for s in segments for r in s.get('inspections') or []])
+            for segment in segments:
+                repair = segment.get('repair')
+                if repair:
+                    report.text(f"第 {display(segment.get('removal_ring'))} 环拆下后的返修：{_status_label(repair.get('inspection_status'))}；处置 {_status_label(repair.get('disposition'))}；登记维修金额 {_money_text(repair.get('repair_price_yuan'))} 元。")
+            report.text("缺失环节：" + ('；'.join(row.get('missing_steps') or []) or '无') + "。")
+            if row.get('truncated'):
+                report.notes.append(f"{row.get('query')} 只返回最近 20 段。")
+    elif kind == "manufacturer_service":
+        report.text(f"确认配对：{display((data.get('summary') or {}).get('confirmed_segment_count'))} 个。")
+        items = data.get('service_by_install_manufacturer') or []
+        insufficient = data.get('insufficient_samples') or []
+        _refresh_table(report, "按原安装厂家的已确认服役表现", ["原安装厂家", "确认样本数", "平均服役环数", "已分类异常率", "异常磨损类型", "样本说明"], [
+            [r.get('manufacturer'), r.get('confirmed_segment_count'), r.get('avg_service_rings'), percent(r.get('abnormal_rate_pct'), r.get('classified_count')),
+             '、'.join(f"{k} {v} 条" for k, v in (r.get('abnormal_type_counts') or {}).items()) or '暂无',
+             '样本不足，不参与比较' if r in insufficient else '达到最少样本数'] for r in items + insufficient])
+        _refresh_table(report, "本次新装的供货次数和登记金额", ["本次新装厂家", "供货次数", "登记金额（元）"], [
+            [r.get('manufacturer'), r.get('install_count'), _money_text(r.get('registered_amount_yuan'))] for r in data.get('supply_by_new_manufacturer') or []])
+        counts = data.get('unconfirmed') or {}
+        report.text(f"未确认：待厂家反馈 {display(counts.get('pending_feedback_count'))} 条；缺确认身份或配对不完整 {display(counts.get('no_confirmed_identity_count'))} 条。")
+        report.text(f"当前在役：{display(counts.get('in_service_count'))} 把。")
+    elif kind == "tool_cost_catalog":
+        report.text(f"匹配 {display(scope.get('model_count'))} 个型号、{display(scope.get('quote_count'))} 条报价。")
+        price_types = [(code, prefix, label) for code, prefix, label in (
+            ('NEW_TOOL', 'new_tool', '新刀报价区间（元）'), ('REPAIR', 'repair', '维修报价区间（元）'))
+            if not scope.get('cost_type') or scope['cost_type'] == code]
+        _refresh_table(report, "型号报价区间", ["型号", *[label for _, _, label in price_types]], [
+            [r.get('tool_model'), *[f"{_money_text(r.get(prefix + '_price_min_yuan'))}–{_money_text(r.get(prefix + '_price_max_yuan'))}"
+                                   if r.get(prefix + '_price_min_yuan') is not None else '暂无' for _, prefix, _ in price_types]]
+            for r in data.get('by_model') or []])
+        _refresh_table(report, "厂家报价", ["型号", "类型", "品牌", "厂家", "登记单价（元）"], [
+            [r.get('tool_model'), '新刀' if r.get('cost_type') == 'NEW_TOOL' else '维修', r.get('brand'), r.get('manufacturer'), _money_text(r.get('unit_price_yuan'))]
+            for r in data.get('quotes') or []], scope.get('quote_count'))
+    elif kind == "registered_amounts":
+        for key, label in (('new_install', '新装登记金额'), ('confirmed_repair', '已确认返修登记金额'), ('total', '登记合计'), ('pending_repair', '待反馈返修登记金额')):
+            value = data.get('total_registered_cost_yuan') if key == 'total' else (data.get(key) or {}).get('amount_yuan')
+            report.text(f"{label}：{_money_text(value)} 元" + ('（单列，不计入合计）。' if key == 'pending_repair' else '。'))
+        group_by = scope.get('group_by', 'none')
+        label = {'manufacturer': '厂家', 'tool_type': '刀型', 'opening': '开仓环号'}.get(group_by, '分组')
+        _refresh_table(report, f"按{label}统计", [label, "新装登记金额（元）", "已确认返修（元）", "登记合计（元）", "待反馈（元）"], [
+            [r.get('ring_no') if group_by == 'opening' else _status_label(r.get(group_by)),
+             _money_text((r.get('new_install') or {}).get('amount_yuan')), _money_text((r.get('confirmed_repair') or {}).get('amount_yuan')),
+             _money_text(r.get('total_registered_cost_yuan')), _money_text((r.get('pending_repair') or {}).get('amount_yuan'))] for r in data.get('groups') or []])
+    elif kind == "data_catalog":
+        coverage = data.get('data_coverage') or {}
+        labels = {'openings': '开仓记录', 'tool_change_observations': '现场观测记录', 'tunneling': '掘进参数', 'stratum': '地层',
+                  'cost_quotes': '报价', 'old_tool_repairs': '旧刀返修', 'mobile_tasks': '移动任务'}
+        rows = []
+        for key, item in coverage.items():
+            count = next((item[field] for field in ('count', 'observation_count', 'record_count', 'ring_count') if field in item), None)
+            if key == 'cost_quotes':
+                count = f"新刀 {item.get('new_tool_count')}；维修 {item.get('repair_count')}"
+            elif 'status_counts' in item:
+                count = '；'.join(f"{_status_label(k)} {v}" for k, v in item['status_counts'].items())
+            elif key == 'tool_change_observations':
+                count = f"{item.get('observation_count')}（其中更换 {item.get('replacement_count')}）"
+            bounds = [item.get('ring_min'), item.get('ring_max')]
+            times = [item.get('time_min', item.get('open_time_min')), item.get('time_max', item.get('open_time_max'))]
+            rows.append([labels.get(key, key), count, range_text(bounds) if all(v is not None for v in bounds) else '—',
+                         ' 至 '.join(str(t).replace('T', ' ')[:16] for t in times) if all(times) else '—'])
+        _refresh_table(report, "数据覆盖", ["数据", "记录数", "环号覆盖", "时间覆盖"], rows)
+        if '编码' in question:
+            for key, label in (('legacy_labels', '历史地层标签'), ('longitudinal_area', '纵断面六类面积'), ('cross_section', '横断面岩性')):
+                _refresh_table(report, label, ["编码", "名称", "出现环数"], [
+                    [r.get('code'), r.get('label'), r.get('ring_count', r.get('positive_ring_count'))] for r in (data.get('stratum_codes') or {}).get(key) or []])
+        if '型号' in question or '刀型' in question:
+            _refresh_table(report, "刀具型号", ["型号", "编码", "刀型"], [
+                [r.get('name'), r.get('code'), _status_label(r.get('tool_type'))] for r in data.get('tool_models') or []])
+        report.text("当前不能查询：" + '、'.join(data.get('not_available') or []) + "。")
+    return report.finish()
+
+
+def _status_label(value):
+    return {'PENDING': '待检查', 'NOT_REPLACED': '未更换', 'NORMAL': '正常', 'ATTENTION': '需关注',
+            'ABNORMAL_NOT_REPLACED': '异常未换', 'PENDING_VENDOR_FEEDBACK': '待厂家反馈', 'CONFIRMED': '已确认',
+            'CLOSED': '已归档', 'SCRAP': '报废', 'REPAIRABLE': '可维修', 'DRAFT': '草稿',
+            'UNASSIGNED': '未分配', 'ASSIGNED': '已分配', 'IN_PROGRESS': '进行中', 'COMPLETED': '已完成',
+            'SAVED': '已保存', 'SUBMITTED': '已提交', 'DISC': '滚刀', 'SCRAPER': '刮刀', 'RIPPER': '撕裂刀'}.get(value, display(value))
+
+
 def segment_label(segment):
     if segment.get("segment_index"):
         return f"环号 {display(segment.get('ring_range'))} 第 {display(segment.get('segment_index'))}/{display(segment.get('segment_count'))} 段"
     return display(segment.get("ring_range"))
 
 
+def _report_coverage(report, data):
+    coverage = data.get("coverage") or {}
+    for key, label in (("tunneling", "掘进"), ("tool_change", "换刀"), ("stratum", "地层")):
+        item = coverage.get(key) or {}
+        bounds = [item.get('ring_min'), item.get('ring_max')]
+        time_min = item.get('open_time_min') if key == 'tool_change' else item.get('time_min')
+        time_max = item.get('open_time_max') if key == 'tool_change' else item.get('time_max')
+        count = item.get('observation_count') if key == 'tool_change' else item.get('record_count', item.get('ring_count'))
+        report.text(f"{label}数据覆盖：{range_text(bounds)}；时间 {display(time_min)} 至 {display(time_max)}；记录数 {display(count)}（全项目）。")
+    if data.get("window_counts") is not None:
+        counts = data['window_counts']
+        report.text(f"分析窗口：{range_text(data.get('ring_range'))}；窗口内掘进 {display(counts.get('tunneling'))} 条、现场观测记录 {display(counts.get('tool_change'))} 条、地层 {display(counts.get('stratum'))} 条。")
+        report.notes.append("覆盖范围按全项目统计，窗口内记录数另列；地层时间为登记时间。")
+    report.text(f"可比环段 {display(data.get('comparable_segment_count'))} 个；缺掘进数据的环段 {display(data.get('segments_missing_tunneling'))}，缺现场观测的环段 {display(data.get('segments_missing_observation'))}。")
+    tunneling_range = [(coverage.get("tunneling") or {}).get(key) for key in ("ring_min", "ring_max")]
+    change_range = [(coverage.get("tool_change") or {}).get(key) for key in ("ring_min", "ring_max")]
+    if None not in (*tunneling_range, *change_range) and (tunneling_range[1] < change_range[0] or change_range[1] < tunneling_range[0]):
+        report.text("掘进数据和换刀数据的环号、年份都不重合，只分别列出。")
+    report.notes.append("掘进数据和换刀数据按环段并列显示，不代表两者有关联或因果。")
+
+
 def render_report(kind, data, table, scope=None, penetration_unit=""):
+    if kind in {"stratum_area", "opening_stratum", "tool_inspections", "old_tool_repairs", "tool_lifecycle",
+                "manufacturer_service", "tool_cost_catalog", "registered_amounts", "data_catalog"}:
+        return _render_refresh_report(kind, data, table, scope)
     titles = {
         "change_trend": "换刀分段统计", "manufacturer": "厂家记录对比",
         "stratum_distribution": "地层分布", "stratum_wear": "地层与换刀记录对照",
         "position_stratum": "刀位与地层记录对照", "tunneling_summary": "掘进参数概览",
-        "tunneling_trend": "掘进参数分段统计", "tunneling_anomaly": "掘进参数异常筛查",
+        "tunneling_trend": "掘进参数分段统计", "tunneling_anomaly": "掘进参数分段均值偏高筛查",
         "tunneling_correlation": "掘进与换刀分段对照", "recommendation": "刀具选型参考",
         "performance": "刀具服役追溯",
     }
@@ -108,7 +343,7 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         return report.finish("未取得完整数据，不作统计判断。")
     if data.get("message"):
         report.text(str(data["message"]))
-    if kind.startswith("tunneling_") and data.get("total_records") == 0:
+    if kind.startswith("tunneling_") and kind != "tunneling_correlation" and data.get("total_records") == 0:
         if not data.get("message"):
             report.text("未找到符合条件的掘进动态记录。")
         return report.finish("没有可分析样本，不能将缺失数据解释为参数正常、无异常或工况平稳。")
@@ -116,15 +351,19 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         segments = data.get("segments") or []
         valid = [s for s in segments if (number(s.get("total")) or 0) > 0 and number(s.get("replacement_rate")) is not None]
         report.text(f"按 **{display(data.get('interval'))} 环/段** 展示，共 {len(segments)} 段，其中 {len(valid)} 段有可计算更换率的观测记录。")
-        if len(valid) >= 2:
+        if len(valid) >= 2 and data.get("trend") != "数据不足":
             first, last = valid[0], valid[-1]
             report.text(f"首个有效段（{segment_label(first)}）更换率 {percent(first.get('replacement_rate'))}，末个有效段（{segment_label(last)}）为 {percent(last.get('replacement_rate'))}。")
         else:
             report.text("有效分段不足 2 个，无法比较首尾变化。")
-        report.table("分段明细", ["环段", "观测记录数", "更换次数", "更换率"], [
-            [segment_label(s), s.get("total"), s.get("replaced"), percent(s.get("replacement_rate"), s.get("total"))] for s in segments
+        report.table("分段明细", ["环段", "现场观测记录数", "更换次数", "更换率", "已分类异常率", "正常数", "异常数", "未分类数"], [
+            [segment_label(s), s.get("total"), s.get("replaced"), percent(s.get("replacement_rate"), s.get("total")), percent(s.get("abnormal_rate")), s.get("normal_count"), s.get("abnormal_count"), s.get("unknown_count")] for s in segments
         ])
-        return report.finish("更换率 = 更换记录数 ÷ 该段观测记录数；不是每百环换刀频率。", "首尾比率比较不构成统计趋势检验，不能据此判断整个过程平稳或持续升降。", "空段没有观测，不能将工具返回的 0% 解释为未发生更换；尾段分箱边界可能超过实际数据末环。")
+        if data.get("first_last_change_pct_points") is not None and data.get("note") and data.get("trend") != "数据不足":
+            report.text(data.get("note"))
+        if any(s.get("abnormal_rate") is None for s in segments):
+            report.notes.append("已分类异常率为暂无的分段：工具未提供该字段或该段没有已分类观测记录。")
+        return report.finish("更换率 = 更换记录数 ÷ 该段观测记录数；不是每百环换刀频率。", "已分类异常率 = 异常观测数 ÷（正常观测数 + 异常观测数），未分类不计入分母。", "首尾比率比较不构成统计趋势检验，不能据此判断整个过程平稳或持续升降。", "空段没有观测，不能将工具返回的 0% 解释为未发生更换；尾段裁剪到查询范围内的实际数据末环。")
     if kind == "manufacturer":
         items = data.get("manufacturers") or []
         report.text(f"匹配 **{display(data.get('total_records'))}** 条含厂家记录，覆盖 **{display(data.get('manufacturer_count', len(items)))}** 个厂家。")
@@ -154,9 +393,11 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
     if kind == "position_stratum":
         items = data.get("top_positions") or []
         report.text(f"本次返回 **{len(items)}** 个刀位的地层关联记录，查询未提供全部匹配刀位总数。")
-        report.table("刀位与地层", ["刀位", "地层标签关联次数", "各地层关联次数"], [
-            [item.get("position"), item.get("total"), "、".join(f"{name} {display(count)}次" for name, count in (item.get("by_stratum") or {}).items()) or None] for item in items
-        ])
+        has_replacements = any(item.get("replacement_count") is not None for item in items)
+        headers = ["刀位", "地层标签关联次数", "各地层关联次数"] + (["实际更换次数"] if has_replacements else [])
+        report.table("刀位与地层", headers, [
+            [item.get("position"), item.get("total"), "、".join(f"{name} {display(count)}次" for name, count in (item.get("by_stratum") or {}).items()) or None] + ([item.get("replacement_count")] if has_replacements else []) for item in items
+        ], limit=max(1, len(items)))
         return report.finish("同一更换记录对应多个地层标签时会重复计数，合计不一定等于该刀位实际更换次数。", "关联次数受观测量影响，不能据此认定刀位受地层影响更大或推断因果。")
     if kind in {"tunneling_summary", "tunneling_anomaly"}:
         metrics = data.get("metrics") or {}
@@ -166,14 +407,20 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         if kind == "tunneling_anomaly":
             anomalies = data.get("anomaly_fields") or []
             eligible = [key for key in ("thrust", "torque", "penetration") if number((metrics.get(key) or {}).get("avg")) not in (None, 0) and number((metrics.get(key) or {}).get("max")) is not None]
-            report.text(f"已有规则标记 **{len(anomalies)}** 项峰值偏高指标。" if anomalies else "本次未标记峰值偏高指标；不等同于全部参数正常。")
+            report.text(f"已有规则标记 **{len(anomalies)}** 项分段均值偏高指标。" if anomalies else "本次未标记分段均值偏高指标；不等同于全部参数正常。")
             if len(eligible) < 3:
                 report.notes.append("部分指标缺少有效均值/最大值，或均值为 0，无法完成峰值倍数比较。")
             names = {key: (label, unit) for key, label, unit in fields}
-            report.table("异常筛查结果", ["参数", "单位", "平均值", "最大值"], [[names.get(a.get("field"), (a.get("field"), "未标注"))[0], names.get(a.get("field"), ("", "未标注"))[1], a.get("avg"), a.get("max")] for a in anomalies])
-            report.notes.append("筛查依据为规则返回的峰值标记，不是故障诊断；本结果未提供各峰值对应时间或环号，不能据此定位异常发生位置。")
+            report.table("分段均值偏高筛查", ["参数", "单位", "平均值", "最大值"], [[names.get(a.get("field"), (a.get("field"), "未标注"))[0], names.get(a.get("field"), ("", "未标注"))[1], a.get("avg"), a.get("max")] for a in anomalies])
+            records = data.get("anomaly_records") or []
+            report.table("命中的分段记录", ["环号", "段号", "开始时间", "结束时间", "参数", "数值", "平均值", "均值倍数"], [
+                [r.get("ring_no"), r.get("segment_index"), r.get("start_time"), r.get("end_time"), names.get(r.get("metric"), (r.get("metric"), ""))[0], r.get("value"), r.get("average"), r.get("ratio")] for r in records
+            ], limit=max(1, len(records)))
+            report.notes.append(f"按分段均值与总体均值的倍数筛查，阈值 {display(data.get('threshold_k'))} 倍，不是故障诊断。")
+            if not records:
+                report.notes.append("命中记录的环号、段号、时间和数值暂无：工具未提供命中记录或本次没有命中。")
         recent = data.get("recent_records") or []
-        report.table("最近记录", ["环号", "记录时间", "推力（kN）", "扭矩（kNm）", "转速（r/min）", f"贯入力（{penetration_unit or '原始单位未标注'}）"], [[r.get("ring_no"), r.get("record_time"), r.get("thrust"), r.get("torque"), r.get("cutterhead_speed"), r.get("penetration")] for r in recent], total=data.get("total_records"))
+        report.table("最近记录", ["环号", "记录时间", "推力（kN）", "扭矩（kNm）", "转速（r/min）", f"贯入力（{penetration_unit or '原始单位未标注'}）"], [[r.get("ring_no"), r.get("record_time"), r.get("thrust"), r.get("torque"), r.get("cutterhead_speed"), r.get("penetration")] for r in recent], limit=max(1, len(recent)), total=data.get("total_records"))
         return report.finish("各指标按非空值计算；总记录数不等于每项指标的有效样本数。暂无与实测 0 分别展示。", "未提供时序与地层控制分析，不根据均值或最大值直接推断地层、操作原因或设备故障。")
     if kind in {"tunneling_trend", "tunneling_correlation"}:
         segments = data.get("segments") or []
@@ -182,9 +429,12 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         if not data.get("ring_range") and segments:
             report.text(f"分段覆盖：{segment_label(segments[0])} 至 {segment_label(segments[-1])}；分段边界不一定是实际采样首末环。")
         valid = [s for s in segments if number(s.get("avg_penetration")) is not None]
-        if len(valid) < 2:
+        comparable = number(data.get("comparable_segment_count"))
+        if kind == "tunneling_correlation":
+            _report_coverage(report, data)
+        if len(valid) < 2 or data.get("trend") == "数据不足":
             report.text("贯入力有效分段不足 2 个，无法比较首尾变化。")
-        else:
+        elif kind != "tunneling_correlation" or (comparable is not None and comparable >= 2):
             report.text(f"贯入力首个有效段均值 {display(valid[0].get('avg_penetration'), penetration_unit)}，末个有效段均值 {display(valid[-1].get('avg_penetration'), penetration_unit)}；仅作首尾描述，不构成统计趋势结论。")
         report.table("掘进分段明细", ["环段", "采样点数" if time_mode else "记录数", "平均推力（kN）", "平均扭矩（kNm）", "平均转速（r/min）", f"平均贯入力（{penetration_unit or '原始单位未标注'}）", "起止时间"], [
             [segment_label(s), s.get("count", s.get("tunneling_count")), s.get("avg_thrust"), s.get("avg_torque"), s.get("avg_cutterhead_speed"), s.get("avg_penetration"), f"{display(s.get('start_time'))} 至 {display(s.get('end_time'))}" if s.get("start_time") or s.get("end_time") else None] for s in segments
@@ -192,6 +442,8 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         if time_mode:
             report.notes.append("单环时间分段的采样点数来自汇总记录的点数字段；字段缺失或为 0 时工具回退为 1，不能视为已验证的原始采样点总数。分段均值来自对应汇总记录，与数据库记录条数分别展示。")
         if kind == "tunneling_correlation":
+            if comparable is None or comparable < 2:
+                report.text("可比环段不足 2 个或未提供，不作掘进和换刀的对照结论。")
             report.table("同环段换刀与地层", ["环段", "换刀观测数", "更换次数", "异常磨损记录数", "主要地层"], [[segment_label(s), s.get("tool_change_count"), s.get("replacement_count"), s.get("abnormal_wear_count"), s.get("main_stratum")] for s in segments])
             report.notes.append("同环段聚集不等于因果或统计相关性；未提供相关系数、显著性检验或混杂因素控制。")
             report.notes.append("掘进、换刀明细和地层均按项目及环号关联；本对照不按刀型或具体刀位拆分。")
@@ -212,12 +464,17 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         report.text(f"选型筛选：安装环号 {range_text(criteria.get('ring_range'))}；刀型 {display(criteria.get('tool_type'))}；地层 {'、'.join(criteria['stratum_types']) if isinstance(criteria.get('stratum_types'), list) else display(criteria.get('stratum_types'))}；最少完成服役样本 {display(criteria.get('min_samples', 3))} 把。")
         if criteria.get("max_unit_price_yuan") is not None:
             report.text(f"单价上限：{display(criteria['max_unit_price_yuan'])} 元。")
-        report.table("型号服役表现", ["排名", "型号", "刀型", "厂家", "安装数", "完成服役数", "在役数", "平均服役（环）", "最短/最长（环）"], [[i.get("rank"), i.get("tool_type_name"), i.get("tool_parent_type"), i.get("manufacturer"), i.get("installed_count"), i.get("completed_service_count"), i.get("in_service_count"), i.get("avg_service_rings"), f"{display(i.get('min_service_rings'))} / {display(i.get('max_service_rings'))}"] for i in items], total=data.get("ranked_count"))
-        report.table("价格参考", ["型号", "参考单价（元）", "折合每环价格（元/环）"], [[i.get("tool_type_name"), i.get("unit_price_yuan"), i.get("cost_per_ring_yuan")] for i in items])
-        report.table("样本不足的返回型号", ["型号", "安装数", "完成服役数"], [[i.get("tool_type_name"), i.get("installed_count"), i.get("completed_service_count")] for i in insufficient])
+        report.table("型号服役表现", ["排名", "型号", "刀型", "安装数", "完成服役数", "在役数", "平均服役（环）", "最短/最长（环）", "未确认拆下数"], [[i.get("rank"), i.get("tool_type_name"), i.get("tool_parent_type"), i.get("installed_count"), i.get("completed_service_count"), i.get("in_service_count"), i.get("avg_service_rings"), f"{display(i.get('min_service_rings'))} / {display(i.get('max_service_rings'))}", i.get("unconfirmed_removed_count")] for i in items], limit=max(1, len(items)), total=data.get("ranked_count"))
+        prices = []
+        for item in items:
+            low, high = item.get("new_tool_price_min_yuan"), item.get("new_tool_price_max_yuan")
+            price = "暂无新刀报价" if low is None else display(low) if high is None or low == high else f"{display(low)}–{display(high)}"
+            prices.append([item.get("tool_type_name"), price, item.get("price_basis")])
+        report.table("价格参考", ["型号", "新刀报价区间（元）", "报价依据"], prices, limit=max(1, len(prices)))
+        report.table("样本不足的返回型号", ["型号", "安装数", "完成服役数"], [[i.get("tool_type_name"), i.get("installed_count"), i.get("completed_service_count")] for i in insufficient], limit=max(1, len(insufficient)))
         if not items:
             report.text("暂无满足排名条件的型号；不据此指定优先采购型号。")
-        return report.finish("服役环数按安装与拆卸依据计算；未拆下刀具不参与已完成服役平均值，该均值不代表全部刀具的真实寿命或剩余寿命。", "每环价格仅为参考单价除以平均服役环数，不包含完整采购、返修和停机支出。", "库存字段没有独立库存台账验证，本回答不展示为可用库存。样本不足型号可能已被查询限制截取，不代表全量清单。", "型号排序未控制地层和工况差异，不能直接替代备刀数量计划。")
+        return report.finish("平均服役环数只用厂家已确认的拆下记录；报价是各厂家的新刀报价区间，不代表某一家。", "服役环数按安装与拆卸依据计算；未拆下刀具不参与已完成服役平均值，该均值不代表全部刀具的真实寿命或剩余寿命。", "新刀报价区间未提供时不使用旧单价替代，暂无新刀报价不代表报价为 0。", "样本不足型号可能已被查询限制截取，不代表全量清单。", "型号排序未控制地层和工况差异，不能直接替代备刀数量计划。")
     if kind == "performance":
         items = data.get("tools") or []
         missing = data.get("not_found") or []
@@ -262,6 +519,7 @@ def render_abnormal_cause(change, stratum, tunneling, opening, params, table, pe
     report.table("磨损记录分布", ["磨损状态", "记录数"], [[w.get("wear_condition") or "未分类", w.get("count")] for w in change.get("wear_distribution") or []])
     report.table("地层关联明细", ["地层", "关联观测数", "更换次数", "更换率"], [[s.get("stratum_name") or s.get("stratum_type"), s.get("total_records"), s.get("replaced_count"), percent(s.get("replacement_rate"), s.get("total_records"))] for s in stratum.get("stratum_analysis") or []])
     report.table("掘进与换刀分段", ["环段", "掘进记录数", "平均扭矩（kNm）", f"平均贯入力（{penetration_unit or '原始单位未标注'}）", "更换次数", "异常磨损次数"], [[s.get("ring_range"), s.get("tunneling_count"), s.get("avg_torque"), s.get("avg_penetration"), s.get("replacement_count"), s.get("abnormal_wear_count")] for s in tunneling.get("segments") or []])
+    _report_coverage(report, tunneling)
     records = opening.get("recent_records") or []
     report.table("整仓与现场明细核对", ["开仓环号", "整仓更换数", "数量来源", "现场明细数", "已分类异常率", "高频刀位"], [[r.get("ring_no"), r.get("tool_change_replaced"), "已确认汇总" if r.get("count_source") == "confirmed_summary" else "现场明细（未确认）", r.get("detail_record_count"), r.get("abnormal_rate"), "、".join(map(str, r.get("top_replaced_positions") or [])) or None] for r in records])
     for name, source in [("换刀", change), ("地层", stratum), ("掘进", tunneling), ("开仓", opening)]:

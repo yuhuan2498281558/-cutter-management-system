@@ -135,9 +135,9 @@ class ToolContractTests(SimpleTestCase):
     def test_capability_and_general_explanations_do_not_require_irrelevant_tools(self):
         assistant = ToolAssistant()
         context = {'route_mode': 'agent'}
-        for query in ('项目实际总支出', '你可以帮我修改换刀记录吗', '为什么滚刀会偏磨'):
+        for query in ('你可以查询库存台账吗', '你可以帮我修改换刀记录吗', '为什么滚刀会偏磨'):
             self.assertFalse(assistant._model_needs_tools(query, context), query)
-        for query in ('项目实际总支出，并统计换刀次数', '本项目为什么滚刀会偏磨'):
+        for query in ('项目实际总支出', '项目实际总支出，并统计换刀次数', '本项目为什么滚刀会偏磨'):
             self.assertTrue(assistant._model_needs_tools(query, context), query)
         message = assistant._build_direct_messages('项目实际总支出')[0].content
         self.assertIn('不具备业务数据修改、库存台账', message)

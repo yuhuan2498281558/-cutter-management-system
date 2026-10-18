@@ -268,17 +268,17 @@ class MemoryPathTests(SimpleTestCase):
             self.assertEqual(result["rule_branch"], "position_point_query")
             self.assertEqual(json.loads(tool.call_args.args[0])["cutter_position_no"], position)
         for instance in ("GD-TEST-1201", "487-S14R-01", "R15-S11L-2"):
-            with patch("application.ai_assistant.llm_service.calculate_tool_performance", return_value="{}") as tool:
+            with patch("application.ai_assistant.llm_service.trace_tool_lifecycle", return_value="{}") as tool:
                 result = self.assistant._direct_route(f"查询{instance}寿命", {"project_id": "TEST"})
-            self.assertEqual(result["rule_branch"], "tool_performance")
-            self.assertEqual(json.loads(tool.call_args.args[0])["tool_numbers"], [instance])
+            self.assertEqual(result["rule_branch"], "tool_lifecycle")
+            self.assertEqual(json.loads(tool.call_args.args[0])["tool_ids"], [instance])
 
     def test_manufacturer_performance_preserves_type_filter(self):
         for query, expected in [("对比各厂家滚刀刀具性能表现", "DISC"), ("对比各厂家刮刀性能表现", "SCRAPER")]:
             context = self.assistant._prepare_query_context(query, MemorySnapshot(scope_key="user:1"))
-            with patch("application.ai_assistant.llm_service.compare_manufacturer_performance", return_value="{}") as tool:
+            with patch("application.ai_assistant.llm_service.compare_manufacturer_service", return_value="{}") as tool, patch.object(self.assistant, '_named_manufacturers', return_value=[]):
                 result = self.assistant._direct_route(query, context)
-            self.assertEqual(result["rule_branch"], "manufacturer")
+            self.assertEqual(result["rule_branch"], "manufacturer_service")
             self.assertEqual(json.loads(tool.call_args.args[0])["tool_type"], expected)
             self.assertEqual(context["memory_slots"]["tool_type"], expected)
 
@@ -307,11 +307,12 @@ class MemoryPathTests(SimpleTestCase):
 
     def test_actual_total_cost_does_not_become_model_cost_recommendation(self):
         query = "当前项目实际刀具采购加返修总成本是多少"
-        with patch("application.ai_assistant.llm_service.recommend_tools") as recommend:
+        with patch("application.ai_assistant.llm_service.recommend_tools") as recommend, patch("application.ai_assistant.llm_service.query_registered_amounts", return_value='{"total_registered_cost_yuan": 10}') as amounts:
             result = self.assistant._direct_route(query, {"project_id": "TEST"})
-        self.assertEqual(result["rule_branch"], "unsupported_actual_total_cost")
-        self.assertIn("无法给出实际总成本", result["answer"])
-        self.assertIn("不能替代", result["answer"])
+        self.assertEqual(result["rule_branch"], "registered_amounts")
+        self.assertTrue(result['answer'].startswith('系统里没有实际采购和付款台账，下面是登记金额，不是实际支出。'))
+        self.assertIn("登记合计：10.00 元", result["answer"])
+        amounts.assert_called_once()
         recommend.assert_not_called()
 
     def test_explicit_range_clear_cannot_be_replaced_by_recent_defaults(self):

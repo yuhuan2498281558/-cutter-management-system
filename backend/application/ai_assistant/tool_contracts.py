@@ -2,7 +2,7 @@
 from typing import Annotated, Literal
 import json
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints, field_validator, model_validator
 
 from application.shield.cutter_position_scope import (
     ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no,
@@ -11,6 +11,9 @@ from application.shield.cutter_position_scope import (
 Ring = Annotated[StrictInt, Field(ge=1, le=999_999_999)]
 Count = Annotated[StrictInt, Field(ge=1, le=100)]
 Interval = Annotated[StrictInt, Field(ge=1, le=500)]
+PositiveInt = Annotated[StrictInt, Field(ge=1)]
+Nonblank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+ListLimit = Annotated[StrictInt, Field(ge=1, le=200)]
 
 
 def tool_validation_error(error):
@@ -44,8 +47,7 @@ class ToolQuery(RingQuery):
         return value.strip().upper() if isinstance(value, str) else value
 
 
-class ChangeQuery(ToolQuery):
-    last_n_openings: Annotated[StrictInt, Field(ge=0, le=100)] = 0
+class PositionFilterQuery(ToolQuery):
     cutter_position_no: str = Field(default="", max_length=16)
 
     @field_validator("cutter_position_no")
@@ -65,12 +67,26 @@ class ChangeQuery(ToolQuery):
         return self
 
 
+class ChangeQuery(PositionFilterQuery):
+    last_n_openings: Annotated[StrictInt, Field(ge=0, le=100)] = 0
+
+
 class RecordQuery(RingQuery):
     limit: Count = 10
 
 
-class PositionQuery(ToolQuery):
+class OpeningQuery(RecordQuery):
+    summary_status: Literal["", "CONFIRMED", "DRAFT"] = ""
+
+
+class PositionImpactQuery(ToolQuery):
     top_n: Count = 10
+
+
+class PositionQuery(PositionFilterQuery):
+    top_n: Annotated[StrictInt, Field(ge=1, le=122)] = 10
+    include_all: StrictBool = False
+    sort_by: Literal["replaced", "abnormal"] = "replaced"
 
 
 class ChangeTrendQuery(ToolQuery):
@@ -101,6 +117,8 @@ class RecommendationQuery(ToolQuery):
     stratum_types: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(default_factory=list, max_length=50)
     max_unit_price: float = Field(default=0, ge=0, allow_inf_nan=False, strict=True)
     top_n: Annotated[StrictInt, Field(ge=1, le=50)] = 5
+    stratum_basis: Literal["label", "longitudinal_area"] = "label"
+    min_samples: PositiveInt = 3
 
     @field_validator("stratum_types")
     @classmethod
@@ -108,3 +126,89 @@ class RecommendationQuery(ToolQuery):
         if any(not code.strip() for code in value):
             raise ValueError("地层代码不能为空白")
         return list(dict.fromkeys(code.strip().upper() for code in value))
+
+    @model_validator(mode="after")
+    def known_stratum_codes(self):
+        from .tools import STRATUM_TYPE_NAMES
+        from application.shield.longitudinal_ratios import AREA_LABELS
+        allowed = STRATUM_TYPE_NAMES if self.stratum_basis == "label" else AREA_LABELS
+        if any(code not in allowed for code in self.stratum_types):
+            raise ValueError("地层编码与 stratum_basis 不匹配或不存在")
+        return self
+
+
+class InspectionQuery(PositionFilterQuery):
+    shield_machine_id: PositiveInt | None = None
+    recent_openings: Count | None = None
+    check_result: Literal["PENDING", "NOT_REPLACED", "NORMAL", "ATTENTION", "ABNORMAL_NOT_REPLACED"] | None = None
+    list_limit: ListLimit = 20
+
+    @model_validator(mode="after")
+    def exclusive_window(self):
+        if self.ring_range and self.recent_openings is not None:
+            raise ValueError("recent_openings 和 ring_range 只能给一个")
+        return self
+
+
+class RepairQuery(PositionFilterQuery):
+    shield_machine_id: PositiveInt | None = None
+    inspection_status: Literal["PENDING_VENDOR_FEEDBACK", "CONFIRMED", "CLOSED"] | None = None
+    disposition: Literal["SCRAP", "REPAIRABLE"] | None = None
+    list_limit: ListLimit = 20
+
+
+class LifecycleQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool_ids: list[Nonblank] = Field(min_length=1, max_length=20)
+
+
+class ManufacturerServiceQuery(ToolQuery):
+    shield_machine_id: PositiveInt | None = None
+    manufacturers: list[Nonblank] = Field(default_factory=list)
+    min_samples: PositiveInt = 3
+
+
+class StratumAreaQuery(RingQuery):
+    rings: list[Ring] = Field(default_factory=list, max_length=50)
+    basis: Literal["longitudinal_area", "cross_section"] = "longitudinal_area"
+
+    @model_validator(mode="after")
+    def exclusive_rings(self):
+        if self.ring_range and self.rings:
+            raise ValueError("rings 和 ring_range 只能给一个")
+        if len(set(self.rings)) != len(self.rings):
+            raise ValueError("rings 中的环号不能重复")
+        return self
+
+
+class OpeningStratumQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    shield_machine_id: PositiveInt | None = None
+    ring_no: PositiveInt | None = None
+    recent_openings: Annotated[StrictInt, Field(ge=1, le=20)] | None = None
+
+    @model_validator(mode="after")
+    def exclusive_opening(self):
+        if self.ring_no is not None and self.recent_openings is not None:
+            raise ValueError("ring_no 和 recent_openings 只能给一个")
+        return self
+
+
+class CostCatalogQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool_type: Literal["DISC", "RIPPER", "SCRAPER"] | None = None
+    tool_model: Nonblank | None = None
+    brand: Nonblank | None = None
+    manufacturer: Nonblank | None = None
+    cost_type: Literal["NEW_TOOL", "REPAIR"] | None = None
+    list_limit: ListLimit = 50
+
+
+class RegisteredAmountsQuery(RingQuery):
+    tool_type: Literal["DISC", "RIPPER", "SCRAPER"] | None = None
+    shield_machine_id: PositiveInt | None = None
+    group_by: Literal["none", "manufacturer", "tool_type", "opening"] = "none"
+
+
+class DataCatalogQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
