@@ -104,12 +104,11 @@ def query_tool_inspections(params_str: str) -> str:
         openings = openings[:params['recent_openings']]
     openings = list(openings)
     query = _filtered_details(params, checked_only=False).filter(warehouse_id__in=[o.pk for o in openings])
-    if 'check_result' in params:
-        query = query.filter(check_result=params['check_result'])
-    rows = list(query)
-    rows.sort(key=lambda row: (-row._tool_ring, cutter_position_sort_key(row.cutter_position_no), row.pk))
+    all_rows = list(query)
+    all_rows.sort(key=lambda row: (-row._tool_ring, cutter_position_sort_key(row.cutter_position_no), row.pk))
+    rows = [r for r in all_rows if r.check_result == params['check_result']] if 'check_result' in params else all_rows
     by_opening = defaultdict(list)
-    for row in rows:
+    for row in all_rows:
         by_opening[row.warehouse_id].append(row)
     tasks = list(MobileToolChangeTask.objects.filter(warehouse_id__in=[o.pk for o in openings]).values('warehouse_id', 'status'))
     statuses = defaultdict(list)
@@ -127,21 +126,24 @@ def query_tool_inspections(params_str: str) -> str:
                                not row.is_replaced and row.check_result in {'ATTENTION', 'ABNORMAL_NOT_REPLACED'}
                                for row in details)})
     attention = [r for r in rows if not r.is_replaced and r.check_result in {'ATTENTION', 'ABNORMAL_NOT_REPLACED'}]
-    unchecked = [r for r in rows if not r.is_checked and not r.is_replaced]
-    counts = Counter(r.check_result for r in rows)
+    unchecked = [r for r in all_rows if not r.is_checked and not r.is_replaced]
+    counts = Counter(r.check_result for r in all_rows)
     # 模型 choices 的标签目前为英文；枚举仍以模型为准，展示名与移动端一致。
     labels = {'PENDING': '待检查', 'NOT_REPLACED': '未更换', 'NORMAL': '正常',
               'ATTENTION': '需关注', 'ABNORMAL_NOT_REPLACED': '异常未换'}
-    abnormal = sum(r.is_replaced and r.check_result == 'NORMAL' and is_abnormal_wear(r.wear_condition) for r in rows)
+    abnormal = sum(r.is_replaced and r.check_result == 'NORMAL' and is_abnormal_wear(r.wear_condition) for r in all_rows)
+    scope = {**_detail_scope(params, rows), 'opening_count': len(openings)}
+    if 'check_result' in params:
+        scope['note'] = '检查结果筛选只影响列出的记录；各次开仓完成度、未检查数和检查结果分布按全部明细计算。'
     return _build_json({
-        'scope': {**_detail_scope(params, rows), 'opening_count': len(openings)},
+        'scope': scope,
         'check_result_counts': [{'check_result': key, 'label': labels.get(key, label), 'record_count': counts[key]}
                                 for key, label in choices.items()],
         'attention_not_replaced': _record_group(attention, params['list_limit']),
         'unchecked': _record_group(unchecked, params['list_limit']),
         'opening_completion': completion,
         'task_status_counts': dict(Counter(task['status'] for task in tasks)),
-        'mobile_status_counts': dict(Counter(r.mobile_status for r in rows)),
+        'mobile_status_counts': dict(Counter(r.mobile_status for r in all_rows)),
         'replaced_rows_with_abnormal_wear': abnormal,
         **_analysis_payload(summary={'record_count': len(rows), 'attention_count': len(attention), 'unchecked_count': len(unchecked)},
                             facts=[f'有效刀位明细共 {len(rows)} 条，需关注未更换 {len(attention)} 条，未检查 {len(unchecked)} 条。'],

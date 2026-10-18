@@ -60,6 +60,32 @@ class InspectionToolTests(TestCase):
         self.assertEqual([r['ring_no'] for r in result['opening_completion']], [100, 9])
         self.assertEqual(self.query(cutter_position_no=' 02 ')['scope']['record_count'], 2)
 
+    def test_check_result_filter_preserves_completion_and_all_detail_counts(self):
+        for ring in (100, 200):
+            opening = self.opening(ring)
+            self.detail(opening, '1', is_checked=True, check_result='ATTENTION', mobile_status='SAVED')
+            self.detail(opening, '2')
+            MobileToolChangeTask.objects.create(warehouse=opening, status='UNASSIGNED')
+        self.detail(opening, '3', is_checked=True, check_result='ABNORMAL_NOT_REPLACED', mobile_status='SAVED')
+        for params in ({'ring_range': [100, 200]}, {'recent_openings': 1},
+                       {'ring_range': [100, 200], 'tool_type': 'DISC', 'cutter_position_no': '2'}):
+            with self.subTest(params=params):
+                unfiltered = self.query(**params)
+                filtered = self.query(**params, check_result='ATTENTION')
+                for key in ('opening_completion', 'unchecked', 'check_result_counts',
+                            'task_status_counts', 'mobile_status_counts'):
+                    self.assertEqual(filtered[key], unfiltered[key])
+                self.assertEqual(filtered['summary']['unchecked_count'], unfiltered['summary']['unchecked_count'])
+                attention = filtered['attention_not_replaced']
+                self.assertTrue(all(r['check_result'] == 'ATTENTION' for r in attention['records']))
+                expected_count = 0 if 'cutter_position_no' in params else 1 if 'recent_openings' in params else 2
+                self.assertEqual(attention['record_count'], expected_count)
+                self.assertEqual(filtered['scope']['record_count'], expected_count)
+                self.assertEqual(filtered['summary']['attention_count'], expected_count)
+                self.assertNotIn('note', unfiltered['scope'])
+                self.assertEqual(filtered['scope']['note'],
+                                 '检查结果筛选只影响列出的记录；各次开仓完成度、未检查数和检查结果分布按全部明细计算。')
+
     def test_all_task_states_and_mobile_states_are_independent(self):
         opening = self.opening(20)
         self.detail(opening, '1', is_checked=True, check_result='ATTENTION', mobile_status='SAVED')
