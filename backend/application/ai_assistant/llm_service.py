@@ -3,7 +3,7 @@ LLM服务封装 - 使用LangChain Tool Calling Agent + Ollama
 记忆由 MemoryService 统一编排；legacy 模式兼容 SQLChatMessageHistory，django 模式由 Django 迁移管理
 """
 
-from langchain_core.tools import StructuredTool, tool
+from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -29,6 +29,8 @@ from .tools import (
     is_abnormal_wear,
 )
 from .prompts import SYSTEM_PROMPT, ANSWER_POLICY
+from .agent_views import AGENT_PAGE_SIZE, agent_view
+from .context_budget import GuardedChatModel
 from .tools_inspections import query_tool_inspections
 from .tools_repairs import query_old_tool_repairs
 from .tools_lifecycle import trace_tool_lifecycle
@@ -481,7 +483,7 @@ def tool_query_tool_change_data(tool_type: str = "", ring_range: list = [], last
     cutter_position_no: 有效刀位编号，如"1"、"S14R"、"80A"，查询特定刀位时传入，不需要传空字符串。
     """
     raw = query_tool_change_data(_to_json({"tool_type": tool_type, "ring_range": ring_range, "last_n_openings": last_n_openings, "cutter_position_no": cutter_position_no}))
-    return _with_analysis_payload(raw, "tool_change")
+    return agent_view(_with_analysis_payload(raw, "tool_change"), page_size=None)
 
 
 @tool(args_schema=RingQuery)
@@ -490,7 +492,7 @@ def tool_query_stratum_data(ring_range: list = []) -> str:
     summary.label_association_count是标签出现次数，unique_project_ring_count是按项目与数值环号去重数，total_records是记录数；直接使用，不能互换。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     """
-    return query_stratum_data(_to_json({"ring_range": ring_range}))
+    return agent_view(query_stratum_data(_to_json({"ring_range": ring_range})), page_size=None)
 
 
 @tool(args_schema=PerformanceQuery)
@@ -503,7 +505,7 @@ def tool_calculate_tool_performance(tool_numbers: list) -> str:
       - 刀具型号（如"17寸单刃滚刀"）横向比较 → 用 tool_recommend_tools。
     在役未拆的刀不会给出服役环数（只知道下界），这是正确行为，不要自行推算。
     """
-    return calculate_tool_performance(_to_json({"tool_numbers": tool_numbers}))
+    return agent_view(calculate_tool_performance(_to_json({"tool_numbers": tool_numbers})), page_size=None)
 
 
 @tool(args_schema=RecommendationQuery)
@@ -515,6 +517,8 @@ def tool_recommend_tools(
     top_n: int = 5,
     stratum_basis: str = "label",
     min_samples: int = 3,
+    page: int = 1,
+    page_size: int = AGENT_PAGE_SIZE,
 ) -> str:
     """刀具选型参考：按型号的历史平均服役环数排序，不代表质量、性价比或未来寿命。
     stratum_types: 地层编码列表，不限定时传空数组。
@@ -526,14 +530,14 @@ def tool_recommend_tools(
     max_unit_price: 单价上限（元），不限价传 0。
     top_n: 返回条数，默认5。
     """
-    return recommend_tools(_to_json({
+    return agent_view(recommend_tools(_to_json({
         "stratum_types": stratum_types,
         "tool_type": tool_type,
         "ring_range": ring_range,
         "max_unit_price": max_unit_price,
         "top_n": top_n,
         "stratum_basis": stratum_basis, "min_samples": min_samples,
-    }))
+    })), page, page_size)
 
 
 @tool(args_schema=ToolQuery)
@@ -542,7 +546,7 @@ def tool_compare_manufacturer_performance(tool_type: str = "", ring_range: list 
     tool_type 可选值: DISC/SCRAPER，不知道传空字符串；当前统计不纳入撕裂刀。
     """
     raw = compare_manufacturer_performance(_to_json({"tool_type": tool_type, "ring_range": ring_range}))
-    return _with_analysis_payload(raw, "manufacturer")
+    return agent_view(_with_analysis_payload(raw, "manufacturer"), page_size=None)
 
 
 @tool(args_schema=ToolQuery)
@@ -552,11 +556,11 @@ def tool_analyze_stratum_wear_correlation(tool_type: str = "", ring_range: list 
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     """
     raw = analyze_stratum_wear_correlation(_to_json({"tool_type": tool_type, "ring_range": ring_range}))
-    return _with_analysis_payload(raw, "stratum_wear")
+    return agent_view(_with_analysis_payload(raw, "stratum_wear"), page_size=None)
 
 
 @tool(args_schema=OpeningQuery)
-def tool_query_opening_records(ring_range: list = [], limit: int = 10, summary_status: str = "") -> str:
+def tool_query_opening_records(ring_range: list = [], limit: int = 10, summary_status: str = "", page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """查询开仓记录：每次开仓的环号、开仓间隔、开仓时长、换刀总时长、检查数、更换数、异常率和高频刀位。适用于"最近几次开仓""平均多少环开一次仓""开仓时长"。
     limit: 返回最近几次开仓，按环号从大到小排序。用户说"最近N次"就传N，默认10。
     summary_status: 只看已确认汇总传 CONFIRMED，只看草稿传 DRAFT，不限定传空字符串。
@@ -565,11 +569,11 @@ def tool_query_opening_records(ring_range: list = [], limit: int = 10, summary_s
     # 空字符串表示不限定，不传给工具（工具只接受 CONFIRMED 或 DRAFT）。
     raw = query_opening_records(_to_json({"ring_range": ring_range, "limit": limit,
                                           **({"summary_status": summary_status} if summary_status else {})}))
-    return _with_analysis_payload(raw, "opening")
+    return agent_view(_with_analysis_payload(raw, "opening"), page, page_size)
 
 
 @tool(args_schema=PositionQuery)
-def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_range: list = [], cutter_position_no: str = "", include_all: bool = False, sort_by: str = "replaced") -> str:
+def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_range: list = [], cutter_position_no: str = "", include_all: bool = False, sort_by: str = "replaced", page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """统计各刀位的更换次数和全部现场观测的磨损情况。适用于"哪些刀位更换次数最多""异常磨损集中在哪些刀位""全刀盘磨损分布"。
     cutter_position_no: 只查一个刀位时传入，如 "S14R"、"1"、"80A"；不限定传空字符串。
     include_all: 要列出全部有效刀位时传 true。
@@ -581,78 +585,78 @@ def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_
     raw = query_cutter_position_stats(_to_json({"tool_type": tool_type, "top_n": top_n, "ring_range": ring_range,
                                               **({"cutter_position_no": cutter_position_no} if cutter_position_no else {}),
                                               "include_all": include_all, "sort_by": sort_by}))
-    return _with_analysis_payload(raw, "cutter_position")
+    return agent_view(_with_analysis_payload(raw, "cutter_position"), page, page_size)
 
 
 @tool(args_schema=ChangeTrendQuery)
-def tool_query_tool_change_trend(tool_type: str = "", ring_range: list = [], interval: int = 50) -> str:
+def tool_query_tool_change_trend(tool_type: str = "", ring_range: list = [], interval: int = 50, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """按环段统计观测数、更换次数和更换率；不是每百环频率或统计趋势检验。
     summary直接给出total_records、replaced_count、replacement_rate_pct、segment_count及请求/实际环段；总计直接引用，不需累加segments。改变范围或刀型须重新查询。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     interval 为每段环数，默认50环一段。
     trend 只比较首末两段，不是趋势检验；为"数据不足"时不要判断趋势。每段的 abnormal_rate 是已分类异常率。
     """
-    return query_tool_change_trend(_to_json({"tool_type": tool_type, "ring_range": ring_range, "interval": interval}))
+    return agent_view(query_tool_change_trend(_to_json({"tool_type": tool_type, "ring_range": ring_range, "interval": interval})), page, page_size)
 
 
 @tool(args_schema=PositionImpactQuery)
-def tool_query_position_stratum_impact(tool_type: str = "", ring_range: list = [], top_n: int = 10) -> str:
+def tool_query_position_stratum_impact(tool_type: str = "", ring_range: list = [], top_n: int = 10, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """对照各刀位在开仓点地层标签下的更换次数；不能据此推断地层影响强度或因果。
     tool_type 可选值: DISC/SCRAPER，不知道传空字符串；当前统计不纳入撕裂刀。
     ring_range 格式: [起始环号, 结束环号]，不需要传空数组。
     top_n: 返回前N个刀位，默认10。
     replacement_count 是实际更换次数，total 是地层标签关联次数，一次更换可能对应多个标签，两者不能互换。
     """
-    return query_position_stratum_impact(_to_json({"tool_type": tool_type, "ring_range": ring_range, "top_n": top_n}))
+    return agent_view(query_position_stratum_impact(_to_json({"tool_type": tool_type, "ring_range": ring_range, "top_n": top_n})), page, page_size)
 
 
 @tool(args_schema=RecordQuery)
-def tool_query_tunneling_summary(ring_range: list = [], limit: int = 10) -> str:
+def tool_query_tunneling_summary(ring_range: list = [], limit: int = 10, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """查询掘进动态数据概览：总推力、刀盘扭矩、刀盘转速、贯入力的均值和范围，以及最近记录。
     limit: 返回最近几条记录，默认10。均值按已导入的分段记录计算，不是原始采样点；贯入力单位未标注。
     """
-    return query_tunneling_summary(_to_json({"ring_range": ring_range, "limit": limit}))
+    return agent_view(query_tunneling_summary(_to_json({"ring_range": ring_range, "limit": limit})), page, page_size)
 
 
 @tool(args_schema=TunnelingTrendQuery)
-def tool_query_tunneling_trend(ring_range: list = [], interval: int = 50) -> str:
+def tool_query_tunneling_trend(ring_range: list = [], interval: int = 50, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """按环号区间统计掘进动态趋势。适用于掘进参数变化、趋势、阶段对比等问题。
     summary给出记录数、分段数与范围。分段count可能是point_count或记录数，缺少各指标原始sum/count时不能合成原始点总体均值。
     """
-    return query_tunneling_trend(_to_json({"ring_range": ring_range, "interval": interval}))
+    return agent_view(query_tunneling_trend(_to_json({"ring_range": ring_range, "interval": interval})), page, page_size)
 
 
 @tool(args_schema=AnomalyQuery)
-def tool_query_tunneling_anomaly(ring_range: list = [], threshold_k: float = 1.5) -> str:
+def tool_query_tunneling_anomaly(ring_range: list = [], threshold_k: float = 1.5, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """分段均值偏高筛查：找出推力、扭矩、贯入力超过均值 threshold_k 倍的分段记录。
     anomaly_records 列出命中的环号、段号、起止时间和数值。这不是故障诊断，库里没有原始采样点，不能回答瞬时峰值或波动。
     """
-    return query_tunneling_anomaly(_to_json({"ring_range": ring_range, "threshold_k": threshold_k}))
+    return agent_view(query_tunneling_anomaly(_to_json({"ring_range": ring_range, "threshold_k": threshold_k})), page, page_size)
 
 
 @tool(args_schema=TunnelingTrendQuery)
-def tool_query_tunneling_wear_correlation(ring_range: list = [], interval: int = 50) -> str:
+def tool_query_tunneling_wear_correlation(ring_range: list = [], interval: int = 50, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """把掘进、换刀和地层数据按环段并列。先看 coverage（各类数据各自覆盖的环号和时间）和 comparable_segment_count；可比分段少于2个时只分别列出，不做对照。并列数据不能用来判断关联或原因。"""
-    return query_tunneling_wear_correlation(_to_json({"ring_range": ring_range, "interval": interval}))
+    return agent_view(query_tunneling_wear_correlation(_to_json({"ring_range": ring_range, "interval": interval})), page, page_size)
 
 
 @tool(args_schema=InspectionQuery)
-def tool_query_tool_inspections(ring_range: list = [], tool_type: str = "", cutter_position_no: str = "", shield_machine_id: int | None = None, recent_openings: int | None = None, check_result: str | None = None, list_limit: int = 20) -> str:
+def tool_query_tool_inspections(ring_range: list = [], tool_type: str = "", cutter_position_no: str = "", shield_machine_id: int | None = None, recent_openings: int | None = None, check_result: str | None = None, list_limit: int = 20, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """查询现场检查结果：需关注但没更换的刀、还没检查的刀位、每次开仓的检查完成情况和移动任务状态。适用于"哪些刀需要关注""哪些刀位还没检查""这次开仓检查完了没有"。
     记录数按明细行计，同一刀位在不同开仓各算一次；position_count 是去重后的刀位数，两者不能互换。
     更换行的检查结果 NORMAL 是移动端保存时的默认值，不代表磨损正常；磨损看 wear_condition。
     recent_openings 和 ring_range 只能给一个。
     """
-    return query_tool_inspections(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+    return agent_view(query_tool_inspections(_to_json({k: v for k, v in locals().items() if k not in ("page", "page_size") and v not in (None, "", [])})), page, page_size)
 
 
 @tool(args_schema=RepairQuery)
-def tool_query_old_tool_repairs(ring_range: list = [], tool_type: str = "", cutter_position_no: str = "", shield_machine_id: int | None = None, inspection_status: str | None = None, disposition: str | None = None, list_limit: int = 20) -> str:
+def tool_query_old_tool_repairs(ring_range: list = [], tool_type: str = "", cutter_position_no: str = "", shield_machine_id: int | None = None, inspection_status: str | None = None, disposition: str | None = None, list_limit: int = 20, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """查询拆下旧刀的厂家返修记录：待反馈、已确认、已归档各多少，报废还是可维修，登记维修金额，轴承、刀圈等部件失效原因，照片数。
     "已报废"只看 scrapped_count（厂家已确认或已归档、且处置为报废）；scrap_suggestion_count 是还在等厂家反馈的报废建议，不能说成已报废。
     金额是登记金额，不是实际支出。一把刀可能有多个失效原因，原因计数会多于刀数。
     """
-    return query_old_tool_repairs(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+    return agent_view(query_old_tool_repairs(_to_json({k: v for k, v in locals().items() if k not in ("page", "page_size") and v not in (None, "", [])})), page, page_size)
 
 
 @tool(args_schema=LifecycleQuery)
@@ -662,26 +666,26 @@ def tool_trace_tool_lifecycle(tool_ids: list) -> str:
     missing_steps 列出缺的环节，照实转述；"没有安装记录"不等于刀不存在。
     查某个刀位（如 S14R、1、80A）的情况不用本工具，用 tool_query_tool_change_data 的 cutter_position_no。
     """
-    return trace_tool_lifecycle(_to_json({"tool_ids": tool_ids}))
+    return agent_view(trace_tool_lifecycle(_to_json({"tool_ids": tool_ids})), page_size=None)
 
 
 @tool(args_schema=ManufacturerServiceQuery)
-def tool_compare_manufacturer_service(tool_type: str = "", ring_range: list = [], shield_machine_id: int | None = None, manufacturers: list = [], min_samples: int = 3) -> str:
+def tool_compare_manufacturer_service(tool_type: str = "", ring_range: list = [], shield_machine_id: int | None = None, manufacturers: list = [], min_samples: int = 3, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """按刀具原安装时的厂家，比较已确认拆下记录的服役环数和异常磨损率；另列各厂家本次新装的供货次数和登记金额。问厂家刀具的寿命、表现、异常率对比都用本工具。
     只有厂家已确认或已归档的记录进平均值；待反馈和缺确认身份的在 unconfirmed 里单列。样本少的厂家在 insufficient_samples 里，差异不能说明质量高低。
     """
-    return compare_manufacturer_service(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+    return agent_view(compare_manufacturer_service(_to_json({k: v for k, v in locals().items() if k not in ("page", "page_size") and v not in (None, "", [])})), page, page_size)
 
 
 @tool(args_schema=StratumAreaQuery)
-def tool_query_stratum_area(ring_range: list = [], rings: list = [], basis: str = "longitudinal_area") -> str:
+def tool_query_stratum_area(ring_range: list = [], rings: list = [], basis: str = "longitudinal_area", page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """查询逐环的地层面积组成。basis=longitudinal_area（默认）是纵断面六类面积（AREA_* 编码），basis=cross_section 是横断面岩性占比。
     问"占比、面积、占多少"用本工具；问"地层标签、工程条件"用 tool_query_stratum_data。
     share_pct 是这段范围的平均面积占比，positive_ring_count 是这一类出现过的环数，两者不能互换。
     面积来自图纸估算，部分环是展示补齐，回答时注明来源；不能据此判断刀具磨损的原因。
     ring_range 和 rings 只能给一个。
     """
-    return query_stratum_area(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+    return agent_view(query_stratum_area(_to_json({k: v for k, v in locals().items() if k not in ("page", "page_size") and v not in (None, "", [])})), page, page_size)
 
 
 @tool(args_schema=OpeningStratumQuery)
@@ -689,41 +693,32 @@ def tool_query_opening_stratum(shield_machine_id: int | None = None, ring_no: in
     """查询某次开仓所在环的地层，以及从上次开仓到这次之间经过的地层（首次开仓从第 1 环算起）。
     同时返回开仓录入时保存的地层快照和现在按地层表重算的结果，两者不一致时都要说明，不要只说一个。
     """
-    return query_opening_stratum(_to_json({k: v for k, v in locals().items() if v is not None}))
+    return agent_view(query_opening_stratum(_to_json({k: v for k, v in locals().items() if v is not None})), page_size=None)
 
 
 @tool(args_schema=CostCatalogQuery)
-def tool_query_tool_cost_catalog(tool_type: str | None = None, tool_model: str | None = None, brand: str | None = None, manufacturer: str | None = None, cost_type: str | None = None, list_limit: int = 50) -> str:
+def tool_query_tool_cost_catalog(tool_type: str | None = None, tool_model: str | None = None, brand: str | None = None, manufacturer: str | None = None, cost_type: str | None = None, list_limit: int = 50, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """查询成本库里各型号的新刀报价和维修报价，按品牌、厂家列出。
     新刀选型看新刀报价，不要用维修报价。报价库每个组合只有一条登记，看不出价格涨跌；这里不提供库存。
     """
-    return query_tool_cost_catalog(_to_json({k: v for k, v in locals().items() if v is not None}))
+    return agent_view(query_tool_cost_catalog(_to_json({k: v for k, v in locals().items() if k not in ("page", "page_size") and v is not None})), page, page_size)
 
 
 @tool(args_schema=RegisteredAmountsQuery)
-def tool_query_registered_amounts(ring_range: list = [], tool_type: str | None = None, shield_machine_id: int | None = None, group_by: str = "none") -> str:
+def tool_query_registered_amounts(ring_range: list = [], tool_type: str | None = None, shield_machine_id: int | None = None, group_by: str = "none", page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """汇总系统里的登记金额：新装登记金额、厂家已确认的返修金额、还在等厂家反馈的返修金额。
     total_registered_cost_yuan = 新装 + 已确认返修；待反馈的单列，不加进合计。这些都是登记金额，不是实际支出。
     group_by 可选 manufacturer（新装归本次新装的厂家，返修归拆下旧刀的原安装厂家）、tool_type、opening。
     """
-    return query_registered_amounts(_to_json({k: v for k, v in locals().items() if v not in (None, "", [])}))
+    return agent_view(query_registered_amounts(_to_json({k: v for k, v in locals().items() if k not in ("page", "page_size") and v not in (None, "", [])})), page, page_size)
 
 
-class _DataCatalogTool(StructuredTool):
-    def _to_args_and_kwargs(self, tool_input, tool_call_id):
-        # LangChain 的零参数工具跳过 schema 校验，目录仍须拒绝项目注入。
-        self.args_schema.model_validate(tool_input)
-        return (), {}
-
-
-def tool_query_data_catalog() -> str:
+@tool(args_schema=DataCatalogQuery)
+def tool_query_data_catalog(page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
     """列出当前能查的数据：刀型、型号、三套地层编码，以及开仓、换刀、掘进、地层、报价、返修、移动任务各自覆盖的环号和时间范围。
     不确定某个编码是否存在，或者要说明某类数据覆盖到哪里时，先查本工具。not_available 里列出的内容库里没有，直接说明不能回答。
     """
-    return query_data_catalog(_to_json({}))
-
-
-tool_query_data_catalog = _DataCatalogTool.from_function(tool_query_data_catalog, args_schema=DataCatalogQuery)
+    return agent_view(query_data_catalog(_to_json({})), page, page_size)
 
 
 TOOLS = [
@@ -854,6 +849,11 @@ class ToolAssistant:
             try:
                 self._llm_config = get_llm_config(self._model_name)
                 self._llm = create_chat_model(self._model_name)
+                if isinstance(self._llm, GuardedChatModel):
+                    self._llm.source_labels = {
+                        f"tool_{name}": FOCUS_SOURCE_LABELS[source]
+                        for name, source in _TOOL_SOURCES.items()
+                    } | {"tool_query_data_catalog": "可查数据"}
             except Exception:
                 self._llm_config = None
                 self._llm = None

@@ -89,6 +89,7 @@ def get_context_policy(provider: str | None = None):
             safety_margin_tokens=int(_config_value("AI_CONTEXT_SAFETY_MARGIN_TOKENS", "512" if ollama else "1024")),
             compaction_min_tokens=int(_config_value("AI_CONTEXT_COMPACTION_MIN_TOKENS", "1000")),
             tool_protocol_tokens=int(_config_value("AI_CONTEXT_TOOL_PROTOCOL_TOKENS", "1024")),
+            evidence_soft_tokens=int(_config_value("AI_CONTEXT_EVIDENCE_SOFT_TOKENS", "24000")),
         )
         if ollama and policy.context_tokens > int(window):
             raise ValueError("AI context budget cannot exceed OLLAMA_NUM_CTX")

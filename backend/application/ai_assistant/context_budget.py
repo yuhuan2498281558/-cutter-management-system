@@ -2,7 +2,8 @@
 
 The configured window is an operational limit, not a discovered model capacity.
 Counts are estimates; the reserve and margin reduce, but cannot rule out, a
-provider tokenizer exceeding its actual window. No evidence is silently dropped.
+provider tokenizer exceeding its actual window.
+早前证据超出软上限时会换成带标记的摘要，不会静默丢弃；移出的内容可重新查询取回。
 """
 
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.runnables.base import RunnableBinding
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from .context_compaction import compact_tool_content
+from .context_compaction import COLUMNAR_FORMAT, compact_tool_content, unpack_columnar
 from .token_estimation import estimate_tokens
 
 
@@ -50,9 +51,10 @@ class ContextBudgetPolicy:
     safety_margin_tokens: int = 1024
     compaction_min_tokens: int = 1000
     tool_protocol_tokens: int = 1024
+    evidence_soft_tokens: int = 24000
 
     def __post_init__(self):
-        for name in ("context_tokens", "output_tokens", "safety_margin_tokens", "compaction_min_tokens", "tool_protocol_tokens"):
+        for name in ("context_tokens", "output_tokens", "safety_margin_tokens", "compaction_min_tokens", "tool_protocol_tokens", "evidence_soft_tokens"):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -130,7 +132,75 @@ def estimate_request_tokens(messages, request_options=None, tool_protocol_tokens
     return count + estimate_tokens(_json(options))
 
 
-def prepare_messages(value, policy, request_options=None):
+_SUMMARY_PREFIX = "【已移出的早前结果】"
+
+
+def _summary_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "；".join(f"{key}：{_summary_text(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return "、".join(_summary_text(item) for item in value)
+    return str(value)
+
+
+def _earlier_result_summary(content, label):
+    original = content if isinstance(content, str) else _json(content)
+    try:
+        data = json.loads(original)
+        if isinstance(data, dict) and data.get("format") == COLUMNAR_FORMAT:
+            data = unpack_columnar(data)
+    except (ValueError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    scope = data.get("scope") or {}
+    rings = scope.get("ring_range")
+    if not isinstance(rings, list) or len(rings) != 2 or None in rings:
+        rings = scope.get("effective_ring_range")
+    if not isinstance(rings, list) or len(rings) != 2 or None in rings:
+        rings = [scope.get("ring_min"), scope.get("ring_max")]
+    parts = [f"第{rings[0]}–{rings[1]}环"] if None not in rings else []
+    records = scope.get("record_count")
+    if records is None:
+        records = scope.get("observation_count")
+    if records is not None:
+        parts.append(f"{records}条")
+    scope_text = " · ".join(parts) or "范围未注明"
+    points = (data.get("_analysis_payload") or {}).get("summary")
+    if not points:
+        summary = data.get("summary")
+        points = summary if isinstance(summary, str) else "；".join(
+            value for value in (summary or {}).values() if isinstance(value, str)
+        )
+    points = _summary_text(points) if points else original[:200]
+    prefix = f"{_SUMMARY_PREFIX}{label}：{scope_text}。要点："
+    suffix = "。完整结果已不在本轮上下文里；需要细节时用相同参数重新查询或翻页。"
+    return prefix + points[:max(0, 300 - len(prefix) - len(suffix))] + suffix
+
+
+def _summarize_earlier_results(messages, policy, request_options, source_labels):
+    count = estimate_request_tokens(messages, request_options, policy.tool_protocol_tokens)
+    latest_ids, call_names = set(), {}
+    for message in messages:
+        if isinstance(message, AIMessage):
+            latest_ids = {call["id"] for call in message.tool_calls}
+            call_names.update({call["id"]: call["name"] for call in message.tool_calls})
+    for message in messages:
+        if count <= policy.evidence_soft_tokens:
+            break
+        if (not isinstance(message, ToolMessage) or message.status == "error"
+                or message.tool_call_id in latest_ids
+                or isinstance(message.content, str) and message.content.startswith(_SUMMARY_PREFIX)):
+            continue
+        name = message.name or message.additional_kwargs.get("name") or call_names.get(message.tool_call_id, "")
+        message.content = _earlier_result_summary(message.content, (source_labels or {}).get(name, name))
+        count = estimate_request_tokens(messages, request_options, policy.tool_protocol_tokens)
+    return count
+
+
+def prepare_messages(value, policy, request_options=None, source_labels=None):
     if isinstance(value, PromptValue):
         messages = value.to_messages()
     elif isinstance(value, str):
@@ -154,7 +224,7 @@ def prepare_messages(value, policy, request_options=None):
             ) for block in copied.content):
                 raise ValueError("上下文预算目前仅支持文本消息。")
         prepared.append(copied)
-    count = estimate_request_tokens(prepared, request_options, policy.tool_protocol_tokens)
+    count = _summarize_earlier_results(prepared, policy, request_options, source_labels)
     if count > policy.input_budget:
         raise ContextBudgetExceeded(count, policy.input_budget)
     return prepared
@@ -163,11 +233,12 @@ def prepare_messages(value, policy, request_options=None):
 class GuardedChatModel(Runnable):
     """Runnable adapter retaining the real model's streaming/callback events."""
 
-    def __init__(self, model, policy, request_options=None, output_parameter="max_tokens"):
+    def __init__(self, model, policy, request_options=None, output_parameter="max_tokens", source_labels=None):
         self.model = model
         self.policy = policy
         self.request_options = dict(request_options or {})
         self.output_parameter = output_parameter
+        self.source_labels = source_labels
 
     def bind_tools(self, tools, **kwargs):
         tools = list(tools)
@@ -178,11 +249,11 @@ class GuardedChatModel(Runnable):
         options.update(getattr(bound, "kwargs", {}))
         if isinstance(bound, RunnableBinding) and not bound.config and not bound.config_factories:
             bound = bound.bound
-        return type(self)(bound, self.policy, options, self.output_parameter)
+        return type(self)(bound, self.policy, options, self.output_parameter, self.source_labels)
 
     def bind(self, **kwargs):
         return type(self)(self.model, self.policy,
-                          {**self.request_options, **kwargs}, self.output_parameter)
+                          {**self.request_options, **kwargs}, self.output_parameter, self.source_labels)
 
     def _prepare_call(self, value, kwargs):
         options = {**self.request_options, **kwargs}
@@ -216,7 +287,7 @@ class GuardedChatModel(Runnable):
             if "max_completion_tokens" in options:
                 options.pop("max_tokens")
                 options["max_completion_tokens"] = cap
-        prepared = prepare_messages(value, self.policy, options)
+        prepared = prepare_messages(value, self.policy, options, self.source_labels)
         return prepared, options
 
     def invoke(self, input, config=None, **kwargs):

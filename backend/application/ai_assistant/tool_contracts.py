@@ -4,6 +4,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints, field_validator, model_validator
 
+from .agent_views import AGENT_PAGE_SIZE
+
 from application.shield.cutter_position_scope import (
     ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no,
 )
@@ -23,6 +25,11 @@ def tool_validation_error(error):
         'error': '工具参数校验失败，请按工具schema纠正参数后重试；不得改成更大的查询范围。',
         'code': 'invalid_tool_arguments', 'fields': fields[:10],
     }, ensure_ascii=False)
+
+
+class _PagingQuery(BaseModel):
+    page: Annotated[StrictInt, Field(ge=1, le=50)] = 1
+    page_size: Annotated[StrictInt, Field(ge=5, le=50)] = AGENT_PAGE_SIZE
 
 
 class RingQuery(BaseModel):
@@ -71,7 +78,7 @@ class ChangeQuery(PositionFilterQuery):
     last_n_openings: Annotated[StrictInt, Field(ge=0, le=100)] = 0
 
 
-class RecordQuery(RingQuery):
+class RecordQuery(RingQuery, _PagingQuery):
     limit: Count = 10
 
 
@@ -79,25 +86,25 @@ class OpeningQuery(RecordQuery):
     summary_status: Literal["", "CONFIRMED", "DRAFT"] = ""
 
 
-class PositionImpactQuery(ToolQuery):
+class PositionImpactQuery(ToolQuery, _PagingQuery):
     top_n: Count = 10
 
 
-class PositionQuery(PositionFilterQuery):
+class PositionQuery(PositionFilterQuery, _PagingQuery):
     top_n: Annotated[StrictInt, Field(ge=1, le=122)] = 10
     include_all: StrictBool = False
     sort_by: Literal["replaced", "abnormal"] = "replaced"
 
 
-class ChangeTrendQuery(ToolQuery):
+class ChangeTrendQuery(ToolQuery, _PagingQuery):
     interval: Interval = 50
 
 
-class TunnelingTrendQuery(RingQuery):
+class TunnelingTrendQuery(RingQuery, _PagingQuery):
     interval: Interval = 50
 
 
-class AnomalyQuery(RingQuery):
+class AnomalyQuery(RingQuery, _PagingQuery):
     threshold_k: float = Field(default=1.5, gt=0, allow_inf_nan=False, strict=True)
 
 
@@ -113,7 +120,7 @@ class PerformanceQuery(BaseModel):
         return list(dict.fromkeys(number.strip() for number in value))
 
 
-class RecommendationQuery(ToolQuery):
+class RecommendationQuery(ToolQuery, _PagingQuery):
     stratum_types: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(default_factory=list, max_length=50)
     max_unit_price: float = Field(default=0, ge=0, allow_inf_nan=False, strict=True)
     top_n: Annotated[StrictInt, Field(ge=1, le=50)] = 5
@@ -137,7 +144,7 @@ class RecommendationQuery(ToolQuery):
         return self
 
 
-class InspectionQuery(PositionFilterQuery):
+class InspectionQuery(PositionFilterQuery, _PagingQuery):
     shield_machine_id: PositiveInt | None = None
     recent_openings: Count | None = None
     check_result: Literal["PENDING", "NOT_REPLACED", "NORMAL", "ATTENTION", "ABNORMAL_NOT_REPLACED"] | None = None
@@ -150,7 +157,7 @@ class InspectionQuery(PositionFilterQuery):
         return self
 
 
-class RepairQuery(PositionFilterQuery):
+class RepairQuery(PositionFilterQuery, _PagingQuery):
     shield_machine_id: PositiveInt | None = None
     inspection_status: Literal["PENDING_VENDOR_FEEDBACK", "CONFIRMED", "CLOSED"] | None = None
     disposition: Literal["SCRAP", "REPAIRABLE"] | None = None
@@ -162,13 +169,13 @@ class LifecycleQuery(BaseModel):
     tool_ids: list[Nonblank] = Field(min_length=1, max_length=20)
 
 
-class ManufacturerServiceQuery(ToolQuery):
+class ManufacturerServiceQuery(ToolQuery, _PagingQuery):
     shield_machine_id: PositiveInt | None = None
     manufacturers: list[Nonblank] = Field(default_factory=list)
     min_samples: PositiveInt = 3
 
 
-class StratumAreaQuery(RingQuery):
+class StratumAreaQuery(RingQuery, _PagingQuery):
     rings: list[Ring] = Field(default_factory=list, max_length=50)
     basis: Literal["longitudinal_area", "cross_section"] = "longitudinal_area"
 
@@ -194,7 +201,7 @@ class OpeningStratumQuery(BaseModel):
         return self
 
 
-class CostCatalogQuery(BaseModel):
+class CostCatalogQuery(_PagingQuery):
     model_config = ConfigDict(extra="forbid")
     tool_type: Literal["DISC", "RIPPER", "SCRAPER"] | None = None
     tool_model: Nonblank | None = None
@@ -204,11 +211,11 @@ class CostCatalogQuery(BaseModel):
     list_limit: ListLimit = 50
 
 
-class RegisteredAmountsQuery(RingQuery):
+class RegisteredAmountsQuery(RingQuery, _PagingQuery):
     tool_type: Literal["DISC", "RIPPER", "SCRAPER"] | None = None
     shield_machine_id: PositiveInt | None = None
     group_by: Literal["none", "manufacturer", "tool_type", "opening"] = "none"
 
 
-class DataCatalogQuery(BaseModel):
+class DataCatalogQuery(_PagingQuery):
     model_config = ConfigDict(extra="forbid")
