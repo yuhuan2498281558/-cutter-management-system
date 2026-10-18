@@ -175,7 +175,7 @@
 
     <div class="input-actions">
       <span class="input-tip">
-        {{ routeMode === 'rule' ? '规则路径：下拉选择后可直接生成问题' : '模型路径：选择数据能力与分析模板后自动填入' }} · Enter 发送，Shift + Enter 换行
+        {{ routeMode === 'rule' ? '规则路径：下拉选择后可直接生成问题' : '模型路径：选择要用的数据，或选一个分析模板生成问题；也可以直接输入' }} · Enter 发送，Shift + Enter 换行
       </span>
       <div class="button-group">
         <el-button

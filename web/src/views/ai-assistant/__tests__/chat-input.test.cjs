@@ -339,3 +339,8 @@ test('choosing a template or pressing 生成问题 always writes the chosen ques
   rule.applyQuickQuestion();
   assert.equal(rule.inputText.value, '统计最近100环的换刀情况，列出现场观测记录数、更换数、更换率、主要磨损类型和高频刀位');
 });
+
+test('each path explains how to fill the input', async () => {
+  assert.match(await renderInput(loadInput()), /<span class="input-tip">规则路径：下拉选择后可直接生成问题 · Enter 发送，Shift \+ Enter 换行 <\/span>/);
+  assert.match(await renderInput(loadInput({ routeMode: 'agent' })), /<span class="input-tip">模型路径：选择要用的数据，或选一个分析模板生成问题；也可以直接输入 · Enter 发送，Shift \+ Enter 换行 <\/span>/);
+});
