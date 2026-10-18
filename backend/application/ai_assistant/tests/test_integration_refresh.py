@@ -94,6 +94,12 @@ class IntegrationContractsTests(SimpleTestCase):
             forwarded = json.loads(query.call_args.args[0])
             for key, value in params.items():
                 self.assertEqual(forwarded[key], value)
+        # 模型只给默认参数时，空的筛选值不能传给工具（工具会当成无效值报错，整题中断）。
+        for name, function, empty in [('tool_query_opening_records', 'query_opening_records', 'summary_status'),
+                                      ('tool_query_cutter_position_stats', 'query_cutter_position_stats', 'cutter_position_no')]:
+            with patch.object(service, function, return_value='{}') as query:
+                getattr(service, name).invoke({})
+            self.assertNotIn(empty, json.loads(query.call_args.args[0]))
         for basis, code in [('label', 'AREA_BOULDER'), ('longitudinal_area', 'BOULDER'), ('label', 'UNKNOWN')]:
             result = json.loads(service.tool_recommend_tools.invoke({'stratum_basis': basis, 'stratum_types': [code]}))
             self.assertEqual(result['code'], 'invalid_tool_arguments')

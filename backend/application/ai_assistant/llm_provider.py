@@ -78,8 +78,10 @@ def get_context_policy(provider: str | None = None):
 
     provider = provider or _config_value("AI_LLM_PROVIDER", "deepseek").strip().lower()
     ollama = provider == "ollama"
-    window = _config_value("OLLAMA_NUM_CTX", "4096") if ollama else "16384"
-    output = _config_value("OLLAMA_NUM_PREDICT", "1024") if ollama else "2048"
+    # 在线模型：系统提示词和 21 个工具说明固定约 12k token，16k 窗口查一两次就超；
+    # deepseek-chat 实际窗口远大于 64k，这里按 64k 管控，输出留 4k 给分段的复杂回答。
+    window = _config_value("OLLAMA_NUM_CTX", "4096") if ollama else "65536"
+    output = _config_value("OLLAMA_NUM_PREDICT", "1024") if ollama else "4096"
     try:
         policy = ContextBudgetPolicy(
             context_tokens=int(_config_value("AI_CONTEXT_WINDOW_TOKENS", window)),

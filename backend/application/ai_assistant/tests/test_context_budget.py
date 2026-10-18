@@ -292,12 +292,12 @@ class ContextPolicyTests(SimpleTestCase):
             with self.assertRaises(ValueError):
                 ContextBudgetPolicy(**kwargs)
 
-    @override_settings(AI_LLM_PROVIDER="deepseek", AI_CONTEXT_WINDOW_TOKENS=8192)
+    @override_settings(AI_LLM_PROVIDER="deepseek", AI_CONTEXT_WINDOW_TOKENS=32768)
     def test_environment_overrides_django_settings(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(get_context_policy().context_tokens, 8192)
-            with patch.dict(os.environ, {"AI_CONTEXT_WINDOW_TOKENS": "4096"}):
-                self.assertEqual(get_context_policy().context_tokens, 4096)
+            self.assertEqual(get_context_policy().context_tokens, 32768)
+            with patch.dict(os.environ, {"AI_CONTEXT_WINDOW_TOKENS": "16384"}):
+                self.assertEqual(get_context_policy().context_tokens, 16384)
 
     def test_tool_protocol_reserve_configuration(self):
         with patch.dict(os.environ, {"AI_CONTEXT_TOOL_PROTOCOL_TOKENS": "2048"}, clear=True):

@@ -562,7 +562,9 @@ def tool_query_opening_records(ring_range: list = [], limit: int = 10, summary_s
     summary_status: 只看已确认汇总传 CONFIRMED，只看草稿传 DRAFT，不限定传空字符串。
     每条记录同时给人工汇总数和有效刀位明细数，两者不同时都要说明，不要只说一个。确认时间为空不代表未确认。
     """
-    raw = query_opening_records(_to_json({"ring_range": ring_range, "limit": limit, "summary_status": summary_status}))
+    # 空字符串表示不限定，不传给工具（工具只接受 CONFIRMED 或 DRAFT）。
+    raw = query_opening_records(_to_json({"ring_range": ring_range, "limit": limit,
+                                          **({"summary_status": summary_status} if summary_status else {})}))
     return _with_analysis_payload(raw, "opening")
 
 
@@ -575,8 +577,10 @@ def tool_query_cutter_position_stats(tool_type: str = "", top_n: int = 10, ring_
     wear_distribution 只统计更换行，observation_wear_distribution 统计全部现场观测；truncated 为 true 表示只返回了一部分刀位。更换次数多不等于磨损严重。
     tool_type 可选值: DISC/SCRAPER，不知道传空字符串；当前统计不纳入撕裂刀。
     """
+    # 空刀位表示不限定，不传给工具（工具会把空字符串当成无效刀位）。
     raw = query_cutter_position_stats(_to_json({"tool_type": tool_type, "top_n": top_n, "ring_range": ring_range,
-                                              "cutter_position_no": cutter_position_no, "include_all": include_all, "sort_by": sort_by}))
+                                              **({"cutter_position_no": cutter_position_no} if cutter_position_no else {}),
+                                              "include_all": include_all, "sort_by": sort_by}))
     return _with_analysis_payload(raw, "cutter_position")
 
 
