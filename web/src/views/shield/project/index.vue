@@ -83,12 +83,16 @@ onMounted(() => {
 });
 
 async function loadImportOptions() {
-  const [projectRes, machineRes] = await Promise.all([
-    api.GetList({ page: 1, limit: 10000 } as any),
-    request({ url: '/api/shield/shield_machine_basic_info/', method: 'get', params: { page: 1, limit: 10000 } }),
-  ]);
-  projectOptions.value = projectRes?.data?.results ?? projectRes?.data ?? [];
-  machineOptions.value = machineRes?.data?.results ?? machineRes?.data ?? [];
+  try {
+    const [projectRes, machineRes] = await Promise.all([
+      api.GetList({ page: 1, limit: 10000 } as any),
+      request({ url: '/api/shield/shield_machine_basic_info/', method: 'get', params: { page: 1, limit: 10000 } }),
+    ]);
+    projectOptions.value = projectRes?.data?.results ?? projectRes?.data ?? [];
+    machineOptions.value = machineRes?.data?.results ?? machineRes?.data ?? [];
+  } catch {
+    // 请求层已弹出错误提示，这里只防止未处理的 Promise 拒绝
+  }
 }
 
 async function openImportDialog() {

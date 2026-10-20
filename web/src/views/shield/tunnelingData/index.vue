@@ -7,8 +7,8 @@
 			<el-select v-model="importForm.shield_machine" placeholder="选择盾构机" clearable filterable class="toolbar-select">
 				<el-option v-for="item in machineOptions" :key="item.id" :label="item.shield_model" :value="item.id" />
 			</el-select>
-			<el-upload accept=".csv" :show-file-list="false" :before-upload="handleBeforeUpload">
-				<el-button type="primary" icon="Upload">导入CSV</el-button>
+			<el-upload accept=".csv" :show-file-list="false" :disabled="importing" :before-upload="handleBeforeUpload">
+				<el-button type="primary" icon="Upload" :loading="importing">导入CSV</el-button>
 			</el-upload>
 			<ExportDropdown title="掘进动态数据" :crud-binding="crudBinding" />
 		</div>
@@ -37,6 +37,7 @@ const importForm = reactive({
 });
 const projectOptions = ref<any[]>([]);
 const machineOptions = ref<any[]>([]);
+const importing = ref(false);
 
 onMounted(() => {
 	loadOptions();
@@ -44,14 +45,18 @@ onMounted(() => {
 });
 
 async function loadOptions() {
-	const [projectRes, machineRes] = await Promise.all([
-		request({ url: '/api/shield/project/', method: 'get', params: { limit: 10000 } }),
-		request({ url: '/api/shield/shield_machine_basic_info/', method: 'get', params: { limit: 10000 } }),
-	]);
-	const projectData = projectRes?.data?.results ?? projectRes?.data ?? [];
-	const machineData = machineRes?.data?.results ?? machineRes?.data ?? [];
-	projectOptions.value = Array.isArray(projectData) ? projectData : [];
-	machineOptions.value = Array.isArray(machineData) ? machineData : [];
+	try {
+		const [projectRes, machineRes] = await Promise.all([
+			request({ url: '/api/shield/project/', method: 'get', params: { limit: 10000 } }),
+			request({ url: '/api/shield/shield_machine_basic_info/', method: 'get', params: { limit: 10000 } }),
+		]);
+		const projectData = projectRes?.data?.results ?? projectRes?.data ?? [];
+		const machineData = machineRes?.data?.results ?? machineRes?.data ?? [];
+		projectOptions.value = Array.isArray(projectData) ? projectData : [];
+		machineOptions.value = Array.isArray(machineData) ? machineData : [];
+	} catch {
+		// 请求层已弹出错误提示，这里只防止未处理的 Promise 拒绝
+	}
 }
 
 async function handleBeforeUpload(file: File) {
@@ -65,12 +70,15 @@ async function handleBeforeUpload(file: File) {
 	formData.append('project', String(importForm.project));
 	formData.append('shield_machine', String(importForm.shield_machine));
 
+	importing.value = true;
 	try {
 		const response: any = await ImportCsv(formData);
 		ElMessage.success(response?.msg || '导入成功');
 		crudExpose.doRefresh();
 	} catch (error: any) {
 		ElMessage.error(error?.msg || error?.response?.data?.msg || '导入失败，请检查CSV格式');
+	} finally {
+		importing.value = false;
 	}
 	return false;
 }
