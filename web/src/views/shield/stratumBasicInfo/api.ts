@@ -49,14 +49,6 @@ export function BatchDel(ids: string[]) {
 	});
 }
 
-export function exportData(params: any) {
-	return request({
-		url: apiPrefix + 'export_data/',
-		method: 'get',
-		params: params,
-	});
-}
-
 export function importData(data: any) {
 	return request({
 		url: apiPrefix + 'import_data/',

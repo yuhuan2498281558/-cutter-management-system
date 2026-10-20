@@ -42,10 +42,6 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
     return await api.AddObj(form);
   };
 
-  const exportRequest = async (query: UserPageQuery) => {
-    return await api.exportData(query);
-  };
-
   return {
     crudOptions: {
       request: {
@@ -61,14 +57,8 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
             text: '新增',
             type: 'primary',
           },
-          export: {
-            show: true,
-            text: '导出',
-            title: '导出数据',
-            click() {
-              return exportRequest(crudExpose.getSearchFormData());
-            }
-          },
+          // 全局配置里有一个没有点击动作的"导出"按钮，这里隐藏；导出用页面上的导出下拉
+          export: { show: false },
         },
       },
       rowHandle: {
