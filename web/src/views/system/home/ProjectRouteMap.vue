@@ -98,13 +98,13 @@
     <footer class="route-footer">
       <span><i class="dot completed"></i>最新开仓位置</span>
       <span><i class="dot opening"></i>开仓 {{ openingsLoading ? '加载中…' : openingsError ? '加载失败' : `${openingPoints.length} 次` }}</span>
-      <span><i class="dot remaining"></i>地层信息 {{ stratumLoading ? '加载中…' : `${stratumCount} 环` }}</span>
+      <span><i class="dot remaining"></i>地层信息 {{ stratumLoading ? '加载中…' : stratumError ? '加载失败' : `${stratumCount} 环` }}</span>
     </footer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref } from 'vue';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import { request } from '/@/utils/service';
@@ -141,6 +141,7 @@ const pdfError = ref('');
 const openingsLoading = ref(true);
 const openingsError = ref(false);
 const stratumLoading = ref(true);
+const stratumError = ref(false);
 
 const projectName = ref('');
 const ringRange = ref<{ start: number; end: number } | null>(null);
@@ -153,10 +154,11 @@ const ratioMap = ref<Record<string, StratumItem>>({});
 const selectedStratumText = computed(() => {
   const point = selectedPoint.value;
   return (point && (stratumMap.value[String(point.ringValue)] || point.stratumText))
-    || (stratumLoading.value ? '加载中…' : '待导入');
+    || (stratumLoading.value ? '加载中…' : stratumError.value ? '加载失败' : '待导入');
 });
 const selectedRatioText = computed(() => {
   if (stratumLoading.value) return '加载中…';
+  if (stratumError.value) return '加载失败';
   const item = selectedPoint.value ? ratioMap.value[String(selectedPoint.value.ringValue)] : undefined;
   const ratios = item?.stratum_type_ratios;
   if (!ratios || !Object.keys(ratios).length) return '暂无占比数据';
@@ -171,9 +173,13 @@ let pdfDoc: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let renderTask: any = null;
 let renderGeneration = 0;
+// 最新一次渲染请求的目标尺寸，尺寸和清晰度都没变时不再整图重画。
+let renderTargetKey = '';
 let disposed = false;
 let resizeObserver: ResizeObserver | null = null;
 let resizeTimer: ReturnType<typeof window.setTimeout> | null = null;
+// Vue 在 onUnmounted 之前就把模板 ref 置空，卸载前先记下要释放的画布。
+let canvasToRelease: HTMLCanvasElement | null = null;
 
 const MAX_CANVAS_PIXELS = 16000000;
 
@@ -230,7 +236,40 @@ function buildStratumText(item: StratumItem) {
   return item.stratum_info || '';
 }
 
+type RenderTarget = { key: string; width: number; height: number; dpr: number };
+
+// 没有 PDF 时量示例剖面的尺寸；有 PDF 时宽度随高度等比缩放，只量高度和清晰度。
+function measureRenderTarget(stage: HTMLDivElement): RenderTarget {
+  if (!pdfPage) {
+    const width = Math.max(stage.clientWidth, 900);
+    const height = isFullscreen.value ? Math.max(window.innerHeight - 160, 320) : 320;
+    const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+    return { key: `placeholder:${width}x${height}@${dpr}`, width, height, dpr };
+  }
+  // 提高清晰度：最低 3 倍 DPR
+  const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), isFullscreen.value ? 1.5 : 2);
+
+  // PDF 是超宽图（9524×652），必须按高度缩放，让内容水平滚动
+  // 全屏：撑满可用高度；普通：固定 320px 高度
+  let targetH: number;
+  if (isFullscreen.value) {
+    const headerEl = stage.closest('.route-map-panel')?.querySelector('.route-map-header') as HTMLElement | null;
+    const footerEl = stage.closest('.route-map-panel')?.querySelector('.route-footer') as HTMLElement | null;
+    const summaryEl = stage.closest('.route-map-panel')?.querySelector('.progress-summary') as HTMLElement | null;
+    const headerH = headerEl ? headerEl.offsetHeight : 52;
+    const footerH = footerEl ? footerEl.offsetHeight : 40;
+    targetH = Math.max(160, window.innerHeight - 32 - headerH - footerH - (summaryEl?.offsetHeight || 0) - 4);
+  } else {
+    targetH = 320;
+  }
+  return { key: `pdf:${targetH}@${dpr}`, width: 0, height: targetH, dpr };
+}
+
 async function renderPdf() {
+  const requestedKey = canvasRef.value && stageRef.value ? measureRenderTarget(stageRef.value).key : '';
+  // 同一尺寸已画好或正在画（如挂载后 ResizeObserver 的初始通知、全屏切换后的尺寸通知）就不再重画。
+  if (requestedKey && requestedKey === renderTargetKey) return;
+  renderTargetKey = requestedKey;
   const generation = ++renderGeneration;
   const previousTask = renderTask;
   if (previousTask) {
@@ -247,17 +286,20 @@ async function renderPdf() {
   // Cancellation settles before resizing/reusing the canvas. Only the newest
   // fullscreen/ResizeObserver request may start the next render.
   if (disposed || generation !== renderGeneration || !canvasRef.value || !stageRef.value) return;
+  const target = measureRenderTarget(stageRef.value);
+  renderTargetKey = target.key;
   if (!pdfPage) {
     const canvas = canvasRef.value;
-    const width = Math.max(stageRef.value.clientWidth, 900);
-    const height = isFullscreen.value ? Math.max(window.innerHeight - 160, 320) : 320;
-    const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+    const { width, height, dpr } = target;
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      renderTargetKey = '';
+      return;
+    }
     ctx.scale(dpr, dpr);
     ctx.fillStyle = '#eef3f6';
     ctx.fillRect(0, 0, width, height);
@@ -289,26 +331,9 @@ async function renderPdf() {
     ctx.fillText('示例地层剖面（请导入已获授权的项目资料）', 20, 28);
     return;
   }
-  // 提高清晰度：最低 3 倍 DPR
-  const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), isFullscreen.value ? 1.5 : 2);
   const viewport1 = pdfPage.getViewport({ scale: 1, rotation: 0 });
-
-  // PDF 是超宽图（9524×652），必须按高度缩放，让内容水平滚动
-  // 全屏：撑满可用高度；普通：固定 320px 高度
-  let targetH: number;
-  if (isFullscreen.value) {
-    const headerEl = stageRef.value.closest('.route-map-panel')?.querySelector('.route-map-header') as HTMLElement | null;
-    const footerEl = stageRef.value.closest('.route-map-panel')?.querySelector('.route-footer') as HTMLElement | null;
-    const summaryEl = stageRef.value.closest('.route-map-panel')?.querySelector('.progress-summary') as HTMLElement | null;
-    const headerH = headerEl ? headerEl.offsetHeight : 52;
-    const footerH = footerEl ? footerEl.offsetHeight : 40;
-    targetH = Math.max(160, window.innerHeight - 32 - headerH - footerH - (summaryEl?.offsetHeight || 0) - 4);
-  } else {
-    targetH = 320;
-  }
-
-  const scale = Math.max(0.05, targetH / viewport1.height);
-  let renderScale = scale * dpr;
+  const scale = Math.max(0.05, target.height / viewport1.height);
+  let renderScale = scale * target.dpr;
   let scaledViewport = pdfPage.getViewport({ scale: renderScale, rotation: 0 });
   const pixels = scaledViewport.width * scaledViewport.height;
   if (pixels > MAX_CANVAS_PIXELS) {
@@ -322,7 +347,10 @@ async function renderPdf() {
   canvas.style.height = Math.round((scaledViewport.height / renderScale) * scale) + 'px';
 
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) {
+    renderTargetKey = '';
+    return;
+  }
 
   let task: any = null;
   try {
@@ -332,6 +360,8 @@ async function renderPdf() {
   } catch (e: any) {
     if (e?.name !== 'RenderingCancelledException' && !disposed && generation === renderGeneration) {
       pdfError.value = 'PDF 渲染失败，请刷新重试';
+      // 画失败了，同样尺寸的下一次请求要能重画。
+      renderTargetKey = '';
     }
   } finally {
     if (renderTask === task) renderTask = null;
@@ -417,6 +447,7 @@ async function loadStratum() {
     stratumMap.value = {};
     ratioMap.value = {};
     stratumCount.value = 0;
+    stratumError.value = true;
   } finally {
     stratumLoading.value = false;
   }
@@ -426,7 +457,7 @@ async function loadOpenings() {
   openingsLoading.value = true;
   openingsError.value = false;
   try {
-    const res: any = await request({ url: '/api/shield/warehouse_opening/', method: 'get', params: { project: 1, limit: 500, ordering: 'ring_no' } });
+    const res: any = await request({ url: '/api/shield/warehouse_opening/', method: 'get', params: { project: 1, limit: 500, ordering: 'ring_int' } });
     if (disposed) return;
     const records: any[] = res.data?.results ?? res.data ?? [];
     const sorted = records
@@ -488,14 +519,19 @@ onMounted(async () => {
   const stratumTask = loadStratum();
   await Promise.all([loadPdf(), loadOpenings()]);
 
-  if (!disposed && stageRef.value) {
+  // 观察滚动容器：画布尺寸变化不会再反过来触发重画，全屏时窗口变化也能重新适配。
+  if (!disposed && bodyRef.value) {
     resizeObserver = new ResizeObserver(() => {
       if (resizeTimer) window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => renderPdf(), 120);
     });
-    resizeObserver.observe(stageRef.value);
+    resizeObserver.observe(bodyRef.value);
   }
   await Promise.all([projectTask, stratumTask]);
+});
+
+onBeforeUnmount(() => {
+  canvasToRelease = canvasRef.value;
 });
 
 onUnmounted(() => {
@@ -512,7 +548,8 @@ onUnmounted(() => {
   pdfPage = null;
   pdfDoc?.destroy?.();
   pdfDoc = null;
-  const canvas = canvasRef.value;
+  const canvas = canvasToRelease;
+  canvasToRelease = null;
   const releaseCanvas = () => {
     if (canvas) { canvas.width = 0; canvas.height = 0; }
   };
