@@ -69,7 +69,7 @@ const handleImportError = (_error: any) => {
 const handleDownloadTemplate = async () => {
   try {
     const response = await api.downloadTemplate();
-    const blob = new Blob([response], {
+    const blob = new Blob([response.data], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     });
     const url = window.URL.createObjectURL(blob);
@@ -108,7 +108,7 @@ const handleImportFromPdf = async () => {
       ElMessage.error(res.msg || '导入失败');
     }
   } catch (e: any) {
-    ElMessage.error('导入失败：' + (e?.message || '网络错误'));
+    ElMessage.error('导入失败：' + (e?.msg || e?.message || '网络错误'));
   } finally {
     pdfImporting.value = false;
   }
