@@ -1,5 +1,69 @@
 @import 'mixins/index.scss';
 
+/* Element Plus 变量映射
+ * 基础色指向 tokens.scss 的 --dv-* 变量；light/dark 派生色由 tokens.scss 的 SCSS 变量在编译期生成。
+------------------------------- */
+@mixin dv-el-color($type, $token, $color) {
+	--el-color-#{$type}: var(--dv-#{$token});
+	--el-color-#{$type}-rgb: #{red($color)}, #{green($color)}, #{blue($color)};
+	@each $level in 3, 5, 7, 8, 9 {
+		--el-color-#{$type}-light-#{$level}: #{dv-light($color, $level)};
+	}
+	--el-color-#{$type}-dark-2: #{dv-dark($color, 2)};
+}
+:root {
+	@include dv-el-color(primary, primary, $dv-primary);
+	@include dv-el-color(success, success, $dv-success);
+	@include dv-el-color(warning, warning, $dv-warning);
+	@include dv-el-color(danger, danger, $dv-danger);
+	@include dv-el-color(error, danger, $dv-danger);
+	@include dv-el-color(info, info, $dv-info);
+
+	--el-bg-color: var(--dv-surface);
+	--el-bg-color-page: var(--dv-bg);
+	--el-bg-color-overlay: var(--dv-surface);
+
+	--el-text-color-primary: var(--dv-text);
+	--el-text-color-regular: var(--dv-text);
+	--el-text-color-secondary: var(--dv-text-secondary);
+	--el-text-color-placeholder: var(--dv-text-muted);
+
+	--el-border-color: var(--dv-border);
+	--el-border-color-light: var(--dv-border);
+	--el-border-color-lighter: var(--dv-border);
+	--el-border-color-extra-light: var(--dv-border);
+	--el-border-color-dark: var(--dv-border-strong);
+	--el-border-color-darker: var(--dv-border-strong);
+	--el-border-color-hover: var(--dv-border-strong);
+
+	--el-fill-color: var(--dv-surface-muted);
+	--el-fill-color-light: var(--dv-hover);
+	--el-fill-color-lighter: var(--dv-hover);
+	--el-fill-color-extra-light: var(--dv-hover);
+	--el-fill-color-dark: var(--dv-selected);
+	--el-fill-color-darker: var(--dv-selected);
+	--el-fill-color-blank: var(--dv-surface);
+
+	--el-border-radius-base: var(--dv-radius);
+	--el-border-radius-small: var(--dv-radius-sm);
+	--el-border-radius-round: var(--dv-radius-pill);
+
+	--el-font-family: var(--dv-font-sans);
+
+	// 卡片不用阴影（见 Card 一节）；弹窗、下拉、气泡统一用一档柔和阴影
+	--el-box-shadow: var(--dv-shadow-overlay);
+	--el-box-shadow-light: var(--dv-shadow-overlay);
+	--el-box-shadow-lighter: var(--dv-shadow-overlay);
+	--el-box-shadow-dark: var(--dv-shadow-overlay);
+}
+
+/* 数字等宽：表格、统计数字
+------------------------------- */
+.el-table,
+.el-statistic {
+	font-variant-numeric: tabular-nums;
+}
+
 /* Button 按钮
 ------------------------------- */
 // 第三方字体图标大小

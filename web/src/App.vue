@@ -18,6 +18,7 @@ import { useTagsViewRoutes } from '/@/stores/tagsViewRoutes';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import other from '/@/utils/other';
 import { Local, Session } from '/@/utils/storage';
+import { resetStaleThemeCache } from '/@/theme/themeVersion';
 import mittBus from '/@/utils/mitt';
 import setIntroduction from '/@/utils/setIconfont';
 
@@ -69,6 +70,8 @@ onMounted(() => {
 		mittBus.on('openSetingsDrawer', () => {
 			setingsRef.value.openDrawer();
 		});
+		// 主题换版后先清掉旧的布局配置缓存
+		resetStaleThemeCache(Local);
 		// 获取缓存中的布局配置
 		if (Local.get('themeConfig')) {
 			storesThemeConfig.setThemeConfig({ themeConfig: Local.get('themeConfig') });
