@@ -245,25 +245,6 @@ function extractList<T>(res: any): T[] {
   return Array.isArray(payload) ? payload : [];
 }
 
-async function fetchPagedList<T>(url: string) {
-  const result: T[] = [];
-  let page = 1;
-  let hasNext = true;
-
-  while (hasNext) {
-    const res = await request({
-      url,
-      method: 'get',
-      params: { page, limit: 999 },
-    });
-    result.push(...extractList<T>(res));
-    hasNext = Boolean(res?.is_next);
-    page += 1;
-  }
-
-  return result;
-}
-
 function getMarker(row: ToolChangeRow) {
   const code = row.position.split('-')[0].toUpperCase();
   const matched = positionMap.value[code];
