@@ -65,7 +65,7 @@ body,
 	}
 	.layout-aside {
 		background: var(--next-bg-menuBar);
-		box-shadow: 2px 0 6px rgb(0 21 41 / 1%);
+		border-right: 1px solid var(--next-border-color-light);
 		height: inherit;
 		position: relative;
 		z-index: 1;

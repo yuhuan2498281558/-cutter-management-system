@@ -122,10 +122,13 @@ onBeforeRouteUpdate((to) => {
 			opacity: 1;
 		}
 	}
+	:deep(.el-breadcrumb) {
+		font-size: 13px;
+	}
+	// 当前页用正文色，前面的层级用顶栏文字色（默认是次要文字色）
 	.layout-navbars-breadcrumb-span {
 		display: flex;
-		opacity: 0.7;
-		color: var(--next-bg-topBarColor);
+		color: var(--el-text-color-primary);
 	}
 	.layout-navbars-breadcrumb-iconfont {
 		font-size: 14px;

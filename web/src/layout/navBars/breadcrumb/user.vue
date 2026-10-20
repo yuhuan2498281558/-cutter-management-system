@@ -303,7 +303,7 @@ const messageCenter = messageCenterStore();
       height: 12px;
       width: 12px;
       padding: 0;
-      background-color: #18bc9c;
+      background-color: var(--dv-success);
     }
   }
   .online-down{
@@ -315,7 +315,7 @@ const messageCenter = messageCenterStore();
       height: 12px;
       width: 12px;
       padding: 0;
-      background-color: #979b9c;
+      background-color: var(--dv-info);
     }
   }
 }

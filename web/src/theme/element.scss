@@ -130,7 +130,7 @@
 
 /* NavMenu 导航菜单
 ------------------------------- */
-// 鼠标 hover 时颜色
+// 选中项底色
 .el-menu-hover-bg-color {
 	background-color: var(--next-bg-menuBarActiveColor) !important;
 }
@@ -138,6 +138,12 @@
 .el-menu {
 	border-right: none !important;
 	width: 220px;
+	// 菜单组件会按背景色在行内样式里算一个偏深的悬停色，这里统一成浅暖灰
+	--el-menu-hover-bg-color: var(--dv-hover) !important;
+}
+// 分组标题
+.el-menu-item-group__title {
+	color: var(--dv-text-muted);
 }
 .el-menu-item {
 	height: 56px !important;
@@ -166,14 +172,13 @@
 .el-sub-menu .fa {
 	@include generalIcon;
 }
-// 水平菜单、横向菜单高亮 背景色，鼠标 hover 时，有子级菜单的背景色
+// 选中项、收起状态下选中项所在的子菜单：暖灰底；悬停只用浅暖灰（见上面 --el-menu-hover-bg-color）
 .el-menu-item.is-active,
-.el-sub-menu.is-active .el-sub-menu__title,
-.el-sub-menu:not(.is-opened):hover .el-sub-menu__title {
+.el-sub-menu.is-active .el-sub-menu__title {
 	@extend .el-menu-hover-bg-color;
 }
-.el-menu-item:hover {
-	@extend .el-menu-hover-bg-color;
+.el-menu-item.is-active {
+	font-weight: 600;
 }
 .el-sub-menu.is-active.is-opened .el-sub-menu__title {
 	background-color: unset !important;
@@ -250,6 +255,14 @@
 	.el-menu-item:not(.is-active):hover,
 	.el-sub-menu:not(.is-active):hover .el-sub-menu__title {
 		color: var(--next-bg-topBarColor);
+	}
+	// 顶层选中项：不加底色块，用近黑字和 2px 下划线（与标签页一致；不加粗，免得切换时菜单宽度跳动）
+	> .el-menu-item.is-active,
+	> .el-sub-menu.is-active > .el-sub-menu__title {
+		background-color: transparent !important;
+		color: var(--el-text-color-primary) !important;
+		font-weight: normal;
+		border-bottom: 2px solid var(--el-color-primary);
 	}
 }
 

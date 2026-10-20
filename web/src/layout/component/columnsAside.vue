@@ -196,10 +196,13 @@ watch(
 	width: 70px;
 	height: 100%;
 	background: var(--next-bg-columnsMenuBar);
+	border-right: 1px solid var(--next-border-color-light);
 	ul {
 		position: relative;
+		// 选中项：暖灰底（.columns-round）、正文色、加粗
 		.layout-columns-active {
-			color: var(--next-bg-columnsMenuBarColor) !important;
+			color: var(--el-text-color-primary) !important;
+			font-weight: 600;
 			transition: 0.3s ease-in-out;
 		}
 		.layout-columns-hover {
@@ -248,8 +251,7 @@ watch(
 			}
 		}
 		.columns-round {
-			background: var(--el-color-primary);
-			color: var(--el-color-white);
+			background: var(--next-bg-menuBarActiveColor);
 			position: absolute;
 			left: 50%;
 			top: 2px;
