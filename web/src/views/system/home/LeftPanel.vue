@@ -2,7 +2,7 @@
   <div class="left-panel">
     <div class="panel-section">
       <div class="section-title"><span class="dot blue"></span>项目基本信息</div>
-      <template v-if="project">
+      <template v-if="projectState === 'ready' && project">
         <div class="info-row"><span class="lbl">项目名称</span><span class="val">{{ project.project_name }}</span></div>
         <div class="info-row"><span class="lbl">所在地</span><span class="val">{{ project.location || '-' }}</span></div>
         <div class="info-row"><span class="lbl">开挖直径</span><span class="val">{{ project.excavation_diameter != null ? project.excavation_diameter + ' m' : '-' }}</span></div>
@@ -10,6 +10,8 @@
         <div class="info-row"><span class="lbl">盾构机型号</span><span class="val">{{ shieldMachine?.shield_model || '-' }}</span></div>
         <div class="info-row"><span class="lbl">最新开仓环号</span><span class="val accent">{{ latestRingNo || '-' }}</span></div>
       </template>
+      <div v-else-if="projectState === 'error'" class="muted">加载失败，请点刷新重试</div>
+      <div v-else-if="projectState === 'empty'" class="muted">暂无项目信息</div>
       <div v-else class="muted">加载中...</div>
     </div>
 
@@ -19,6 +21,7 @@
         <span class="sub-hint">距上次换刀环数最大</span>
       </div>
       <div v-if="warningLoading" class="muted">加载中...</div>
+      <div v-else-if="warningError" class="muted">预警加载失败</div>
       <div v-else-if="warningPositions.length === 0" class="muted">暂无预警</div>
       <div v-for="w in warningPositions" :key="w.position" class="warn-item">
         <div class="warn-left">
@@ -35,10 +38,11 @@
     <div class="panel-section">
       <div class="section-title">
         <span class="dot orange"></span>最近换刀记录
-        <span class="refresh-btn" @click="loadData" title="刷新">↻</span>
+        <span class="refresh-btn" @click="refresh" title="刷新">↻</span>
       </div>
       <div class="change-list">
-        <div v-if="recentChanges.length === 0" class="muted">暂无换刀记录</div>
+        <div v-if="changesError" class="muted">换刀记录加载失败</div>
+        <div v-else-if="recentChanges.length === 0" class="muted">暂无换刀记录</div>
         <button v-for="item in recentChanges" :key="item.id" class="change-item" type="button" @click="goToToolChangeDetail(item)">
           <div class="change-top">
             <span class="ring-badge">环 {{ item.ring_no }}</span>
@@ -64,11 +68,14 @@ import ProjectRouteMap from './ProjectRouteMap.vue';
 
 const router = useRouter();
 const project = ref<any>(null);
+const projectState = ref<'loading' | 'ready' | 'empty' | 'error'>('loading');
 const shieldMachine = ref<any>(null);
 const latestRingNo = ref<string>('');
 const recentChanges = ref<any[]>([]);
+const changesError = ref(false);
 const warningPositions = ref<any[]>([]);
 const warningLoading = ref(false);
+const warningError = ref(false);
 
 async function loadData() {
   try {
@@ -77,14 +84,22 @@ async function loadData() {
       request({ url: '/api/shield/shield_machine_basic_info/', method: 'get', params: { limit: 1 } }),
     ]);
     const projects = projRes.data?.results ?? projRes.data ?? [];
-    project.value = Array.isArray(projects) ? projects[0] : projects;
+    project.value = (Array.isArray(projects) ? projects[0] : projects) ?? null;
     const machines = smRes.data?.results ?? smRes.data ?? [];
     shieldMachine.value = Array.isArray(machines) ? machines[0] : machines;
+    projectState.value = project.value ? 'ready' : 'empty';
+  } catch (e) {
+    project.value = null;
+    projectState.value = 'error';
+    console.error('首页项目信息加载失败:', e);
+  }
 
+  try {
+    // ring_no 是字符串字段，按后端注解的数字环号排序后再截取最近 5 条。
     const warehouseRes = await request({
       url: '/api/shield/warehouse_opening/',
       method: 'get',
-      params: { limit: 5, ordering: '-ring_no,-open_time' },
+      params: { limit: 5, ordering: '-ring_int,-open_time' },
     });
     const allRecords: any[] = warehouseRes.data?.results ?? warehouseRes.data ?? [];
     const sorted = [...allRecords].sort((a, b) => {
@@ -93,14 +108,17 @@ async function loadData() {
     });
     recentChanges.value = sorted.slice(0, 5);
     latestRingNo.value = sorted.length > 0 ? String(sorted[0].ring_no) : '';
-
+    changesError.value = false;
   } catch (e) {
-    console.error('首页左侧数据加载失败:', e);
+    recentChanges.value = [];
+    changesError.value = true;
+    console.error('首页换刀记录加载失败:', e);
   }
 }
 
 async function loadWarnings() {
   warningLoading.value = true;
+  warningError.value = false;
   try {
     const res = await request({
       url: '/api/shield/tool_change_detail/home_warnings/',
@@ -124,10 +142,16 @@ async function loadWarnings() {
       }));
   } catch (e) {
     warningPositions.value = [];
+    warningError.value = true;
     console.error('首页换刀预警加载失败:', e);
   } finally {
     warningLoading.value = false;
   }
+}
+
+function refresh() {
+  loadData();
+  loadWarnings();
 }
 
 function goToToolChangeDetail(row: any) {
@@ -150,10 +174,7 @@ function formatDate(dt: string) {
   return dt.slice(0, 10);
 }
 
-onMounted(() => {
-  loadData();
-  loadWarnings();
-});
+onMounted(refresh);
 </script>
 
 <style scoped>
