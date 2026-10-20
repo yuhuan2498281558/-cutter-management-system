@@ -33,7 +33,7 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				project: {
 					title: '所属项目',
 					type: 'dict-select',
-					dict: dict({ url: '/api/shield/project/', value: 'id', label: 'project_name' }),
+					dict: dict({ url: '/api/shield/project/', params: { limit: 999 }, value: 'id', label: 'project_name' }),
 					search: { show: true },
 					column: { minWidth: 160, formatter: ({ row }: any) => row.project_name || row.project },
 					form: { rules: [{ required: true, message: '请选择所属项目' }] },
@@ -41,7 +41,7 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				shield_machine: {
 					title: '盾构机',
 					type: 'dict-select',
-					dict: dict({ url: '/api/shield/shield_machine_basic_info/', value: 'id', label: 'shield_model' }),
+					dict: dict({ url: '/api/shield/shield_machine_basic_info/', params: { limit: 999 }, value: 'id', label: 'shield_model' }),
 					search: { show: true },
 					column: { minWidth: 160, formatter: ({ row }: any) => row.shield_machine_name || row.shield_machine },
 					form: { rules: [{ required: true, message: '请选择盾构机' }] },
