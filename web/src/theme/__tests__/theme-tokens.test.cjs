@@ -45,17 +45,18 @@ test('current theme version keeps the cached layout config', () => {
   assert.equal(storage.get('themeConfigStyle'), '--x: 1;');
 });
 
-test('App.vue checks the theme version before reading the cached layout config', () => {
+test('App.vue checks the theme version during setup, before anything reads the cached layout config', () => {
   const app = read('App.vue');
   const reset = app.indexOf('resetStaleThemeCache(Local)');
   assert.ok(reset > 0);
-  assert.ok(reset < app.indexOf("if (Local.get('themeConfig'))"));
+  assert.equal(app.indexOf('resetStaleThemeCache(Local)', reset + 1), -1);
+  for (const reader of ['const getGlobalComponentSize', 'onMounted(', "if (Local.get('themeConfig'))"]) assert.ok(reset < app.indexOf(reader), reader);
 });
 
 test('tokens.scss defines every design variable with the agreed value', () => {
   const expected = {
     '--dv-bg': '#f4f3ee', '--dv-surface': '#ffffff', '--dv-surface-muted': '#efede6', '--dv-selected': '#e2dfd5',
-    '--dv-hover': 'rgba(31, 30, 29, 0.04)',
+    '--dv-hover': 'rgba(31, 30, 29, 0.04)', '--dv-hover-solid': '#f6f6f6',
     '--dv-text': '#1f1e1d', '--dv-text-secondary': '#6b6962', '--dv-text-muted': '#9a978e', '--dv-text-nav': '#3d3b36',
     '--dv-border': '#e5e2d9', '--dv-border-strong': '#d6d2c6',
     '--dv-primary': '#1f1e1d', '--dv-primary-hover': '#3a3936', '--dv-on-primary': '#faf9f5', '--dv-ai': '#c96442',
@@ -64,6 +65,7 @@ test('tokens.scss defines every design variable with the agreed value', () => {
     '--dv-danger': '#b5533c', '--dv-danger-bg': '#f5e1dc', '--dv-danger-text': '#a8432f',
     '--dv-info': '#8a877e', '--dv-info-bg': '#ecebe6', '--dv-info-text': '#5f5d57',
     '--dv-radius-sm': '6px', '--dv-radius': '8px', '--dv-radius-lg': '10px', '--dv-radius-xl': '12px',
+    '--dv-radius-pill': '999px', '--dv-page-gutter': '12px',
     '--dv-font-sans': '"PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB", system-ui, sans-serif',
     '--dv-font-serif': '"Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif',
     '--dv-font-mono': 'ui-monospace, "Cascadia Mono", Consolas, monospace',
@@ -84,6 +86,28 @@ test('tokens.scss is the first theme import and element plus colours derive from
   assert.match(css, /--el-color-primary-light-9: #e9e9e8;/);
   assert.match(css, /--el-font-family: var\(--dv-font-sans\);/);
   assert.match(css, /--next-bg-main-color: var\(--dv-bg\);/);
+  // 表格固定列是 sticky 的，悬停底色必须不透明
+  assert.match(css, /--el-table-row-hover-bg-color: var\(--dv-hover-solid\);/);
+});
+
+test('fs-page becomes a card inset by the page gutter without a fixed height', () => {
+  const css = sass.compile(path.resolve(themeDir, 'index.scss'), { style: 'expanded', loadPaths: [themeDir] }).css;
+  const rules = [...css.matchAll(/(^|\n)div\.fs-page \{([^}]*)\}/g)].map(match => match[2]);
+  assert.equal(rules.length, 1);
+  for (const side of ['top', 'right', 'bottom', 'left']) assert.match(rules[0], new RegExp(`${side}: var\\(--dv-page-gutter\\);`));
+  assert.match(rules[0], /width: auto !important;/);
+  assert.match(rules[0], /border: 1px solid var\(--el-border-color\);/);
+  assert.match(rules[0], /border-radius: var\(--dv-radius-lg\);/);
+  assert.doesNotMatch(rules[0], /height|shadow|margin/);
+});
+
+test('fast-crud row buttons and table overrides take their colours from the theme', () => {
+  const settings = read('settings.ts');
+  const rowHandle = settings.slice(settings.indexOf('rowHandle: {'), settings.indexOf('group:{'));
+  assert.doesNotMatch(rowHandle, /#[0-9a-fA-F]{3,6}\b/);
+  assert.match(rowHandle, /remove: \{[^}]*style:\{color: 'var\(--el-color-danger\)'\}/);
+  const reset = read('assets/style/reset.scss');
+  assert.doesNotMatch(reset, /#[0-9a-fA-F]{3,6}\b/);
 });
 
 test('layout defaults use the new theme colours', () => {

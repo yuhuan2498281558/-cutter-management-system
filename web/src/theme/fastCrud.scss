@@ -1,5 +1,20 @@
-.fs-page {
-  background-color: rgb(255, 255, 255);
-    border-radius: 10px;
-    height: 88vh !important;
+/* fast-crud 页面容器：在暖灰底上做成一张白卡片（细边框、大圆角、无阴影）
+ * fast-crud 自带样式让 .fs-page 绝对定位铺满内容区（width:100%; top:0; bottom:0），
+ * 这里只把四边各收进一个页面间距，不用 margin，免得 width:100% 横向溢出。
+ * fast-crud 的样式在主题之后加载，所以用 div.fs-page 提高一级优先级；
+ * 页面根元素还带着布局给的 .w100（width:100% !important），宽度要用 !important 改回 auto。
+------------------------------- */
+div.fs-page {
+	top: var(--dv-page-gutter);
+	right: var(--dv-page-gutter);
+	bottom: var(--dv-page-gutter);
+	left: var(--dv-page-gutter);
+	width: auto !important;
+	background-color: var(--el-bg-color);
+	border: 1px solid var(--el-border-color);
+	border-radius: var(--dv-radius-lg);
+	// 标题栏分隔线（fast-crud 写死 #ddd）
+	div.fs-page-header {
+		border-bottom-color: var(--el-border-color);
+	}
 }

@@ -6,6 +6,12 @@
 	box-sizing: border-box;
 	outline: none !important;
 }
+// 键盘焦点：2px 近黑外框（上面去掉了浏览器默认焦点框）。
+// 输入框靠边框变色表示聚焦，不再加外框；tabindex=-1 的弹窗、气泡容器是脚本聚焦，也不加
+:focus-visible:not(input, textarea, [tabindex='-1']) {
+	outline: 2px solid var(--dv-primary) !important;
+	outline-offset: 2px;
+}
 
 :root {
 	--next-color-white: var(--dv-surface);

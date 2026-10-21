@@ -29,6 +29,9 @@ const CloseFull = defineAsyncComponent(() => import('/@/layout/navBars/breadcrum
 // 注释编号: django-vue3-admin_App153915:取消更新
 // const Upgrade = defineAsyncComponent(() => import('/@/layout/upgrade/index.vue'));
 
+// 主题换版后先清掉旧的布局配置缓存。要在首次渲染前执行：组件大小等计算属性一渲染就会读这份缓存
+resetStaleThemeCache(Local);
+
 // 定义变量内容
 const { messages, locale } = useI18n();
 const setingsRef = ref();
@@ -70,8 +73,6 @@ onMounted(() => {
 		mittBus.on('openSetingsDrawer', () => {
 			setingsRef.value.openDrawer();
 		});
-		// 主题换版后先清掉旧的布局配置缓存
-		resetStaleThemeCache(Local);
 		// 获取缓存中的布局配置
 		if (Local.get('themeConfig')) {
 			storesThemeConfig.setThemeConfig({ themeConfig: Local.get('themeConfig') });

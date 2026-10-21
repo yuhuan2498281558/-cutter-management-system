@@ -17,6 +17,7 @@ $dv-surface: #ffffff; // 卡片、表格、弹窗
 $dv-surface-muted: #efede6; // 侧栏、次级填充
 $dv-selected: #e2dfd5; // 导航选中、行选中
 $dv-hover: rgba($dv-text, 0.04); // 行和菜单悬停
+$dv-hover-solid: mix(rgba($dv-hover, 1), $dv-surface, alpha($dv-hover) * 100%); // 悬停色叠在白底上的不透明版本，给需要遮住下层内容的地方用（表格固定列）
 
 // 线
 $dv-border: #e5e2d9;
@@ -48,6 +49,7 @@ $dv-radius: 8px;
 $dv-radius-lg: 10px;
 $dv-radius-xl: 12px;
 $dv-radius-pill: 999px; // 标签、圆形按钮
+$dv-page-gutter: 12px; // 页面卡片（fast-crud 的 .fs-page）与内容区边缘的间距
 
 // 浮层阴影：只给弹窗、下拉、气泡用，卡片不用阴影
 $dv-shadow-overlay: 0 8px 24px rgba($dv-text, 0.1), 0 2px 6px rgba($dv-text, 0.06);
@@ -72,6 +74,7 @@ $dv-font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 	--dv-surface-muted: #{$dv-surface-muted};
 	--dv-selected: #{$dv-selected};
 	--dv-hover: #{$dv-hover};
+	--dv-hover-solid: #{$dv-hover-solid};
 	// 文字
 	--dv-text: #{$dv-text};
 	--dv-text-secondary: #{$dv-text-secondary};
@@ -104,6 +107,7 @@ $dv-font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 	--dv-radius-lg: #{$dv-radius-lg};
 	--dv-radius-xl: #{$dv-radius-xl};
 	--dv-radius-pill: #{$dv-radius-pill};
+	--dv-page-gutter: #{$dv-page-gutter};
 	--dv-shadow-overlay: #{$dv-shadow-overlay};
 	// 字体
 	--dv-font-sans: #{inspect($dv-font-sans)};
