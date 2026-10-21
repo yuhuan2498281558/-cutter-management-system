@@ -1,69 +1,65 @@
 <template>
-  <el-card class="filter-panel" shadow="never">
-    <el-form :model="form" label-position="top" class="filter-form" @submit.prevent="emitChange">
-      <el-form-item label="项目">
-        <el-select v-model="form.project" clearable filterable placeholder="全部项目" @change="onProjectChange">
+  <section class="filter-panel" aria-label="筛选条件">
+    <!-- 下拉框改了就查询；两组范围输入在回车或失焦（change）且校验通过时查询 -->
+    <el-form :model="form" class="filter-form" @submit.prevent="emitChange">
+      <div class="filter-row">
+        <el-select v-model="form.project" class="filter-project" clearable filterable placeholder="全部" aria-label="项目" @change="onProjectChange">
+          <template #prefix><span class="filter-label">项目</span></template>
           <el-option v-for="item in projectList" :key="item.id" :label="item.project_name" :value="item.id" />
         </el-select>
-      </el-form-item>
-      <el-form-item label="盾构机">
-        <el-select v-model="form.shield_machine" clearable filterable placeholder="全部盾构机" @change="onMainFilterChange">
+        <el-select v-model="form.shield_machine" class="filter-machine" clearable filterable placeholder="全部" aria-label="盾构机" @change="onMainFilterChange">
+          <template #prefix><span class="filter-label">盾构机</span></template>
           <el-option v-for="item in machineList" :key="item.id" :label="item.shield_model" :value="item.id" />
         </el-select>
-      </el-form-item>
-      <el-form-item label="刀具类型">
-        <el-select v-model="form.tool_parent_type" clearable placeholder="全部类型" @change="onMainFilterChange">
-          <el-option v-for="item in toolTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="刀具细分类型">
-        <el-select v-model="form.tool_type_name" clearable filterable placeholder="全部细分类型" :loading="optionsLoading" @change="onToolTypeNameChange">
-          <el-option v-for="item in toolTypeNameOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="厂家">
-        <el-select v-model="form.manufacturer" clearable filterable placeholder="全部厂家" :loading="optionsLoading" @change="emitChange">
-          <el-option v-for="item in manufacturerList" :key="item" :label="item" :value="item" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="地层类型">
-        <el-select v-model="form.stratum_type" clearable filterable placeholder="全部地层类型" aria-label="地层类型"
+        <el-select v-model="form.stratum_type" class="filter-stratum" clearable filterable placeholder="全部" aria-label="地层类型"
           :loading="optionsLoading" :disabled="!!optionsError" @change="onStratumChange">
+          <template #prefix><span class="filter-label">地层类型</span></template>
           <el-option v-for="item in stratumTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
         </el-select>
-      </el-form-item>
-      <el-form-item label="环号范围" class="ring-filter" :error="rangeError">
-        <div class="ring-inputs">
-          <el-input v-model="form.start_ring" aria-label="起始环号" inputmode="numeric" placeholder="起始环" @change="onScopeChange" />
-          <span>至</span>
-          <el-input v-model="form.end_ring" aria-label="结束环号" inputmode="numeric" placeholder="结束环" @change="onScopeChange" />
-        </div>
-      </el-form-item>
-      <el-form-item label="开仓状态">
-        <el-select v-model="form.summary_status" @change="onScopeChange">
+        <el-form-item class="range-field" :error="rangeError" inline-message>
+          <span class="filter-label">环号范围</span>
+          <el-input v-model="form.start_ring" class="range-input" aria-label="起始环号" inputmode="numeric" placeholder="起始环" @change="onScopeChange" />
+          <span class="range-separator">至</span>
+          <el-input v-model="form.end_ring" class="range-input" aria-label="结束环号" inputmode="numeric" placeholder="结束环" @change="onScopeChange" />
+        </el-form-item>
+        <el-select v-model="form.summary_status" class="filter-status" aria-label="开仓状态" @change="onScopeChange">
+          <template #prefix><span class="filter-label">开仓状态</span></template>
           <el-option label="已确认开仓" value="CONFIRMED" />
           <el-option label="草稿开仓" value="DRAFT" />
           <el-option label="全部状态" value="ALL" />
         </el-select>
-      </el-form-item>
-      <el-form-item label="刀刃轨迹范围（mm）" class="ring-filter" :error="trackRangeError">
-        <div class="ring-inputs">
-          <el-input v-model="form.blade_track_min" aria-label="刀刃轨迹最小值" inputmode="decimal" placeholder="最小半径" @change="onScopeChange" />
-          <span>至</span>
-          <el-input v-model="form.blade_track_max" aria-label="刀刃轨迹最大值" inputmode="decimal" placeholder="最大半径" @change="onScopeChange" />
-        </div>
-      </el-form-item>
-      <div class="filter-actions">
+        <el-button class="more-toggle" :aria-expanded="moreOpen" aria-controls="analysis-more-filters" @click="moreOpen = !moreOpen">
+          更多条件<span v-if="moreCount" class="more-badge">{{ moreCount }}</span>
+        </el-button>
+        <span class="filter-spacer" />
         <el-button @click="onReset">重置</el-button>
-        <el-button type="primary" native-type="submit">查询</el-button>
+      </div>
+      <div v-show="moreOpen" id="analysis-more-filters" class="filter-row">
+        <el-select v-model="form.tool_parent_type" class="filter-tool-type" clearable placeholder="全部" aria-label="刀具类型" @change="onMainFilterChange">
+          <template #prefix><span class="filter-label">刀具类型</span></template>
+          <el-option v-for="item in toolTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="form.tool_type_name" class="filter-tool-name" clearable filterable placeholder="全部" aria-label="刀具细分类型" :loading="optionsLoading" @change="onToolTypeNameChange">
+          <template #prefix><span class="filter-label">刀具细分类型</span></template>
+          <el-option v-for="item in toolTypeNameOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="form.manufacturer" class="filter-manufacturer" clearable filterable placeholder="全部" aria-label="厂家" :loading="optionsLoading" @change="emitChange">
+          <template #prefix><span class="filter-label">厂家</span></template>
+          <el-option v-for="item in manufacturerList" :key="item" :label="item" :value="item" />
+        </el-select>
+        <el-form-item class="range-field" :error="trackRangeError" inline-message>
+          <span class="filter-label">刀刃轨迹范围（mm）</span>
+          <el-input v-model="form.blade_track_min" class="range-input" aria-label="刀刃轨迹最小值" inputmode="decimal" placeholder="最小半径" @change="onScopeChange" />
+          <span class="range-separator">至</span>
+          <el-input v-model="form.blade_track_max" class="range-input" aria-label="刀刃轨迹最大值" inputmode="decimal" placeholder="最大半径" @change="onScopeChange" />
+        </el-form-item>
       </div>
     </el-form>
-    <div class="applied-scope" role="status"><span>查询范围</span>{{ appliedSummary }}</div>
     <div v-if="optionsError || listsError" class="filter-error" role="alert">
       <span>{{ optionsError || listsError }}</span>
       <el-button link type="primary" @click="retryOptions">重试加载选项</el-button>
     </div>
-  </el-card>
+  </section>
 </template>
 
 <script setup lang="ts">
@@ -90,19 +86,12 @@ const trackRangeError = ref('');
 let optionGeneration = 0;
 let listGeneration = 0;
 let alive = true;
-const statusLabels: Record<string, string> = { CONFIRMED: '已确认开仓', DRAFT: '草稿开仓', ALL: '全部状态' };
-const appliedSummary = computed(() => {
-  const f = appliedFilter.value;
-  return [
-    projectList.value.find(p => String(p.id) === String(f.project))?.project_name || (f.project ? `项目 ${f.project}` : '全部项目'),
-    machineList.value.find(m => String(m.id) === String(f.shield_machine))?.shield_model || (f.shield_machine ? `盾构机 ${f.shield_machine}` : '全部盾构机'),
-    statusLabels[f.summary_status || 'CONFIRMED'],
-    f.start_ring || f.end_ring ? `${f.start_ring || '起点'} 至 ${f.end_ring || '终点'} 环` : '全部环号',
-    f.blade_track_min || f.blade_track_max ? `刀刃轨迹 ${f.blade_track_min || '不限下界'} 至 ${f.blade_track_max || '不限上界'} mm` : '',
-    toolTypeOptions.value.find(t => t.value === f.tool_parent_type)?.label, f.tool_type_name, f.manufacturer,
-    f.stratum_type ? `地层：${stratumTypeOptions.value.find(item => item.value === f.stratum_type)?.label || f.stratum_type}（开仓环段）` : '',
-  ].filter(Boolean).join(' · ');
-});
+const moreOpen = ref(false);
+// "更多条件"里有几项不是默认值：刀具类型、细分类型、厂家、刀刃轨迹范围（上下限算一项）
+const moreCount = computed(() => [
+  form.tool_parent_type, form.tool_type_name, form.manufacturer,
+  String(form.blade_track_min ?? '').trim() || String(form.blade_track_max ?? '').trim(),
+].filter(Boolean).length);
 function validRange() {
   const start = String(form.start_ring ?? '').trim();
   const end = String(form.end_ring ?? '').trim();
@@ -198,18 +187,27 @@ onBeforeUnmount(() => { alive = false; optionGeneration++; listGeneration++; });
 </script>
 
 <style scoped>
-.filter-panel { margin-bottom: 14px; border-radius: 6px; }
-.filter-panel :deep(.el-card__body) { padding: 14px 16px 10px; }
-.filter-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: end; }
-.filter-form :deep(.el-form-item) { margin: 0; min-width: 0; }
-.filter-form :deep(.el-form-item__label) { margin-bottom: 5px; padding: 0; font-size: 12px; line-height: 18px; }
-.filter-form :deep(.el-select) { width: 100%; }
-.ring-inputs { display: flex; width: 100%; gap: 6px; align-items: center; color: var(--el-text-color-secondary); }
-.ring-inputs :deep(.el-input) { min-width: 0; }
-.filter-actions { display: flex; justify-content: flex-end; grid-column: 1 / -1; }
-.applied-scope { margin-top: 13px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 10px; font-size: 12px; color: var(--el-text-color-regular); line-height: 1.7; overflow-wrap: anywhere; }
-.applied-scope > span { color: var(--el-text-color-secondary); margin-right: 12px; }
-.filter-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--el-color-danger); font-size: 12px; margin-top: 8px; }
-@media (max-width: 760px) { .filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; } }
-@media (max-width: 400px) { .filter-panel :deep(.el-card__body) { padding: 12px; } .ring-filter { grid-column: 1 / -1; } }
+.filter-panel { margin-bottom: 8px; }
+.filter-form { display: grid; gap: 8px; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filter-label { font-size: var(--el-font-size-extra-small); color: var(--dv-text-muted); white-space: nowrap; }
+.filter-project { width: 260px; }
+.filter-machine { width: 230px; }
+.filter-stratum { width: 200px; }
+.filter-status { width: 180px; }
+.filter-tool-type { width: 170px; }
+.filter-tool-name { width: 240px; }
+.filter-manufacturer { width: 200px; }
+.range-field { margin: 0; }
+.range-field :deep(.el-form-item__content) { gap: 6px; flex-wrap: nowrap; }
+.range-input { width: 84px; }
+.range-separator { color: var(--dv-text-muted); font-size: var(--el-font-size-extra-small); }
+.range-field :deep(.el-form-item__error--inline) { margin-left: 4px; white-space: nowrap; }
+.more-badge { display: inline-block; min-width: 16px; margin-left: 6px; padding: 0 5px; border-radius: var(--dv-radius-pill); background: var(--dv-info-bg); color: var(--dv-info-text); font-size: var(--el-font-size-extra-small); line-height: 16px; text-align: center; }
+.filter-spacer { flex: 1 1 0; }
+.filter-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--el-color-danger); font-size: var(--el-font-size-extra-small); margin-top: 8px; }
+@media (max-width: 600px) {
+  .filter-row > .el-select { width: 100%; }
+  .range-field :deep(.el-form-item__content) { flex-wrap: wrap; }
+}
 </style>

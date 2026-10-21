@@ -1,8 +1,7 @@
 <template>
   <div class="custom-analysis-page">
-    <div class="analysis-export-bar">
-      <el-button type="primary" plain :disabled="!ready" @click="exportPdf">导出 PDF</el-button>
-    </div>
+    <AnalysisActions :target="actionsTarget" :generated-at="chartData?.meta?.generated_at"
+      :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
 
     <el-card class="custom-config-card analysis-no-export" shadow="never">
       <el-form :model="form" :disabled="fieldsLoading || !fieldConfig" label-position="top" class="custom-config-form">
@@ -123,6 +122,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import * as echarts from 'echarts';
+import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getCustomChart, getCustomFields } from '../api';
@@ -138,7 +138,7 @@ import type {
   CustomMatrixSeries,
 } from '../types';
 
-const props = defineProps<{ filter: AnalysisFilter }>();
+const props = defineProps<{ filter: AnalysisFilter; actionsTarget?: HTMLElement | null }>();
 
 const fieldsLoading = ref(false);
 const fieldsError = ref('');
@@ -358,12 +358,6 @@ watch(chartHeight, async () => {
 <style scoped>
 .custom-analysis-page {
   padding-bottom: 16px;
-}
-
-.analysis-export-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
 }
 
 .custom-config-card {

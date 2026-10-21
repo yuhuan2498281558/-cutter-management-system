@@ -123,9 +123,11 @@ test('exports include complete source and vendor tables with successful scope; d
 
 test('real template binds chart modes, ready export gates and complete scrollable tables', async t => {
   const r = create(t); let nodes = r.nodes();
-  const buttons = nodes.filter(node => node.type?.name === 'el-button');
-  assert.equal(buttons.filter(node => node.props?.disabled === true).length >= 2, true);
+  const exportItems = () => r.nodes().find(node => node.type?.name === 'AnalysisActions').props.exports;
+  assert.deepEqual(plain(exportItems().map(item => [item.label, item.disabled])), [['费用来源 PDF', true], ['厂家表现 PDF', true]]);
   await r.mount(); nodes = r.nodes();
+  assert.deepEqual(plain(exportItems().map(item => item.disabled)), [false, false]);
+  assert.equal(exportItems()[0].run, r.state.exportCompositionPdf); assert.equal(exportItems()[1].run, r.state.exportTrendPdf);
   const radios = nodes.filter(node => node.type?.name === 'el-radio-button'); assert.deepEqual(radios.map(node => node.props.label), ['consumption', 'cumulative']);
   const tables = nodes.filter(node => node.type?.name === 'el-table'); assert.equal(tables.length, 3);
   assert.equal(tables[2].props.data.length, 6); assert.equal(tables[2].props['max-height'], 420);

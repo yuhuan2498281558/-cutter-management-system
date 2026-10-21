@@ -1,9 +1,7 @@
 <template>
   <div ref="pageRef" class="wear-page">
-    <div class="analysis-export-bar">
-      <el-button plain :disabled="loading" @click="loadData">刷新数据</el-button>
-      <el-button type="primary" plain :disabled="!ready" @click="exportPdf">导出磨损分析 PDF</el-button>
-    </div>
+    <AnalysisActions :target="actionsTarget" :generated-at="wearDist?.meta?.generated_at" :refresh="loadData" :refreshing="loading"
+      :exports="[{ label: '导出磨损分析 PDF', disabled: !ready, run: exportPdf }]" />
 
     <ScopeSummary :meta="wearDist?.meta" />
     <div v-if="wearDist" class="analysis-metrics">
@@ -55,6 +53,7 @@
 import { ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import * as echarts from 'echarts';
+import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getWearDistribution, getWearTrend } from '../api';
@@ -64,7 +63,7 @@ import { analysisExportMeta, formatNumber, formatPercent, requireAnalysisV2 } fr
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
 
-const props = defineProps<{ filter: AnalysisFilter }>();
+const props = defineProps<{ filter: AnalysisFilter; actionsTarget?: HTMLElement | null }>();
 
 interface DistributionData {
   meta?: AnalysisMeta; items: (WearDistributionItem & { state: string | null })[]; total: number;

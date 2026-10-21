@@ -1,9 +1,7 @@
 <template>
   <div class="overview-page">
-    <div class="analysis-export-bar">
-      <el-button :loading="loading" @click="load">重新加载</el-button>
-      <el-button type="primary" plain :disabled="!ready" @click="exportPdf">导出 PDF</el-button>
-    </div>
+    <AnalysisActions :target="actionsTarget" :generated-at="data?.overview.meta?.generated_at" :refresh="load" :refreshing="loading"
+      :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
     <ScopeSummary :meta="data?.overview.meta" />
     <div v-if="data" class="analysis-metrics">
       <div class="analysis-metric"><span>范围内开仓</span><strong>{{ formatNumber(kpi?.total_openings) }} 次</strong><small>明细有检查证据 {{ formatNumber(kpi?.detail_checked_count) }} 条</small></div>
@@ -55,6 +53,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import * as echarts from 'echarts';
+import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getCostTrend, getOverview } from '../api';
@@ -64,7 +63,7 @@ import { buildOverviewTrendOption, buildOverviewTypeOption } from '../utils/over
 import { exportAnalysisPdf } from '../utils/pdfExport';
 import type { AnalysisFilter, AnalysisMeta, CostTrendItem, OverviewData } from '../types';
 
-const props = defineProps<{ filter: AnalysisFilter }>();
+const props = defineProps<{ filter: AnalysisFilter; actionsTarget?: HTMLElement | null }>();
 const router = useRouter();
 type OverviewResult = OverviewData & { kpi: OverviewData['kpi'] & { summary_detail_replaced_count?: number } };
 const { data, loading, error, ready, load } = useAnalysisQuery(() => props.filter, async filter => {

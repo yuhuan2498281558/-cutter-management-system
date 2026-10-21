@@ -59,7 +59,18 @@ function copyCanvasToImages(source: HTMLElement, target: HTMLElement) {
   });
 }
 
+/** 页面上收进 ⓘ 的口径，PDF 里还原成一行文字（读 PDF 的人无法悬停）。 */
+function expandInfoTips(target: HTMLElement) {
+  target.querySelectorAll('[data-info-tip]').forEach(tip => {
+    const note = document.createElement('span');
+    note.className = 'chart-description info-tip-note';
+    note.textContent = tip.getAttribute('data-info-tip');
+    tip.replaceWith(note);
+  });
+}
+
 function removeExportBars(target: HTMLElement) {
+  expandInfoTips(target);
   target.querySelectorAll('.analysis-export-bar, .analysis-no-export, .el-form, .el-pagination, .el-loading-mask, .caret-wrapper, .el-table__column-resize-proxy').forEach(el => el.remove());
   target.querySelectorAll('.chart-card-header').forEach(header => Array.from(header.children).filter(child => !child.classList.contains('chart-heading')).forEach(child => child.remove()));
   target.querySelectorAll('details').forEach(details => details.setAttribute('open', ''));
@@ -225,6 +236,7 @@ h2{font-size:12px;margin:0 0 4px;color:#111827;line-height:1.25;}
 .chart-card-header{display:flex;align-items:center;justify-content:space-between;}
 .chart-title{font-size:10px;font-weight:600;color:#111827;line-height:1.2;}
 .chart-description,.analysis-note,.analysis-scope,.reconciliation,.cost-quality,.graph-scope{font-size:9px;line-height:1.5;margin:4px 0 8px;}
+.info-tip-note{display:block;font-weight:400;}
 .analysis-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
 .analysis-grid>section{min-width:0;}
 .analysis-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid #ddd;margin-bottom:6px;}

@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vue = require('vue');
-const { setup, deferred, plain, settle } = require('./helpers.cjs');
+const { setup, deferred, plain, settle, descendants } = require('./helpers.cjs');
 const response = (manufacturers = ['甲厂']) => ({ data: { manufacturers, tool_types: [{ value: 'DISC', label: '滚刀' }], tool_type_names: [] } });
 
 test('default/reset stay confirmed and remove old scope fields', async t => {
@@ -79,10 +79,12 @@ test('top-level stratum selector filters existing queries and reset clears the c
   assert.equal(h.requests.at(-2).params.stratum_type, undefined, 'other strata remain selectable');
   assert.equal(h.requests.at(-1).params.stratum_type, 'ROCK');
   assert.equal(h.state.stratumTypeOptions.value.length, 2);
-  assert.match(h.state.appliedSummary.value, /地层：岩层（开仓环段）/);
+  const stratumSelect = () => h.nodes().find(node => node.props?.['aria-label'] === '地层类型');
+  assert.equal(stratumSelect().props.modelValue, 'ROCK');
+  assert.ok(h.nodes().some(node => node.type?.name === 'el-option' && node.props.value === 'ROCK' && node.props.label === '岩层'));
   h.state.onReset(); await settle();
   assert.deepEqual(h.events.at(-1), ['filter-change', { summary_status: 'CONFIRMED' }]);
-  assert.doesNotMatch(h.state.appliedSummary.value, /地层：/);
+  assert.equal(stratumSelect().props.modelValue, '');
 });
 
 test('changing project clears the previous project stratum condition', async t => {
@@ -119,9 +121,12 @@ test('trajectory bounds preserve zero and decimals in all options and emitted sc
   h.state.onScopeChange(); await settle();
   assert.deepEqual(h.events.at(-1)[1], { summary_status: 'CONFIRMED', blade_track_min: '0', blade_track_max: '6765.2' });
   assert.equal(h.requests.at(-1).params.blade_track_max, '6765.2');
-  assert.match(h.state.appliedSummary.value, /刀刃轨迹 0 至 6765.2 mm/);
+  const trackInput = label => h.nodes().find(n => n.props?.['aria-label'] === label);
+  assert.equal(trackInput('刀刃轨迹最小值').props.modelValue, '0');
+  assert.equal(trackInput('刀刃轨迹最大值').props.modelValue.trim(), '6765.2');
   h.state.onReset(); await settle();
   assert.equal(h.events.at(-1)[1].blade_track_min, undefined);
+  assert.equal(trackInput('刀刃轨迹最小值').props.modelValue, '');
 });
 test('invalid trajectory bounds cannot send queries or replace applied scope; one bound is allowed', async t => {
   const h = setup(t, 'components/FilterPanel.vue', { request: async () => response() });
@@ -132,4 +137,60 @@ test('invalid trajectory bounds cannot send queries or replace applied scope; on
   assert.equal(h.requests.length, 0); assert.equal(h.events.length, 0);
   Object.assign(h.state.form, { blade_track_min: '', blade_track_max: '3000' }); h.state.onScopeChange(); await settle();
   assert.equal(h.events.at(-1)[1].blade_track_max, '3000'); assert.equal(h.events.at(-1)[1].blade_track_min, undefined);
+});
+
+test('one row shows the common conditions; the "more" badge counts non-default hidden conditions', async t => {
+  const h = setup(t, 'components/FilterPanel.vue', { request: async () => response() });
+  const nodes = () => h.nodes();
+  const rows = nodes().filter(node => node.props?.class === 'filter-row');
+  const selects = row => descendants(row).filter(node => node.type?.name === 'el-select').map(node => node.props['aria-label']);
+  assert.deepEqual(selects(rows[0]), ['项目', '盾构机', '地层类型', '开仓状态']);
+  assert.ok(descendants(rows[0]).some(node => node.props?.['aria-label'] === '起始环号'));
+  assert.deepEqual(selects(rows[1]), ['刀具类型', '刀具细分类型', '厂家']);
+  assert.ok(descendants(rows[1]).some(node => node.props?.['aria-label'] === '刀刃轨迹最小值'));
+  assert.equal(nodes().some(node => typeof node.children === 'string' && node.children.includes('查询范围')), false);
+  assert.equal(nodes().some(node => node.type?.name === 'el-button' && node.props?.['native-type'] === 'submit'), false);
+
+  const moreRow = () => nodes().find(node => node.props?.id === 'analysis-more-filters');
+  const toggle = () => nodes().find(node => node.type?.name === 'el-button' && node.props?.class === 'more-toggle');
+  const badge = () => nodes().find(node => node.props?.class === 'more-badge')?.children;
+  assert.equal(rows[1].props.id, 'analysis-more-filters'); assert.equal(moreRow().props.id, toggle().props['aria-controls']);
+  assert.equal(moreRow().dirs[0].dir, vue.vShow);
+  assert.equal(moreRow().dirs[0].value, false); assert.equal(toggle().props['aria-expanded'], false);
+  toggle().props.onClick();
+  assert.equal(moreRow().dirs[0].value, true); assert.equal(toggle().props['aria-expanded'], true);
+
+  assert.equal(badge(), undefined);
+  Object.assign(h.state.form, { project: 1, shield_machine: 2, stratum_type: 'ROCK', start_ring: '1', summary_status: 'ALL' });
+  assert.equal(badge(), undefined, 'common-row conditions are not counted');
+  h.state.form.blade_track_max = '3000';
+  assert.equal(badge(), '1');
+  Object.assign(h.state.form, { tool_parent_type: 'DISC', tool_type_name: '19寸滚刀', manufacturer: '甲厂', blade_track_min: '0' });
+  assert.equal(badge(), '4', 'both trajectory bounds count as one condition, zero included');
+  Object.assign(h.state.form, { blade_track_min: ' ', blade_track_max: '' });
+  assert.equal(badge(), '3');
+  h.state.onReset(); await settle();
+  assert.equal(badge(), undefined);
+});
+
+test('range inputs query only on Enter or blur, never while typing or when invalid', async t => {
+  const h = setup(t, 'components/FilterPanel.vue', { request: async () => response() });
+  const input = label => h.nodes().find(node => node.type?.name === 'el-input' && node.props?.['aria-label'] === label);
+  const type = (label, value) => input(label).props['onUpdate:modelValue'](value);
+  // el-input 的 change 在回车或失焦时触发
+  const commit = label => input(label).props.onChange(input(label).props.modelValue);
+  type('起始环号', '100'); type('结束环号', '200'); await settle();
+  assert.equal(h.events.length, 0); assert.equal(h.requests.length, 0);
+  commit('结束环号'); await settle();
+  assert.deepEqual(h.events.at(-1), ['filter-change', { summary_status: 'CONFIRMED', start_ring: '100', end_ring: '200' }]);
+  const emitted = h.events.length, requested = h.requests.length;
+  type('起始环号', '300'); commit('起始环号'); await settle();
+  assert.equal(h.events.length, emitted); assert.equal(h.requests.length, requested);
+  assert.equal(h.state.rangeError.value, '起始环号不能大于结束环号');
+  const field = h.nodes().find(node => node.type?.name === 'el-form-item' && node.props?.error === '起始环号不能大于结束环号');
+  assert.ok(field, 'error stays on the range field'); assert.notEqual(field.props['inline-message'], undefined);
+  assert.ok(descendants(field).some(node => node.props?.['aria-label'] === '起始环号'));
+  type('起始环号', '150'); commit('起始环号'); await settle();
+  assert.equal(h.state.rangeError.value, '');
+  assert.deepEqual(h.events.at(-1), ['filter-change', { summary_status: 'CONFIRMED', start_ring: '150', end_ring: '200' }]);
 });

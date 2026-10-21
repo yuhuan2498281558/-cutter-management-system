@@ -1,10 +1,9 @@
 <template>
   <div ref="pageRef" class="cost-page">
-    <div class="analysis-export-bar">
-      <el-button plain :disabled="costLoading" @click="loadData">刷新费用</el-button>
-      <el-button type="primary" plain :disabled="!costReady" @click="exportCompositionPdf">导出费用来源 PDF</el-button>
-      <el-button type="primary" plain :disabled="!brandReady" @click="exportTrendPdf">导出厂家表现 PDF</el-button>
-    </div>
+    <AnalysisActions :target="actionsTarget" :generated-at="costOverview?.meta?.generated_at" :refresh="loadData" :refreshing="costLoading" :exports="[
+      { label: '费用来源 PDF', disabled: !costReady, run: exportCompositionPdf },
+      { label: '厂家表现 PDF', disabled: !brandReady, run: exportTrendPdf },
+    ]" />
     <ScopeSummary :meta="costOverview?.meta" />
     <section class="cost-composition-section">
       <div v-if="sources" class="analysis-metrics">
@@ -131,6 +130,7 @@
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import * as echarts from 'echarts';
+import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getFilterOptions, getCostOverview, getCostTrend, getBrandCost, getBrandPriceTrend, getBrandPerformanceTrend } from '../api';
@@ -165,7 +165,7 @@ function requireBrandData(data: BrandData): BrandData {
   if (!valid) throw new Error('厂家分析服务尚未更新，缺少完整的服役与配对数据。请重启后端后重新加载。');
   return data;
 }
-const props = defineProps<{ filter: AnalysisFilter }>();
+const props = defineProps<{ filter: AnalysisFilter; actionsTarget?: HTMLElement | null }>();
 const router = useRouter();
 const pageRef = ref<HTMLElement | null>(null);
 const costMode = ref('consumption');
