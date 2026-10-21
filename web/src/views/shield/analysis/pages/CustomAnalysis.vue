@@ -299,7 +299,7 @@ function ensureChart() {
     chart.dispose();
     chart = null;
   }
-  if (!chart) chart = echarts.init(chartRef.value);
+  if (!chart) chart = echarts.init(chartRef.value, 'dv');
   return chart;
 }
 
@@ -389,7 +389,7 @@ watch(chartHeight, async () => {
 
 .matrix-note {
   margin: -4px 16px 12px;
-  color: #64748b;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.5;
 }

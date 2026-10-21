@@ -1,6 +1,6 @@
 import type { EChartsOption } from 'echarts';
 import type { CustomChartData, CustomLineSeries, CustomMatrixSeries } from '../types';
-import { DEFAULT_GRID, TOOLTIP_STYLE } from './chartTheme';
+import { DEFAULT_GRID, MATRIX_COLORS, TOOLTIP_STYLE } from './chartTheme';
 import { escapeHtml } from './presentation';
 
 // 格式化自定义分析图表与表格中的数值。
@@ -73,10 +73,10 @@ export function buildMatrixChartOption(data: CustomChartData, size: { width: num
     const norm = cv !== null && maxColor > minColor ? (cv - minColor) / (maxColor - minColor) : 0;
     return {
       value: [xi, yi, sv, cv],
-      itemStyle: cv === null ? { color: '#a8abb2' } : isZero
-        ? { color: '#d1d5db', opacity: 0.18, borderWidth: 0 }
-        : { opacity: 0.88, borderColor: '#fff', borderWidth: 1 },
-      label: { color: norm > 0.58 ? '#ffffff' : '#374151' },
+      itemStyle: cv === null ? { color: MATRIX_COLORS.empty } : isZero
+        ? { color: MATRIX_COLORS.zero, opacity: 0.18, borderWidth: 0 }
+        : { opacity: 0.88, borderColor: MATRIX_COLORS.bubbleBorder, borderWidth: 1 },
+      label: { color: norm > 0.58 ? MATRIX_COLORS.labelOnDark : MATRIX_COLORS.labelOnLight },
     };
   });
 
@@ -136,8 +136,8 @@ export function buildMatrixChartOption(data: CustomChartData, size: { width: num
         width: xCount > 6 ? 80 : 120,
         fontSize: 12,
       },
-      splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' as const } },
-      splitArea: { show: true, areaStyle: { color: ['#fafafa', '#ffffff'] } },
+      splitLine: { show: true, lineStyle: { color: MATRIX_COLORS.splitLine, type: 'dashed' as const } },
+      splitArea: { show: true, areaStyle: { color: MATRIX_COLORS.splitArea } },
     },
     yAxis: {
       type: 'category',
@@ -151,8 +151,8 @@ export function buildMatrixChartOption(data: CustomChartData, size: { width: num
         width: gridLeft - 10,
         fontSize: 12,
       },
-      splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' as const } },
-      splitArea: { show: true, areaStyle: { color: ['#fafafa', '#ffffff'] } },
+      splitLine: { show: true, lineStyle: { color: MATRIX_COLORS.splitLine, type: 'dashed' as const } },
+      splitArea: { show: true, areaStyle: { color: MATRIX_COLORS.splitArea } },
     },
     visualMap: {
       min: minColor,
@@ -165,9 +165,9 @@ export function buildMatrixChartOption(data: CustomChartData, size: { width: num
       itemWidth: 14,
       itemHeight: 120,
       text: [`高`, '低'],
-      textStyle: { color: '#6b7280', fontSize: 11 },
+      textStyle: { color: MATRIX_COLORS.legendText, fontSize: 11 },
       inRange: {
-        color: ['#fffbeb', '#fde68a', '#fb923c', '#dc2626', '#7f1d1d'],
+        color: MATRIX_COLORS.range,
       },
     },
     series: [{
@@ -193,10 +193,10 @@ export function buildMatrixChartOption(data: CustomChartData, size: { width: num
         focus: 'self',
         itemStyle: {
           opacity: 1,
-          borderColor: '#111827',
+          borderColor: MATRIX_COLORS.emphasisBorder,
           borderWidth: 2,
           shadowBlur: 10,
-          shadowColor: 'rgba(0,0,0,0.2)',
+          shadowColor: MATRIX_COLORS.emphasisShadow,
         },
       },
     }],

@@ -1,4 +1,4 @@
-import { TOOLTIP_STYLE, DEFAULT_GRID } from './chartTheme';
+import { CHART_COLORS, TOOLTIP_STYLE, DEFAULT_GRID } from './chartTheme';
 import { escapeHtml, formatNumber, formatPercent } from './presentation';
 import type { WearTrendItem } from '../types';
 
@@ -12,9 +12,9 @@ export function buildWearDistributionOption(dist: WearDistributionCounts) {
     xAxis: { type: 'value', name: '记录数', minInterval: 1 },
     yAxis: { type: 'category', data: ['正常', '非正常', '未分类'], inverse: true },
     series: [{ name: '观察明细', type: 'bar', barMaxWidth: 34, label: { show: true, position: 'right' },
-      data: [{ value: dist.normal_count, itemStyle: { color: '#6f9483' } },
-        { value: dist.abnormal_count, itemStyle: { color: '#b76558' } },
-        { value: dist.unrecorded_count, itemStyle: { color: '#9ba5b1' } }] }],
+      data: [{ value: dist.normal_count, itemStyle: { color: CHART_COLORS.good } },
+        { value: dist.abnormal_count, itemStyle: { color: CHART_COLORS.abnormal } },
+        { value: dist.unrecorded_count, itemStyle: { color: CHART_COLORS.muted } }] }],
   };
 }
 
@@ -36,9 +36,9 @@ export function buildWearTrendOption(items: WearTrendItem[]) {
     yAxis: [{ type: 'value', name: '记录 / 更换数', minInterval: 1 }, { type: 'value', name: '非正常比例', min: 0, max: 1, axisLabel: { formatter: (value: number) => `${Math.round(value * 100)}%` } }],
     dataZoom: items.length > 14 ? [{ type: 'inside' }] : [],
     series: [
-      { name: '已分类磨损数', type: 'bar', color: '#9ba5b1', barMaxWidth: 22, data: items.map(item => item.total) },
-      { name: '实际更换数', type: 'bar', color: '#35689b', barMaxWidth: 22, data: items.map(item => item.replacement_count ?? null) },
-      { name: '非正常比例', type: 'line', yAxisIndex: 1, color: '#b76558', smooth: false, connectNulls: false, symbolSize: 6, data: items.map(item => item.abnormal_rate) },
+      { name: '已分类磨损数', type: 'bar', color: CHART_COLORS.neutral, barMaxWidth: 22, data: items.map(item => item.total) },
+      { name: '实际更换数', type: 'bar', color: CHART_COLORS.primary, barMaxWidth: 22, data: items.map(item => item.replacement_count ?? null) },
+      { name: '非正常比例', type: 'line', yAxisIndex: 1, color: CHART_COLORS.abnormal, smooth: false, connectNulls: false, symbolSize: 6, data: items.map(item => item.abnormal_rate) },
     ],
   };
 }

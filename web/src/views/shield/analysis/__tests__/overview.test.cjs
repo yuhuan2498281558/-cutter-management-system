@@ -67,12 +67,13 @@ test('month trend switches only the axis labels and monthly values', async t => 
 });
 test('type total mode shows the latest ring as horizontal bars without legend', async t => {
   const h = modeHarness(t); await h.mount();
+  assert.deepEqual(h.charts.map(chart => chart.theme), ['dv', 'dv']);
   const option = h.charts[1].options.at(-1);
   assert.equal(option.grid.bottom, 35); assert.deepEqual(plain(option.legend), { bottom: 0, show: false });
   assert.deepEqual(plain(option.xAxis), { type: 'value', name: '把次', minInterval: 1 });
   assert.deepEqual(plain(option.yAxis), { type: 'category', data: ['滚刀', '刮刀'] });
   assert.equal(option.series.length, 1); assert.equal(option.series[0].type, 'bar');
-  assert.deepEqual(plain(option.series[0].data), [{ value: 5, itemStyle: { color: '#e84749' } }, { value: 2, itemStyle: { color: '#1677ff' } }]);
+  assert.deepEqual(plain(option.series[0].data), [{ value: 5, itemStyle: { color: '#3f5f7a' } }, { value: 2, itemStyle: { color: '#b98a4a' } }]);
 });
 test('type cumulative mode draws one line per tool type with legend and taller grid', async t => {
   const h = modeHarness(t); await h.mount();
@@ -81,5 +82,5 @@ test('type cumulative mode draws one line per tool type with legend and taller g
   assert.equal(option.grid.bottom, 70); assert.deepEqual(plain(option.legend), { bottom: 0, show: true });
   assert.deepEqual(plain(option.xAxis), { type: 'category', name: '环号', data: ['100', '120'] });
   assert.deepEqual(plain(option.yAxis), { type: 'value', name: '累计更换 / 把次', minInterval: 1 });
-  assert.deepEqual(plain(option.series), [{ name: '滚刀', type: 'line', color: '#e84749', data: [3, 5] }, { name: '刮刀', type: 'line', color: '#1677ff', data: [1, 2] }]);
+  assert.deepEqual(plain(option.series), [{ name: '滚刀', type: 'line', color: '#3f5f7a', data: [3, 5] }, { name: '刮刀', type: 'line', color: '#b98a4a', data: [1, 2] }]);
 });

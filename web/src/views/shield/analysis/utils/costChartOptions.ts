@@ -1,13 +1,13 @@
-import { TOOL_TYPE_LABELS, TOOLTIP_STYLE, DEFAULT_GRID } from './chartTheme';
+import { CHART_COLORS, DV_PALETTE, TOOL_TYPE_LABELS, TOOLTIP_STYLE, DEFAULT_GRID } from './chartTheme';
 import { escapeHtml, formatCurrency, formatNumber, formatPercent } from './presentation';
 import type { BrandCostItem, BrandPerfTrendSeries, BrandPriceTrendData, BrandPriceTrendSeries, CostSources, CostTrendItem, CostTypeBreakdownItem } from '../types';
 
 const sourceConfig = [
-  { key: 'installation', trend: 'installation_cost', name: '新装登记', color: '#35689b' },
-  { key: 'confirmed_repair', trend: 'confirmed_repair_cost', name: '已确认返修', color: '#6f9483' },
-  { key: 'legacy', trend: 'legacy_cost', name: '历史登记', color: '#b7a078' },
+  { key: 'installation', trend: 'installation_cost', name: '新装登记', color: CHART_COLORS.primary },
+  { key: 'confirmed_repair', trend: 'confirmed_repair_cost', name: '已确认返修', color: CHART_COLORS.good },
+  { key: 'legacy', trend: 'legacy_cost', name: '历史登记', color: CHART_COLORS.neutral },
 ] as const;
-const palette = ['#35689b', '#7d6aa8', '#427c70', '#ae783c', '#a45f6d', '#537f92', '#687947', '#8c6b54'];
+const palette = DV_PALETTE;
 
 // 按厂家名称生成稳定颜色。
 export function manufacturerColor(name: string) { let hash = 0; for (const character of name || '') hash = (hash * 31 + character.charCodeAt(0)) >>> 0; return palette[hash % palette.length]; }
@@ -34,7 +34,7 @@ export function buildCostTrendOption(costTrend: { items: CostTrendItem[] } | und
     yAxis: [{ type: 'value', name: '登记金额（元）' }, { type: 'value', name: cumulative ? '累计金额（元）' : '更换数量（把）', minInterval: cumulative ? undefined : 1 }],
     dataZoom: items.length > 14 ? [{ type: 'inside' }] : [],
     series: [...sourceConfig.map(source => ({ name: source.name, type: 'bar', stack: 'cost', barMaxWidth: 28, color: source.color, data: items.map(item => item[source.trend] ?? null) })),
-      { name: cumulative ? '累计明确金额' : '实际更换数量', type: 'line', yAxisIndex: 1, color: '#4b5563', smooth: false, symbol: 'circle', symbolSize: 5, data: items.map(item => cumulative ? item.cumulative_cost : item.replacement_count ?? null) }],
+      { name: cumulative ? '累计明确金额' : '实际更换数量', type: 'line', yAxisIndex: 1, color: CHART_COLORS.ink, smooth: false, symbol: 'circle', symbolSize: 5, data: items.map(item => cumulative ? item.cumulative_cost : item.replacement_count ?? null) }],
   };
 }
 

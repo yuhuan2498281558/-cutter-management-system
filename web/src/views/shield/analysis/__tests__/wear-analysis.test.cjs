@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { setup, plain, deferred, settle, compile } = require('./helpers.cjs');
+const { setup, plain, deferred, settle, compile, echartsStub } = require('./helpers.cjs');
 
 const meta = scope => ({ schema_version: 2, generated_at: '2026-09-11T00:00:00Z', summary_status: 'CONFIRMED', opening_count: 2, draft_opening_count: 0, excluded_inactive_count: 0, unobserved_count: 0, warnings: [], scope: { project_name: '磨损验收工程', ...scope } });
 const rows = [
@@ -109,7 +109,7 @@ test('page size changes only resize the charts, so legend and zoom state survive
 
 function loadWearChartOptions() {
   function load(file) {
-    return compile(fs.readFileSync(file, 'utf8'), name => load(path.resolve(path.dirname(file), `${name}.ts`)));
+    return compile(fs.readFileSync(file, 'utf8'), name => name === 'echarts' ? echartsStub : load(path.resolve(path.dirname(file), `${name}.ts`)));
   }
   return load(path.resolve(__dirname, '../utils/wearChartOptions.ts'));
 }
@@ -118,7 +118,7 @@ test('wear option builders read only their arguments and zoom long trends', () =
   const { buildWearDistributionOption, buildWearTrendOption } = loadWearChartOptions();
   const distribution = buildWearDistributionOption({ normal_count: 3, abnormal_count: 1, unrecorded_count: 3 });
   assert.deepEqual(plain(distribution.yAxis.data), ['正常', '非正常', '未分类']);
-  assert.deepEqual(plain(distribution.series[0].data.map(item => [item.value, item.itemStyle.color])), [[3, '#6f9483'], [1, '#b76558'], [3, '#9ba5b1']]);
+  assert.deepEqual(plain(distribution.series[0].data.map(item => [item.value, item.itemStyle.color])), [[3, '#6f8f6a'], [1, '#b5533c'], [3, '#9a978e']]);
   const trend = buildWearTrendOption(rows);
   assert.deepEqual(plain(trend.series.map(item => item.name)), ['已分类磨损数', '实际更换数', '非正常比例']);
   assert.deepEqual(plain(trend.dataZoom), []); assert.equal(trend.yAxis[1].axisLabel.formatter(0.25), '25%');

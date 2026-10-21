@@ -90,8 +90,8 @@ function resizeCharts() {
 }
 function renderCharts() {
   if (!data.value || !trendRef.value || !typeRef.value) return;
-  if (!trendChart) trendChart = echarts.init(trendRef.value);
-  if (!typeChart) typeChart = echarts.init(typeRef.value);
+  if (!trendChart) trendChart = echarts.init(trendRef.value, 'dv');
+  if (!typeChart) typeChart = echarts.init(typeRef.value, 'dv');
   if (!observer && typeof ResizeObserver !== 'undefined') {
     observer = new ResizeObserver(resizeCharts);
     observer.observe(trendRef.value); observer.observe(typeRef.value);

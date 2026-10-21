@@ -1,4 +1,4 @@
-import { DEFAULT_GRID, TOOLTIP_STYLE, TOOL_TYPE_COLORS, TOOL_TYPE_LABELS } from './chartTheme';
+import { CHART_COLORS, DEFAULT_GRID, TOOLTIP_STYLE, TOOL_TYPE_COLORS, TOOL_TYPE_LABELS } from './chartTheme';
 import type { CostTrendItem, OverviewData, TypeTrendItem } from '../types';
 
 // 构造按环或按月的更换消耗与费用趋势图配置。
@@ -11,8 +11,8 @@ export function buildOverviewTrendOption(overview: Pick<OverviewData, 'monthly_t
     yAxis: [{ type: 'value', name: '实际更换 / 把次', minInterval: 1 }, { type: 'value', name: '明确金额 / 元' }],
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 14, bottom: 28 }],
     series: [
-      { name: '实际更换', type: 'bar', barMaxWidth: 26, itemStyle: { color: '#5470c6' }, data: monthly ? overview.monthly_trend.map(r => r.total_replacements ?? 0) : trendItems.map(r => r.replacement_count ?? 0) },
-      { name: '明确金额', type: 'line', yAxisIndex: 1, connectNulls: false, itemStyle: { color: '#c57932' }, data: monthly ? overview.monthly_trend.map(r => r.cost) : trendItems.map(r => r.total_cost) },
+      { name: '实际更换', type: 'bar', barMaxWidth: 26, itemStyle: { color: CHART_COLORS.neutral }, data: monthly ? overview.monthly_trend.map(r => r.total_replacements ?? 0) : trendItems.map(r => r.replacement_count ?? 0) },
+      { name: '明确金额', type: 'line', yAxisIndex: 1, connectNulls: false, itemStyle: { color: CHART_COLORS.primary }, data: monthly ? overview.monthly_trend.map(r => r.cost) : trendItems.map(r => r.total_cost) },
     ],
   };
 }

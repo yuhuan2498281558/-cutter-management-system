@@ -305,7 +305,7 @@ function updateChart(key: string, element: HTMLElement | null, option: any) {
   if (chart && chart.getDom() !== element) { chart.dispose(); chart = undefined; }
   const previous = chartInputs.get(key);
   if (chart && previous && inputs.every((value, index) => value === previous[index])) return;
-  if (!chart) { chart = echarts.init(element); chartInstances.set(key, chart); }
+  if (!chart) { chart = echarts.init(element, 'dv'); chartInstances.set(key, chart); }
   chart.setOption(option, true); chart.resize();
   chartInputs.set(key, inputs);
 }

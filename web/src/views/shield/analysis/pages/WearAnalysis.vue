@@ -102,7 +102,7 @@ let trendChart: echarts.ECharts | null = null;
 
 function ensureChart(instance: echarts.ECharts | null, element: HTMLElement) {
   if (instance && instance.getDom() !== element) { instance.dispose(); instance = null; }
-  return instance || echarts.init(element);
+  return instance || echarts.init(element, 'dv');
 }
 function renderCharts() {
   if (!ready.value || !wearDist.value) return;

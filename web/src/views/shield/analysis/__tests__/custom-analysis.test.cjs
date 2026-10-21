@@ -70,9 +70,9 @@ test('configuration stays disabled until field choices load', async t => {
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { compile, root } = require('./helpers.cjs');
+const { compile, root, echartsStub } = require('./helpers.cjs');
 function loadChartOptionsModule(file) {
-  return compile(fs.readFileSync(file, 'utf8'), name => loadChartOptionsModule(path.resolve(path.dirname(file), `${name}.ts`)));
+  return compile(fs.readFileSync(file, 'utf8'), name => name === 'echarts' ? echartsStub : loadChartOptionsModule(path.resolve(path.dirname(file), `${name}.ts`)));
 }
 const { buildLineChartOption, buildMatrixChartOption } = loadChartOptionsModule(path.resolve(root, 'utils/customChartOptions.ts'));
 
@@ -90,7 +90,7 @@ test('option builders preserve line gaps and matrix null versus zero', () => {
   const option = buildMatrixChartOption(matrix, { width: 900, height: '380px' });
   assert.deepEqual(plain(option.series[0].data.map(item => item.value)), [[0, 0, 0, 0], [2, 0, 5, null]]);
   assert.equal(option.series[0].symbolSize([0, 0, 0, 0]), 5);
-  assert.equal(option.series[0].data[1].itemStyle.color, '#a8abb2');
+  assert.equal(option.series[0].data[1].itemStyle.color, '#9a978e');
 });
 
 test('matrix option tooltip escapes categories, dimensions, metrics and units', () => {

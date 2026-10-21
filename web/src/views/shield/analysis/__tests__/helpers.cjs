@@ -60,8 +60,8 @@ function setup(t, filename, options = {}) {
     if (name === '/@/utils/service') return { request };
     if (name === 'vue-router') return { useRouter: () => ({ push: value => { routes.push(value); return Promise.resolve(); } }) };
     if (name === 'element-plus') return { ElMessage: Object.fromEntries(['success', 'warning', 'error', 'info'].map(key => [key, value => notices.push([key, value])])) };
-    if (name === 'echarts') return { init: element => {
-      const chart = { element, options: [], disposed: false, width: 900,
+    if (name === 'echarts') return { registerTheme() {}, init: (element, theme) => {
+      const chart = { element, theme, options: [], disposed: false, width: 900,
         getDom: () => element, getWidth() { return this.width; }, getHeight: () => 360,
         isDisposed() { return this.disposed; }, setOption(value) { this.options.push(value); },
         resize() {}, clear() { this.options = []; }, dispose() { this.disposed = true; }, on() {}, off() {},
@@ -97,4 +97,6 @@ function setup(t, filename, options = {}) {
     mount: async () => { await Promise.all(hooks.onMounted.map(fn => fn())); await settle(); },
   };
 }
-module.exports = { root, plain, settle, deferred, compile, descendants, setup };
+// 只加载图表配置模块时用：chartTheme.ts 在加载时向 echarts 注册主题
+const echartsStub = { registerTheme() {} };
+module.exports = { root, plain, settle, deferred, compile, descendants, setup, echartsStub };

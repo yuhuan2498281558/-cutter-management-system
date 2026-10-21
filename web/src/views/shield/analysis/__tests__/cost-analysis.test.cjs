@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { setup, plain, deferred, settle, compile } = require('./helpers.cjs');
+const { setup, plain, deferred, settle, compile, echartsStub } = require('./helpers.cjs');
 
 const meta = scope => ({ schema_version: 2, generated_at: '2026-09-11T00:00:00Z', summary_status: 'CONFIRMED', opening_count: 2, draft_opening_count: 1, excluded_inactive_count: 0, unobserved_count: 0, warnings: [], scope: { project_name: '验收工程', shield_machine_name: '一号机', ...scope } });
 const sources = { installation: 100, confirmed_repair: 20, legacy: 30, unresolved: 50, total: 150, missing_price_count: 1, pending_repair_count: 1, repair_missing_price_count: 0, unresolved_count: 1, priced_count: 3 };
@@ -321,7 +321,7 @@ test('unrelated charts retain their options and user view when a single metric c
 
 function loadCostChartOptions() {
   function load(file) {
-    return compile(fs.readFileSync(file, 'utf8'), name => load(path.resolve(path.dirname(file), `${name}.ts`)));
+    return compile(fs.readFileSync(file, 'utf8'), name => name === 'echarts' ? echartsStub : load(path.resolve(path.dirname(file), `${name}.ts`)));
   }
   return load(path.resolve(__dirname, '../utils/costChartOptions.ts'));
 }
@@ -331,7 +331,7 @@ test('cost option builders preserve source order, colors and explicit amounts', 
   const composition = buildCompositionOption(sources);
   const type = buildTypeOption([{ tool_type: 'DISC', cost_sources: sources }, { tool_type: 'OTHER' }]);
   const trend = buildCostTrendOption(fixture({ url: 'cost_trend/', params: {} }).data, 'consumption');
-  const expected = [['新装登记', '#35689b'], ['已确认返修', '#6f9483'], ['历史登记', '#b7a078']];
+  const expected = [['新装登记', '#3f5f7a'], ['已确认返修', '#6f8f6a'], ['历史登记', '#c2b8a3']];
   for (const option of [composition, type, trend]) {
     assert.deepEqual(plain(option.series.slice(0, 3).map(item => [item.name, item.color])), expected);
   }
@@ -346,8 +346,8 @@ test('manufacturer colors stay stable across chart builders, ordering and focuse
   const relationship = buildRelationshipOption(brands);
   const price = fixture({ url: 'brand_price_trend/', params: {} }).data;
   const trend = buildBrandTrendOption([...price.series].reverse(), price.time_axis, 'price', { unit: '元', ratio: false });
-  assert.deepEqual(plain(relationship.series[0].data.map(item => [item.name, item.itemStyle.color])), [['A', '#7d6aa8'], ['B', '#427c70']]);
-  assert.deepEqual(plain(trend.series.map(item => [item.name, item.color])), [['B', '#427c70'], ['A', '#7d6aa8']]);
+  assert.deepEqual(plain(relationship.series[0].data.map(item => [item.name, item.itemStyle.color])), [['A', '#c2b8a3'], ['B', '#6f8f6a']]);
+  assert.deepEqual(plain(trend.series.map(item => [item.name, item.color])), [['B', '#6f8f6a'], ['A', '#c2b8a3']]);
   const focused = buildRelationshipOption([brands[0]]);
   assert.equal(focused.series[0].data[0].itemStyle.color, relationship.series[0].data[0].itemStyle.color);
   assert.equal(focused.series[0].label.show, true);
@@ -360,7 +360,7 @@ test('cost trend builder switches only the count or cumulative series and its ax
   const cumulative = buildCostTrendOption(data, 'cumulative');
   assert.deepEqual(plain(consumption.series.slice(0, 3).map(item => item.data)), [[100, 0], [20, 0], [0, 30]]);
   assert.deepEqual(plain(cumulative.series.slice(0, 3)), plain(consumption.series.slice(0, 3)));
-  const line = { type: 'line', yAxisIndex: 1, color: '#4b5563', smooth: false, symbol: 'circle', symbolSize: 5 };
+  const line = { type: 'line', yAxisIndex: 1, color: '#6b6962', smooth: false, symbol: 'circle', symbolSize: 5 };
   assert.deepEqual(plain(consumption.series[3]), { ...line, name: '实际更换数量', data: [2, 1] });
   assert.deepEqual(plain(cumulative.series[3]), { ...line, name: '累计明确金额', data: [120, 150] });
   assert.deepEqual(plain(consumption.yAxis[1]), { type: 'value', name: '更换数量（把）', minInterval: 1 });

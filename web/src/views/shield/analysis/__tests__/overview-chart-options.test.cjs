@@ -2,10 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { compile, plain, root } = require('./helpers.cjs');
+const { compile, plain, root, echartsStub } = require('./helpers.cjs');
 
 function load(file) {
-  return compile(fs.readFileSync(file, 'utf8'), name => load(path.resolve(path.dirname(file), `${name}.ts`)));
+  return compile(fs.readFileSync(file, 'utf8'), name => name === 'echarts' ? echartsStub : load(path.resolve(path.dirname(file), `${name}.ts`)));
 }
 const { buildOverviewTrendOption, buildOverviewTypeOption } = load(path.resolve(root, 'utils/overviewChartOptions.ts'));
 
