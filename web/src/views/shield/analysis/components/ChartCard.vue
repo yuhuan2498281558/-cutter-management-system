@@ -3,8 +3,10 @@
     <template #header>
       <div class="chart-card-header">
         <div class="chart-heading">
-          <h3 class="chart-title">{{ title }}</h3>
-          <InfoTip v-if="description" :content="description" />
+          <slot name="heading">
+            <h3 class="chart-title">{{ title }}</h3>
+            <InfoTip v-if="description" :content="description" />
+          </slot>
         </div>
         <slot name="toolbar" />
       </div>
@@ -33,7 +35,7 @@ import { computed } from 'vue';
 import InfoTip from '/@/components/InfoTip.vue';
 
 const props = defineProps<{
-  title: string;
+  title?: string;
   description?: string;
   loading?: boolean;
   height?: string;

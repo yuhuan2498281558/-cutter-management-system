@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { setup, plain, deferred, settle, compile, echartsStub } = require('./helpers.cjs');
+const { setup, plain, deferred, settle, compile, echartsStub, descendants } = require('./helpers.cjs');
 
 const meta = scope => ({ schema_version: 2, generated_at: '2026-09-11T00:00:00Z', summary_status: 'CONFIRMED', opening_count: 2, draft_opening_count: 1, excluded_inactive_count: 0, unobserved_count: 0, warnings: [], scope: { project_name: '验收工程', shield_machine_name: '一号机', ...scope } });
 const sources = { installation: 100, confirmed_repair: 20, legacy: 30, unresolved: 50, total: 150, missing_price_count: 1, pending_repair_count: 1, repair_missing_price_count: 0, unresolved_count: 1, priced_count: 3 };
@@ -36,6 +36,7 @@ function fixture(config) {
 function create(t, options = {}) { return setup(t, 'pages/CostAnalysis.vue', { request: fixture, ...options }); }
 function bindCharts(s) { for (const key of ['compositionRef', 'costTrendRef', 'typeRef', 'relationshipRef', 'brandTrendRef']) s[key].value = { key }; s.renderCharts(); }
 const latest = (result, key) => result.charts.find(chart => chart.element.key === key)?.options.at(-1);
+const detailCard = result => result.nodes().find(node => node.props?.class === 'cost-detail-card');
 
 test('real GET calls retain inherited strata while local manufacturer selections only narrow scope', async t => {
   const r = create(t, { props: { filter: { summary_status: 'CONFIRMED', project: 4, shield_machine: 9, start_ring: '100', end_ring: '200', manufacturers: 'A,B', stratum_types: 'ROCK' } } });
@@ -130,7 +131,8 @@ test('real template binds chart modes, ready export gates and complete scrollabl
   assert.equal(exportItems()[0].run, r.state.exportCompositionPdf); assert.equal(exportItems()[1].run, r.state.exportTrendPdf);
   const radios = nodes.filter(node => node.type?.name === 'el-radio-button'); assert.deepEqual(radios.map(node => node.props.label), ['consumption', 'cumulative']);
   const tables = nodes.filter(node => node.type?.name === 'el-table'); assert.equal(tables.length, 3);
-  assert.equal(tables[2].props.data.length, 6); assert.equal(tables[2].props['max-height'], 420);
+  const sourceTable = tables.find(node => node.props['data-analysis-table'] === 'sources');
+  assert.equal(sourceTable.props.data.length, 6); assert.equal(sourceTable.props['max-height'], 420);
 });
 
 test('deactivation rejects late responses and unmount releases every chart', async t => {
@@ -142,14 +144,19 @@ test('deactivation rejects late responses and unmount releases every chart', asy
   assert.equal(r.state.costReady.value, false); r.unmount(); assert.ok(r.charts.every(chart => chart.disposed));
 });
 
-test('manufacturer filter labels sit above controls and the reset action preserves inherited scope', async t => {
+test('manufacturer filters sit on the section heading with labels inside the controls; reset preserves inherited scope', async t => {
   const r = create(t, { props: { filter: { project: 4, start_ring: '100', end_ring: '200', manufacturer: 'A', summary_status: 'CONFIRMED' } } });
   await r.mount();
-  const form = r.nodes().find(node => node.type?.name === 'el-form' && node.props?.class === 'brand-filter-form');
-  assert.equal(form.props['label-position'], 'top'); assert.notEqual(form.props.inline, true);
-  const action = r.nodes().find(node => node.type?.name === 'el-form-item' && node.props?.class === 'brand-filter-actions');
-  assert.ok(action);
-  const reset = r.nodes().find(node => node.type?.name === 'el-button' && node.props?.onClick === r.state.resetBrandFilter);
+  const heading = r.nodes().find(node => node.props?.class === 'section-heading');
+  const headingNodes = descendants(heading);
+  assert.equal(headingNodes.find(node => node.type === 'h3').children, '厂家对比');
+  assert.equal(headingNodes.find(node => node.props?.class === 'section-note').children, '沿用上方条件，只收窄厂家');
+  assert.equal(headingNodes.find(node => node.type?.name === 'InfoTip').props.content, '厂家表不含未知厂家，不能将表内合计当作工程总计。');
+  const form = headingNodes.find(node => node.type?.name === 'el-form' && node.props?.class === 'brand-filter-form');
+  const controls = descendants(form).filter(node => node.type?.name === 'el-select');
+  assert.deepEqual(controls.map(node => node.props['aria-label']), ['对比厂家', '图上显示']);
+  assert.deepEqual(controls.map(node => descendants(node).find(child => child.props?.class === 'control-label').children), ['对比厂家', '图上显示']);
+  const reset = descendants(form).find(node => node.type?.name === 'el-button' && node.props?.onClick === r.state.resetBrandFilter);
   assert.ok(reset); r.state.brandFilterForm.manufacturers = ['A']; r.state.applyBrandFilter(); await settle();
   reset.props.onClick(); await settle();
   assert.deepEqual(plain(r.state.buildBrandFilter()), { project: 4, start_ring: '100', end_ring: '200', manufacturer: 'A', summary_status: 'CONFIRMED' });
@@ -198,8 +205,10 @@ test('a V2 response missing service fields is an explicit service error, not emp
   assert.ok(r.state.brandError.value);
   assert.equal(r.state.selectedTrend.value.length, 0, 'Do not retain price charts beside invalid service data');
   r.state.exportTrendPdf(); assert.equal(r.exports.length, 0);
-  const serviceCard = r.nodes().find(node => node.props?.title === '厂家旧刀配对与服役段来源');
-  assert.equal(serviceCard.props.error, r.state.brandError.value);
+  assert.equal(detailCard(r).props.error, '', 'the source tab keeps the engineering cost state');
+  r.state.detailTab.value = 'service';
+  assert.equal(detailCard(r).props.error, r.state.brandError.value);
+  assert.equal(detailCard(r).props.onRetry, r.state.detailState.value.retry); assert.equal(r.state.detailState.value.retry, r.state.loadBrandData);
 });
 
 test('manufacturer contract requires arrays, finite nullable averages and integer sample counts without coercion', t => {
@@ -233,8 +242,9 @@ test('valid empty service arrays and nullable averages remain honest empty state
   assert.equal(r.state.brandReady.value, true); assert.equal(r.state.brandError.value, '');
   assert.equal(r.state.relationshipItems.value.length, 0); assert.equal(r.state.serviceRows.value.length, 0);
   assert.equal(r.state.brandSummaryItems.value.length, 1);
-  const cards = r.nodes().filter(node => ['安装均价与已拆刀服役环数', '厂家旧刀配对与服役段来源'].includes(node.props?.title));
-  assert.equal(cards.length, 2); assert.ok(cards.every(node => node.props['is-empty'] === true && node.props.error === ''));
+  r.state.detailTab.value = 'service';
+  const cards = [r.nodes().find(node => node.props?.title === '安装均价与已拆刀服役环数'), detailCard(r)];
+  assert.ok(cards.every(node => node.props['is-empty'] === true && node.props.error === ''));
   assert.doesNotThrow(() => r.state.requireBrandData({ meta: meta({}), items: [], service_rows: [] }));
 });
 
@@ -253,10 +263,10 @@ test('complete eight-manufacturer data displays every relationship point and all
   assert.equal(r.state.brandReady.value, true);
   assert.equal(latest(r, 'relationshipRef').series[0].data.length, 8);
   assert.equal(r.state.serviceRows.value.length, 469);
-  const serviceCard = r.nodes().find(node => node.props?.title === '厂家旧刀配对与服役段来源');
-  assert.equal(serviceCard.props['is-empty'], false);
+  r.state.detailTab.value = 'service';
+  assert.equal(detailCard(r).props['is-empty'], false);
   const tables = r.nodes().filter(node => node.type?.name === 'el-table');
-  assert.equal(tables[1].props.data.length, 50);
+  assert.equal(tables.find(node => node.props['data-analysis-table'] === 'service').props.data.length, 50);
   r.state.exportTrendPdf();
   assert.equal(r.exports[0][3][0].rows.length, 469);
 });
@@ -319,6 +329,92 @@ test('unrelated charts retain their options and user view when a single metric c
   assert.deepEqual(counts(), [1, 2, 1, 1, 2]);
   r.state.relationshipRef.value = { key: 'replacement-element' }; r.state.renderCharts();
   assert.equal(r.charts[3].disposed, true); assert.equal(r.charts[5].options.length, 1);
+});
+
+test('conclusion leads with the explicit total, its source shares, the per-ring figure and only non-zero review items', async t => {
+  const r = create(t); await r.mount();
+  const nodes = r.nodes();
+  const composition = nodes.find(node => node.props?.class === 'cost-composition-section');
+  const hero = descendants(composition).find(node => node.props?.class === 'analysis-hero');
+  const heroNodes = descendants(hero);
+  assert.equal(heroNodes.find(node => node.props?.class === 'hero-value').children, '¥150');
+  const tips = heroNodes.filter(node => node.type?.name === 'InfoTip').map(node => node.props.content);
+  assert.deepEqual(tips, ['新装登记、已确认返修、历史登记三类之和，不是财务结算额', '范围不支持摊销']);
+  const share = heroNodes.find(node => node.type?.name === 'AmountShare');
+  assert.equal(share.props.total, 150);
+  assert.deepEqual(plain(share.props.parts), [
+    { label: '新装刀具登记', amount: 100, color: '#3f5f7a', tip: '装入刀具登记，可能包含维修件' },
+    { label: '已确认返修', amount: 20, color: '#6f8f6a', tip: '按对应拆除开仓归集' },
+    { label: '历史登记', amount: 30, color: '#c2b8a3', tip: '保留旧式整刀、维修与未分类来源' },
+  ]);
+  assert.equal(heroNodes.find(node => node.props?.class === 'hero-stat-value').children, '暂不计算');
+  const review = heroNodes.find(node => node.type?.name === 'ReviewList');
+  assert.deepEqual(plain(review.props.items.map(item => [item.name, item.pending, `${item.lead}：${item.detail}`])), [
+    ['缺登记价格', true, '1 条缺登记价格：没有计入金额，合计偏小'],
+    ['返修待确认', true, '1 条返修待确认：确认后，返修金额和合计还会增加'],
+    ['已确认返修缺价', false, '0 条已确认返修缺价：未计入返修金额'],
+    ['金额归属待核对', true, '1 条金额归属待核对（¥50）：未计入合计'],
+  ]);
+  assert.equal(nodes.some(node => ['analysis-metrics', 'cost-quality', 'analysis-note allocation-note'].includes(node.props?.class)), false);
+
+  const allocated = create(t, { request: config => {
+    const response = fixture(config);
+    if (config.url.endsWith('cost_overview/')) response.data.cost_per_ring = { available: true, total: 10457.55, ring_count: 473 };
+    return response;
+  } });
+  await allocated.mount();
+  const stat = descendants(allocated.nodes().find(node => node.props?.class === 'hero-card hero-stat'));
+  assert.equal(stat.find(node => node.props?.class === 'hero-stat-value').children, '¥10,457.55 / 环');
+  assert.equal(stat.find(node => node.type?.name === 'InfoTip').props.content, '分母 473 环（最大减最小开仓环号加 1），不是实际掘进单环成本');
+});
+
+test('records outside the manufacturer table show one line only when there are any', async t => {
+  const r = create(t); await r.mount();
+  const line = result => result.nodes().filter(node => /不在本表|厂家缺失|厂家未核实/.test(String(node.children))).map(node => node.children);
+  assert.deepEqual(line(r), ['1 条更换记录缺厂家、¥20明确金额厂家未核实，不在本表']);
+  const clean = create(t, { request: config => {
+    const response = fixture(config);
+    if (config.url.endsWith('brand_cost/')) Object.assign(response.data, { unknown_manufacturer_count: 0, source_rows: sourceRows.filter(row => row.manufacturer) });
+    return response;
+  } });
+  await clean.mount();
+  assert.equal(clean.state.brandReady.value, true);
+  assert.deepEqual(line(clean), []);
+});
+
+test('one detail card switches source and service tables, counts rows and flags only server truncation', async t => {
+  const r = create(t, { request: config => {
+    const response = fixture(config);
+    if (config.url.endsWith('cost_overview/')) Object.assign(response.data, { source_rows_total: 900, source_rows_truncated: true });
+    return response;
+  } });
+  const card = () => descendants(detailCard(r));
+  const labels = () => card().filter(node => node.type?.name === 'el-tab-pane').map(node => node.props.label);
+  const tip = () => card().find(node => node.type?.name === 'InfoTip').props.content;
+  assert.deepEqual(labels(), ['费用来源明细', '旧刀配对与服役段']);
+  await r.mount();
+  assert.deepEqual(labels(), ['费用来源明细 · 6 条', '旧刀配对与服役段 · 1 条']);
+  assert.equal(tip(), '对应上方工程费用合计，不随厂家图形聚焦变化。每行一项来源，保留未纳入原因。零价保留为 ¥0，缺价不补零。');
+  assert.deepEqual(card().filter(node => node.props?.class === 'detail-truncated').map(node => node.children), ['只返回了前 6 条（共 900 条）']);
+  assert.equal(r.nodes().some(node => /分页查看|PDF 导出全部返回记录|服务端已截取/.test(String(node.children))), false);
+  // 两个页签的内容都保持渲染（v-show），导出时各自的表都能找到
+  const panes = () => card().filter(node => node.dirs).map(node => [node.dirs[0].value, descendants(node)[1].props.class]);
+  assert.deepEqual(panes(), [[true, 'cost-source-section'], [false, 'cost-service-section']]);
+  r.state.detailTab.value = 'service';
+  assert.deepEqual(panes(), [[false, 'cost-source-section'], [true, 'cost-service-section']]);
+  assert.equal(tip(), '完整保留厂家查询返回的已拆刀及待核对样本。服役段不是失效寿命；原安装信息只在系统配对可追溯时展示。');
+  assert.deepEqual(card().filter(node => node.props?.class === 'detail-truncated').map(node => node.children), ['只返回了前 6 条（共 900 条）'], 'service rows were not truncated');
+
+  r.state.exportCompositionPdf(); r.state.exportTrendPdf();
+  assert.deepEqual(plain(r.exports[0][1]), [
+    { title: '费用来源与明确合计', selector: '.cost-composition-section' },
+    { title: '环号变化与刀型贡献', selector: '.cost-trend-section' },
+    { title: '费用来源明细', selector: '.cost-source-section', note: '对应上方工程费用合计，不随厂家图形聚焦变化。每行一项来源，保留未纳入原因。零价保留为 ¥0，缺价不补零。' },
+  ]);
+  assert.deepEqual(plain(r.exports[1][1]), [
+    { title: '厂家对照、指标与配对依据', selector: '.cost-brand-section', note: '厂家表不含未知厂家，不能将表内合计当作工程总计。' },
+    { title: '旧刀配对与服役段', selector: '.cost-service-section', note: tip() },
+  ]);
 });
 
 function loadCostChartOptions() {

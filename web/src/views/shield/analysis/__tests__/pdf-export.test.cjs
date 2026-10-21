@@ -256,6 +256,18 @@ test('info tips export their full wording as a line under the title, not as an "
   h.unchanged();
 });
 
+test('a section note prints escaped right under its section title', () => {
+  const h = harness('<section class="page"><p>表格</p></section>');
+  h.run('报告', [{ title: '费用来源明细', selector: '.page', note: '零价保留为 ¥0 & <缺价不补零>' }]);
+  const [title, note, body] = h.output.querySelector('.pdf-section').children;
+  assert.equal(title.tagName, 'h2'); assert.equal(title.textContent, '费用来源明细');
+  assert.equal(note.getAttribute('class'), 'chart-description'); assert.equal(note.textContent, '零价保留为 ¥0 & <缺价不补零>');
+  assert.equal(body.getAttribute('class'), 'page');
+  h.run('报告', [{ title: '无说明', selector: '.page' }]);
+  assert.equal(h.output.querySelectorAll('.chart-description').length, 0);
+  h.unchanged();
+});
+
 test('ECharts complete image replaces each multi-canvas root and records current legend/zoom without mutations', () => {
   const option = { series: [{ name: '厂家A' }, { name: '<厂家B>' }], legend: [{ selected: { '<厂家B>': false } }], dataZoom: [{ start: 20, end: 80 }, { startValue: 0, endValue: 12 }] };
   const beforeOption = JSON.stringify(option);

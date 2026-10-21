@@ -104,7 +104,8 @@ test('chart description sits in an ⓘ beside the title instead of a line under 
     slots: { toolbar: () => [vue.h('span', { class: 'toolbar-probe' })], default: () => [] },
   });
   const heading = byClass(h.nodes(), 'chart-heading');
-  assert.deepEqual(descendants(heading).slice(1).map(node => node.type?.name || node.type), ['h3', 'InfoTip']);
+  const elements = node => descendants(node).slice(1).filter(item => typeof item.type !== 'symbol').map(item => item.type?.name || item.type);
+  assert.deepEqual(elements(heading), ['h3', 'InfoTip']);
   assert.equal(descendants(heading).find(node => node.type?.name === 'InfoTip').props.content, '待核对金额不进入堆叠。');
   assert.equal(h.nodes().some(node => node.props?.class === 'chart-description'), false);
   assert.ok(h.nodes().some(node => node.props?.class === 'toolbar-probe'));

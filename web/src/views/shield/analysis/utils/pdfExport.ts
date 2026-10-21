@@ -105,6 +105,8 @@ function flattenTables(target: HTMLElement) {
 export interface AnalysisPdfSection {
   title: string;
   selector: string;
+  /** 小节口径：页面上收在 ⓘ 里、又不在导出区块内时，写在小节标题下 */
+  note?: string;
 }
 
 export interface AnalysisPdfMetaItem {
@@ -195,6 +197,7 @@ export function exportAnalysisPdf(
     if (!html) return '';
     return `<section class="pdf-section">
       ${section.title ? `<h2>${escapeHtml(section.title)}</h2>` : ''}
+      ${section.note ? `<p class="chart-description">${escapeHtml(section.note)}</p>` : ''}
       ${html}
     </section>`;
   }).join(''); } catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : '导出内容读取失败，请重新加载'); return false; }
@@ -243,6 +246,18 @@ h2{font-size:12px;margin:0 0 4px;color:#111827;line-height:1.25;}
 .analysis-metric{padding:6px;border-right:1px solid #ddd;font-size:9px;}
 .analysis-metric span,.analysis-metric strong,.analysis-metric small{display:block;}
 .analysis-metric strong{font-size:14px;margin:4px 0;}
+.analysis-hero{display:grid;grid-template-columns:1.35fr 1fr;gap:6px;margin-bottom:6px;break-inside:avoid;page-break-inside:avoid;}
+.hero-side{display:grid;gap:6px;align-content:start;}
+.hero-card{border:1px solid #d9d9d9;border-radius:4px;padding:6px;font-size:9px;}
+.hero-label,.hero-card-title{display:block;margin:0 0 4px;font-size:9px;font-weight:600;}
+.hero-value{display:block;margin:2px 0 4px;font-size:16px;font-weight:600;}
+.hero-stat-value{display:block;font-size:12px;font-weight:600;}
+.share-bar{display:flex;height:6px;margin:4px 0;background:#f2f3f5;}
+.share-bar span,.share-swatch{display:block;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+.share-bar span{height:100%;}
+.share-swatch{width:8px;height:8px;}
+.share-legend{font-size:9px;}
+.review-list p{margin:2px 0;font-size:9px;}
 .analysis-print-table{table-layout:fixed;width:100%;}
 .analysis-print-table thead{display:table-header-group;}
 .analysis-print-table tr{break-inside:avoid;page-break-inside:avoid;}

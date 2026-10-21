@@ -6,27 +6,29 @@
     ]" />
     <ScopeSummary :meta="costOverview?.meta" />
     <section class="cost-composition-section">
-      <div v-if="sources" class="analysis-metrics">
-        <div class="analysis-metric"><span>已明确刀具费用合计</span><strong>{{ formatCurrency(sources.total) }}</strong><small>三类明确来源之和，非财务结算额</small></div>
-        <div class="analysis-metric"><span>新装刀具登记金额</span><strong>{{ formatCurrency(sources.installation) }}</strong><small>装入刀具登记，可能包含维修件</small></div>
-        <div class="analysis-metric"><span>已确认返修登记金额</span><strong>{{ formatCurrency(sources.confirmed_repair) }}</strong><small>按对应拆除开仓归集</small></div>
-        <div class="analysis-metric"><span>历史登记金额</span><strong>{{ formatCurrency(sources.legacy) }}</strong><small>保留旧式整刀、维修与未分类来源</small></div>
+      <div v-if="sources" class="analysis-hero">
+        <section class="hero-card">
+          <div class="hero-label">已明确刀具费用<InfoTip content="新装登记、已确认返修、历史登记三类之和，不是财务结算额" /></div>
+          <strong class="hero-value">{{ formatCurrency(sources.total) }}</strong>
+          <AmountShare :parts="shareParts" :total="sources.total" />
+        </section>
+        <div class="hero-side">
+          <section v-if="perRing" class="hero-card hero-stat">
+            <span class="hero-label">按环号跨度摊销<InfoTip v-if="perRing.tip" :content="perRing.tip" /></span>
+            <strong class="hero-stat-value">{{ perRing.value }}</strong>
+          </section>
+          <section class="hero-card">
+            <h4 class="hero-card-title">需要核对</h4>
+            <ReviewList :items="reviewItems" />
+          </section>
+        </div>
       </div>
-      <div v-if="sources" class="cost-quality" role="status">
-        <span>缺登记价格 {{ sources.missing_price_count }} 条</span><span>返修待确认 {{ sources.pending_repair_count }} 条</span>
-        <span>已确认返修缺价 {{ sources.repair_missing_price_count }} 条</span>
-        <span :class="{ 'needs-review': sources.unresolved_count > 0 }">金额归属待核对 {{ sources.unresolved_count }} 条 / {{ formatCurrency(sources.unresolved) }}，未计入合计</span>
-      </div>
-      <p v-if="costOverview?.cost_per_ring" class="analysis-note allocation-note">
-        <template v-if="costOverview.cost_per_ring.available">按开仓环号跨度摊销：<strong>{{ formatCurrency(costOverview.cost_per_ring.total) }}/环</strong>，分母 {{ costOverview.cost_per_ring.ring_count }} 环（最大开仓环号 − 最小开仓环号 + 1）。不是实际掘进单环成本。</template>
-        <template v-else>按开仓环号跨度摊销：暂不计算。{{ costOverview.cost_per_ring.reason }}</template>
-      </p>
       <ChartCard title="费用来源构成" description="三类明确来源可以相加；同次换刀的新装登记与旧刀返修是两项费用来源。" chart-height="160px"
         :loading="costLoading" :error="costError" :is-empty="!sourceRows.length" @retry="loadData">
         <div ref="compositionRef" class="cost-chart" style="height:160px" />
       </ChartCard>
     </section>
-    <section class="analysis-grid cost-trend-section">
+    <section class="analysis-grid cost-chart-row cost-trend-section">
       <ChartCard :title="costMode === 'consumption' ? '按开仓环号：费用与更换数量' : '按开仓环号：单次与累计费用'"
         description="返修确认后归回换刀开仓，历史环段金额可能更新；更换数量与费用来源不是同一计数。" chart-height="330px"
         :loading="costLoading" :error="costError" :is-empty="!costTrend?.items.length" @retry="loadData">
@@ -38,20 +40,23 @@
         <div ref="typeRef" class="cost-chart" style="height:330px" />
       </ChartCard>
     </section>
-    <section class="brand-filter-bar" aria-label="厂家对比条件">
-      <h3>厂家对比</h3><p>继承上方项目、盾构机、环段、刀型及地层类型条件；以下选择仅收窄厂家范围。</p>
-      <el-form label-position="top" class="brand-filter-form">
-        <el-form-item label="对比厂家"><el-select v-model="brandFilterForm.manufacturers" multiple clearable filterable collapse-tags collapse-tags-tooltip
+    <div class="section-heading" role="group" aria-label="厂家对比条件">
+      <h3>厂家对比</h3><InfoTip :content="BRAND_TABLE_BASIS" />
+      <span class="section-note">沿用上方条件，只收窄厂家</span>
+      <el-form class="brand-filter-form" @submit.prevent>
+        <el-select v-model="brandFilterForm.manufacturers" class="brand-select" aria-label="对比厂家" multiple clearable filterable collapse-tags collapse-tags-tooltip
           placeholder="当前范围全部厂家" :disabled="optionsLoading || !!optionsError" @change="applyBrandFilter">
+          <template #prefix><span class="control-label">对比厂家</span></template>
           <el-option v-for="name in manufacturerOptions" :key="name" :label="name" :value="name" />
-        </el-select></el-form-item>
-        <el-form-item label="图形展示"><el-select v-model="brandFilterForm.limit" :disabled="!!focusedManufacturer || !!appliedBrandFilter.manufacturers.length">
+        </el-select>
+        <el-select v-model="brandFilterForm.limit" class="limit-select" aria-label="图上显示" :disabled="!!focusedManufacturer || !!appliedBrandFilter.manufacturers.length">
+          <template #prefix><span class="control-label">图上显示</span></template>
           <el-option :value="5" label="按金额前 5 家" /><el-option :value="8" label="按金额前 8 家" /><el-option :value="0" label="全部厂家" />
-        </el-select></el-form-item>
-        <el-form-item class="brand-filter-actions"><el-button @click="resetBrandFilter">重置厂家条件</el-button></el-form-item>
+        </el-select>
+        <el-button @click="resetBrandFilter">重置厂家条件</el-button>
       </el-form>
-      <div v-if="optionsError" class="option-error" role="alert">厂家筛选项加载失败，当前统计范围未改变。<el-button link type="primary" @click="loadOptions">重新加载</el-button></div>
-    </section>
+    </div>
+    <div v-if="optionsError" class="option-error" role="alert">厂家筛选项加载失败，当前统计范围未改变。<el-button link type="primary" @click="loadOptions">重新加载</el-button></div>
     <section class="cost-brand-section">
       <ScopeSummary :meta="brandCost?.meta" />
       <ChartCard title="厂家综合对照" chart-height="auto" :loading="brandLoading" :error="brandError" :is-empty="!brandSummaryItems.length" @retry="loadBrandData"
@@ -69,7 +74,7 @@
             <el-table-column label="记录待完善" min-width="150" align="right"><template #default="{ row }">磨损未分类 {{ formatNumber(row.unrecorded_wear_count) }}<small class="cell-detail">配对待核对 {{ formatNumber(row.pairing_unresolved_count) }}</small></template></el-table-column>
           </el-table-column>
         </el-table>
-        <p class="analysis-note">厂家缺失的更换记录 {{ formatNumber(brandCost?.unknown_manufacturer_count) }} 条；厂家未核实的明确金额 {{ formatCurrency(unknownManufacturerAmount) }}（{{ unknownManufacturerRows.length }} 项金额来源）。全范围配对待核对 {{ formatNumber(brandCost?.pairing_unresolved_count) }} 条。厂家表不含未知厂家，不能将表内合计当作工程总计。</p>
+        <p v-if="unknownManufacturerLine" class="analysis-note">{{ unknownManufacturerLine }}</p>
       </ChartCard>
       <div v-if="brandReady" class="graph-scope" role="status"><span>{{ focusedManufacturer ? `图形聚焦：${focusedManufacturer}` : `图形显示 ${visibleBrands.length} 家；表格共 ${brandSummaryItems.length} 家` }}</span><el-button v-if="focusedManufacturer" link type="primary" @click="focusedManufacturer = ''">查看全部对比厂家</el-button></div>
       <div class="analysis-grid cost-brand-export-section">
@@ -89,40 +94,50 @@
           </ChartCard>
         </section>
       </div>
-      <ChartCard title="厂家旧刀配对与服役段来源" chart-height="auto" :loading="brandLoading" :error="brandError" :is-empty="!serviceRows.length" @retry="loadBrandData"
-        description="完整保留厂家查询返回的已拆刀及待核对样本。服役段不是失效寿命；原安装信息只在系统配对可追溯时展示。">
-        <el-table :data="visibleServiceRows" size="small" border :max-height="380" class="cost-table" data-analysis-table="service" row-key="detail_id">
-          <el-table-column label="拆除开仓" min-width="135" fixed><template #default="{ row }"><el-button link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环 · {{ row.warehouse_id }}</el-button></template></el-table-column>
-          <el-table-column prop="cutter_position_no" label="刀位" width="65" />
-          <el-table-column label="原安装厂家" min-width="130"><template #default="{ row }">{{ row.manufacturer || '待核实' }}</template></el-table-column>
-          <el-table-column label="换下旧刀编号" min-width="140"><template #default="{ row }">{{ row.old_tool_number || '未记录' }}</template></el-table-column>
-          <el-table-column label="原安装环号" width="100" align="right"><template #default="{ row }">{{ row.installation_ring_no ?? '未配对' }}</template></el-table-column>
-          <el-table-column label="服役环数" width="110" align="right"><template #default="{ row }">{{ serviceValue(row.service_rings) }}</template></el-table-column>
-          <el-table-column label="现场磨损" min-width="120"><template #default="{ row }">{{ row.wear_condition || '未记录' }}</template></el-table-column>
-          <el-table-column label="配对状态 / 依据" min-width="210"><template #default="{ row }">{{ row.paired ? '系统已确认配对' : row.reason || '待核对' }}</template></el-table-column>
-        </el-table>
-        <el-pagination v-if="serviceRows.length > 50" v-model:current-page="servicePage" v-model:page-size="servicePageSize"
-          :page-sizes="[50, 100, 200]" :total="serviceRows.length" layout="total, sizes, prev, pager, next" small class="detail-pagination" />
-        <p class="analysis-note">{{ serviceRows.length }} / {{ brandCost?.service_rows_total ?? serviceRows.length }} 条{{ brandCost?.service_rows_truncated ? '（服务端已截取）' : '，分页查看，PDF 导出全部返回记录' }}。</p>
-      </ChartCard>
     </section>
-    <section class="cost-source-section">
-      <ChartCard title="工程范围费用来源明细" chart-height="auto" :loading="costLoading" :error="costError" :is-empty="!sourceRows.length" @retry="loadData"
-        description="对应上方工程费用合计，不随厂家图形聚焦变化。每行一项来源，保留未纳入原因；查看开仓仅进入只读明细。">
-        <el-table :data="visibleSourceRows" size="small" border :max-height="420" class="cost-table" row-key="id" data-analysis-table="sources">
-          <el-table-column label="开仓" min-width="135" fixed><template #default="{ row }"><el-button link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环 · {{ row.warehouse_id }}</el-button></template></el-table-column>
-          <el-table-column prop="cutter_position_no" label="刀位" width="65" />
-          <el-table-column label="金额来源" min-width="135"><template #default="{ row }">{{ sourceLabel(row) }}</template></el-table-column>
-          <el-table-column label="登记金额（元）" min-width="135" align="right"><template #default="{ row }">{{ formatCurrency(row.amount) }}</template></el-table-column>
-          <el-table-column label="来源厂家" min-width="130"><template #default="{ row }">{{ row.manufacturer || '未核实' }}</template></el-table-column>
-          <el-table-column label="装入 / 换下编号" min-width="190"><template #default="{ row }">装入 {{ row.new_tool_number || '未记录' }}<small class="cell-detail">换下 {{ row.old_tool_number || '未记录' }}</small></template></el-table-column>
-          <el-table-column label="纳入情况" min-width="220"><template #default="{ row }"><span :class="{ 'needs-review': !row.included }">{{ row.included ? '已计入明确合计' : row.reason || '未纳入' }}</span></template></el-table-column>
-        </el-table>
-        <el-pagination v-if="sourceRows.length > 50" v-model:current-page="sourcePage" v-model:page-size="sourcePageSize"
-          :page-sizes="[50, 100, 200]" :total="sourceRows.length" layout="total, sizes, prev, pager, next" small class="detail-pagination" />
-        <p class="analysis-note">{{ sourceRows.length }} / {{ costOverview?.source_rows_total ?? sourceRows.length }} 条{{ costOverview?.source_rows_truncated ? '（服务端已截取）' : '，分页查看，PDF 导出全部返回记录' }}。零价保留为 ¥0，缺价不补零。</p>
-      </ChartCard>
-    </section>
+    <ChartCard class="cost-detail-card" chart-height="auto" :loading="detailState.loading" :error="detailState.error" :is-empty="detailState.empty" @retry="detailState.retry">
+      <template #heading>
+        <el-tabs v-model="detailTab" class="detail-tabs">
+          <el-tab-pane :label="costReady ? `费用来源明细 · ${formatNumber(sourceRows.length)} 条` : '费用来源明细'" name="sources" />
+          <el-tab-pane :label="brandReady ? `旧刀配对与服役段 · ${formatNumber(serviceRows.length)} 条` : '旧刀配对与服役段'" name="service" />
+        </el-tabs>
+        <InfoTip :content="detailTab === 'sources' ? SOURCE_DETAIL_BASIS : SERVICE_DETAIL_BASIS" />
+      </template>
+      <!-- 外层 v-show 切换页签；导出选择器指向内层，未显示的页签也能导出 -->
+      <div v-show="detailTab === 'sources'">
+        <div class="cost-source-section">
+          <p v-if="costOverview?.source_rows_truncated" class="detail-truncated" role="status">只返回了前 {{ formatNumber(sourceRows.length) }} 条（共 {{ formatNumber(costOverview.source_rows_total ?? sourceRows.length) }} 条）</p>
+          <el-table :data="visibleSourceRows" size="small" border :max-height="420" class="cost-table" row-key="id" data-analysis-table="sources">
+            <el-table-column label="开仓" min-width="135" fixed><template #default="{ row }"><el-button link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环 · {{ row.warehouse_id }}</el-button></template></el-table-column>
+            <el-table-column prop="cutter_position_no" label="刀位" width="65" />
+            <el-table-column label="金额来源" min-width="135"><template #default="{ row }">{{ sourceLabel(row) }}</template></el-table-column>
+            <el-table-column label="登记金额（元）" min-width="135" align="right"><template #default="{ row }">{{ formatCurrency(row.amount) }}</template></el-table-column>
+            <el-table-column label="来源厂家" min-width="130"><template #default="{ row }">{{ row.manufacturer || '未核实' }}</template></el-table-column>
+            <el-table-column label="装入 / 换下编号" min-width="190"><template #default="{ row }">装入 {{ row.new_tool_number || '未记录' }}<small class="cell-detail">换下 {{ row.old_tool_number || '未记录' }}</small></template></el-table-column>
+            <el-table-column label="纳入情况" min-width="220"><template #default="{ row }"><span :class="{ 'needs-review': !row.included }">{{ row.included ? '已计入明确合计' : row.reason || '未纳入' }}</span></template></el-table-column>
+          </el-table>
+          <el-pagination v-if="sourceRows.length > 50" v-model:current-page="sourcePage" v-model:page-size="sourcePageSize"
+            :page-sizes="[50, 100, 200]" :total="sourceRows.length" layout="total, sizes, prev, pager, next" small class="detail-pagination" />
+        </div>
+      </div>
+      <div v-show="detailTab === 'service'">
+        <div class="cost-service-section">
+          <p v-if="brandCost?.service_rows_truncated" class="detail-truncated" role="status">只返回了前 {{ formatNumber(serviceRows.length) }} 条（共 {{ formatNumber(brandCost.service_rows_total ?? serviceRows.length) }} 条）</p>
+          <el-table :data="visibleServiceRows" size="small" border :max-height="380" class="cost-table" data-analysis-table="service" row-key="detail_id">
+            <el-table-column label="拆除开仓" min-width="135" fixed><template #default="{ row }"><el-button link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环 · {{ row.warehouse_id }}</el-button></template></el-table-column>
+            <el-table-column prop="cutter_position_no" label="刀位" width="65" />
+            <el-table-column label="原安装厂家" min-width="130"><template #default="{ row }">{{ row.manufacturer || '待核实' }}</template></el-table-column>
+            <el-table-column label="换下旧刀编号" min-width="140"><template #default="{ row }">{{ row.old_tool_number || '未记录' }}</template></el-table-column>
+            <el-table-column label="原安装环号" width="100" align="right"><template #default="{ row }">{{ row.installation_ring_no ?? '未配对' }}</template></el-table-column>
+            <el-table-column label="服役环数" width="110" align="right"><template #default="{ row }">{{ serviceValue(row.service_rings) }}</template></el-table-column>
+            <el-table-column label="现场磨损" min-width="120"><template #default="{ row }">{{ row.wear_condition || '未记录' }}</template></el-table-column>
+            <el-table-column label="配对状态 / 依据" min-width="210"><template #default="{ row }">{{ row.paired ? '系统已确认配对' : row.reason || '待核对' }}</template></el-table-column>
+          </el-table>
+          <el-pagination v-if="serviceRows.length > 50" v-model:current-page="servicePage" v-model:page-size="servicePageSize"
+            :page-sizes="[50, 100, 200]" :total="serviceRows.length" layout="total, sizes, prev, pager, next" small class="detail-pagination" />
+        </div>
+      </div>
+    </ChartCard>
   </div>
 </template>
 
@@ -130,10 +145,14 @@
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import * as echarts from 'echarts';
+import InfoTip from '/@/components/InfoTip.vue';
+import AmountShare from '../components/AmountShare.vue';
 import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
+import ReviewList from '../components/ReviewList.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getFilterOptions, getCostOverview, getCostTrend, getBrandCost, getBrandPriceTrend, getBrandPerformanceTrend } from '../api';
+import { CHART_COLORS } from '../utils/chartTheme';
 import { buildCompositionOption, buildCostTrendOption, buildTypeOption, buildRelationshipOption, buildBrandTrendOption, manufacturerColor, serviceValue } from '../utils/costChartOptions';
 import { analysisExportMeta, formatCurrency, formatNumber, formatPercent, requireAnalysisV2, SOURCE_LABELS } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
@@ -153,6 +172,10 @@ interface BrandData {
 }
 interface TrendData { meta?: AnalysisMeta; items: CostTrendItem[] }
 interface OptionData { manufacturers: string[] }
+// 防止误读的口径：页面上在 ⓘ 里，PDF 里写在对应小节标题下
+const BRAND_TABLE_BASIS = '厂家表不含未知厂家，不能将表内合计当作工程总计。';
+const SOURCE_DETAIL_BASIS = '对应上方工程费用合计，不随厂家图形聚焦变化。每行一项来源，保留未纳入原因。零价保留为 ¥0，缺价不补零。';
+const SERVICE_DETAIL_BASIS = '完整保留厂家查询返回的已拆刀及待核对样本。服役段不是失效寿命；原安装信息只在系统配对可追溯时展示。';
 function requireBrandData(data: BrandData): BrandData {
   requireAnalysisV2(data);
   const nullableNumber = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value));
@@ -220,6 +243,38 @@ watch([sourceRows, sourcePageSize], () => { sourcePage.value = 1; }, { flush: 's
 const brandSummaryItems = computed(() => brandCost.value?.items ?? []);
 const unknownManufacturerRows = computed(() => (brandCost.value?.source_rows ?? []).filter(row => !row.manufacturer && row.included));
 const unknownManufacturerAmount = computed(() => unknownManufacturerRows.value.reduce((total, row) => total + (row.amount ?? 0), 0));
+const unknownManufacturerLine = computed(() => {
+  const count = Number(brandCost.value?.unknown_manufacturer_count) || 0;
+  if (!count && !unknownManufacturerAmount.value) return '';
+  return `${formatNumber(count)} 条更换记录缺厂家、${formatCurrency(unknownManufacturerAmount.value)}明确金额厂家未核实，不在本表`;
+});
+const shareParts = computed(() => sources.value ? [
+  { label: '新装刀具登记', amount: sources.value.installation, color: CHART_COLORS.primary, tip: '装入刀具登记，可能包含维修件' },
+  { label: '已确认返修', amount: sources.value.confirmed_repair, color: CHART_COLORS.good, tip: '按对应拆除开仓归集' },
+  { label: '历史登记', amount: sources.value.legacy, color: CHART_COLORS.neutral, tip: '保留旧式整刀、维修与未分类来源' },
+] : []);
+const perRing = computed(() => {
+  const allocation = costOverview.value?.cost_per_ring;
+  if (!allocation) return null;
+  return allocation.available
+    ? { value: `${formatCurrency(allocation.total)} / 环`, tip: `分母 ${allocation.ring_count} 环（最大减最小开仓环号加 1），不是实际掘进单环成本` }
+    : { value: '暂不计算', tip: allocation.reason || '' };
+});
+const reviewItems = computed(() => {
+  const value = sources.value;
+  if (!value) return [];
+  const count = (number: number) => formatNumber(number);
+  return [
+    { name: '缺登记价格', pending: value.missing_price_count > 0, lead: `${count(value.missing_price_count)} 条缺登记价格`, detail: '没有计入金额，合计偏小' },
+    { name: '返修待确认', pending: value.pending_repair_count > 0, lead: `${count(value.pending_repair_count)} 条返修待确认`, detail: '确认后，返修金额和合计还会增加' },
+    { name: '已确认返修缺价', pending: value.repair_missing_price_count > 0, lead: `${count(value.repair_missing_price_count)} 条已确认返修缺价`, detail: '未计入返修金额' },
+    { name: '金额归属待核对', pending: value.unresolved_count > 0, lead: `${count(value.unresolved_count)} 条金额归属待核对（${formatCurrency(value.unresolved)}）`, detail: '未计入合计' },
+  ];
+});
+const detailTab = ref('sources');
+const detailState = computed(() => detailTab.value === 'sources'
+  ? { loading: costLoading.value, error: costError.value, empty: !sourceRows.value.length, retry: loadData }
+  : { loading: brandLoading.value, error: brandError.value, empty: !serviceRows.value.length, retry: loadBrandData });
 const manufacturerOptions = computed(() => restrictedSelection(
   [...new Set([...(optionData.value?.manufacturers ?? []), ...brandSummaryItems.value.map(item => item.manufacturer)])],
   [...values(props.filter.manufacturer), ...values(props.filter.manufacturers)],
@@ -264,7 +319,7 @@ function exportCompositionPdf() {
   exportAnalysisPdf('数据分析-刀具费用来源', [
     { title: '费用来源与明确合计', selector: '.cost-composition-section' },
     { title: '环号变化与刀型贡献', selector: '.cost-trend-section' },
-    { title: '费用来源明细', selector: '.cost-source-section' },
+    { title: '费用来源明细', selector: '.cost-source-section', note: SOURCE_DETAIL_BASIS },
   ], analysisExportMeta(costOverview.value?.meta), [{
     id: 'sources', headers: ['开仓', '刀位', '金额来源', '登记金额（元）', '来源厂家', '装入 / 换下编号', '纳入情况'],
     rows: sourceRows.value.map(row => [
@@ -276,7 +331,10 @@ function exportCompositionPdf() {
 }
 function exportTrendPdf() {
   if (!brandReady.value) return;
-  exportAnalysisPdf('数据分析-厂家对照与服役表现', [{ title: '厂家对照、指标与配对依据', selector: '.cost-brand-section' }], [
+  exportAnalysisPdf('数据分析-厂家对照与服役表现', [
+    { title: '厂家对照、指标与配对依据', selector: '.cost-brand-section', note: BRAND_TABLE_BASIS },
+    { title: '旧刀配对与服役段', selector: '.cost-service-section', note: SERVICE_DETAIL_BASIS },
+  ], [
     ...analysisExportMeta(brandCost.value?.meta),
     { label: '图形展示', value: focusedManufacturer.value || (appliedBrandFilter.value.manufacturers.length ? '选定厂家' : brandFilterForm.limit ? `按明确金额前 ${brandFilterForm.limit} 家；表格保留全部` : '全部厂家') },
     { label: '当前趋势指标', value: trendConfig.value.title },
@@ -350,20 +408,21 @@ onBeforeUnmount(() => { activeCharts = false; cancelChartFrames(); resizeObserve
 <style scoped>
 .cost-page { min-width: 0; padding-bottom: 12px; }
 .cost-chart { width: 100%; min-width: 0; }
-.cost-quality { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: -4px 0 12px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
-.needs-review { color: var(--el-color-warning-dark-2); }
-.allocation-note { padding: 8px 12px; border-left: 2px solid var(--el-border-color); }
-.brand-filter-bar { margin: 4px 0 12px; padding: 14px 16px 2px; background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); border-radius: 6px; }
-.brand-filter-bar h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.brand-filter-bar p { margin: 5px 0 12px; font-size: 12px; color: var(--el-text-color-secondary); }
-.brand-filter-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 0.8fr) max-content; align-items: end; gap: 12px 16px; margin-bottom: 12px; }
-.brand-filter-form :deep(.el-form-item) { min-width: 0; margin: 0; }
-.brand-filter-form :deep(.el-form-item__label) { margin-bottom: 6px; padding: 0; line-height: 20px; }
-.brand-filter-form :deep(.el-form-item__content) { min-width: 0; }
-.brand-filter-form :deep(.el-select) { width: 100%; }
-.brand-filter-actions { align-self: end; }
-.brand-filter-actions :deep(.el-form-item__content) { min-height: 32px; align-items: center; }
-.option-error { padding-bottom: 12px; font-size: 12px; color: var(--el-color-danger); }
+.needs-review { color: var(--dv-warning-text); }
+.cost-page .analysis-grid.cost-chart-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.section-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 12px; }
+.section-heading h3 { margin: 0; font-size: var(--el-font-size-medium); font-weight: 600; color: var(--dv-text); }
+.section-note { font-size: var(--el-font-size-extra-small); color: var(--dv-text-muted); }
+.brand-filter-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.control-label { font-size: var(--el-font-size-extra-small); color: var(--dv-text-muted); white-space: nowrap; }
+.brand-select { width: 300px; }
+.limit-select { width: 200px; }
+.option-error { margin: -4px 0 12px; font-size: var(--el-font-size-extra-small); color: var(--el-color-danger); }
+.detail-tabs { flex: 1 1 auto; min-width: 0; }
+.detail-tabs :deep(.el-tabs__header) { margin: 0; }
+.detail-tabs :deep(.el-tabs__content) { display: none; }
+.cost-detail-card :deep(.el-card__header) { padding-top: 4px; padding-bottom: 0; }
+.detail-truncated { margin: 0 0 8px; font-size: var(--el-font-size-extra-small); color: var(--dv-warning-text); }
 .metric-select { width: 160px; }
 .cell-detail { display: block; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; margin-top: 3px; }
 .manufacturer-button { display: inline-flex; align-items: center; gap: 7px; padding: 2px 0; border: 0; color: var(--el-color-primary); background: transparent; text-align: left; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
@@ -376,9 +435,12 @@ onBeforeUnmount(() => { activeCharts = false; cancelChartFrames(); resizeObserve
 .cost-table :deep(.el-button) { white-space: normal; height: auto; text-align: left; line-height: 1.5; }
 .detail-pagination { margin-top: 10px; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .cost-brand-export-section > section { min-width: 0; }
+@media (max-width: 900px) {
+  .cost-page .analysis-grid.cost-chart-row { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 600px) {
-  .brand-filter-form { grid-template-columns: minmax(0, 1fr); }
-  .brand-filter-actions :deep(.el-button) { width: 100%; }
+  .brand-filter-form { margin-left: 0; width: 100%; }
+  .brand-select, .limit-select { width: 100%; }
   .metric-select { width: 138px; }
   .cost-page :deep(.chart-card-header) { align-items: flex-start; flex-wrap: wrap; }
 }
