@@ -1,9 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vue = require('vue');
-const { setup, plain, descendants } = require('./helpers.cjs');
+const { setup, plain, descendants, textOf: text } = require('./helpers.cjs');
 
-const text = node => descendants(node).map(item => typeof item.children === 'string' ? item.children : '').join('');
 const byClass = (nodes, name) => nodes.find(node => node.props?.class === name);
 
 test('shell puts tabs under the title, filters above the page and hands the action area to the active page', t => {

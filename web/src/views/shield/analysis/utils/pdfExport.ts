@@ -258,6 +258,9 @@ h2{font-size:12px;margin:0 0 4px;color:#111827;line-height:1.25;}
 .share-swatch{width:8px;height:8px;}
 .share-legend{font-size:9px;}
 .review-list p{margin:2px 0;font-size:9px;}
+.kpi-row{display:grid;grid-template-columns:repeat(3,1fr) auto;gap:6px;margin-bottom:4px;}
+.kpi-value{display:block;font-size:13px;font-weight:600;}
+.kpi-sub{display:block;font-size:8px;}
 .analysis-print-table{table-layout:fixed;width:100%;}
 .analysis-print-table thead{display:table-header-group;}
 .analysis-print-table tr{break-inside:avoid;page-break-inside:avoid;}

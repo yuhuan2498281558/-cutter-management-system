@@ -84,3 +84,40 @@ test('type cumulative mode draws one line per tool type with legend and taller g
   assert.deepEqual(plain(option.yAxis), { type: 'value', name: '累计更换 / 把次', minInterval: 1 });
   assert.deepEqual(plain(option.series), [{ name: '滚刀', type: 'line', color: '#3f5f7a', data: [3, 5] }, { name: '刮刀', type: 'line', color: '#b98a4a', data: [1, 2] }]);
 });
+
+const { descendants, textOf: nodeText } = require('./helpers.cjs');
+test('conclusion shows three big numbers with non-zero secondary lines, the interval aside, and non-zero review items', async t => {
+  const kpi = {
+    total_openings: 15, detail_checked_count: 0, total_replacements: 74, total_untyped: 2, avg_rings_between_openings: 9.2,
+    summary_replaced_count: 74, summary_detail_replaced_count: 76, replacement_gap: 2,
+    cost_sources: { installation: 100, confirmed_repair: 20, legacy: 30, total: 150, unresolved: 0, unresolved_count: 0, missing_price_count: 3, pending_repair_count: 0, repair_missing_price_count: 1 },
+  };
+  let current = kpi;
+  const h = harness(t, async config => ({ data: config.url.includes('cost_trend') ? { meta, items: [] } : { ...payload(), kpi: current } }));
+  await h.mount();
+  const read = () => h.nodes().filter(node => ['kpi', 'kpi kpi-minor'].includes(node.props?.class)).map(node => {
+    const parts = descendants(node);
+    return [parts.find(item => item.props?.class === 'hero-label').children, nodeText(parts.find(item => item.props?.class === 'kpi-value')),
+      parts.find(item => item.props?.class === 'kpi-sub')?.children, node.props.class === 'kpi kpi-minor'];
+  });
+  assert.deepEqual(read(), [
+    ['范围内开仓', '15次', undefined, false],
+    ['实际更换', '74把次', '含未分类更换 2 把次', false],
+    ['明确金额合计', '¥150', '缺登记价格 3 条 · 缺返修价 1 条', false],
+    ['平均开仓间隔', '9.2环', undefined, true],
+  ]);
+  const share = h.nodes().find(node => node.type?.name === 'AmountShare');
+  assert.equal(share.props.inline, ''); assert.equal(share.props.total, 150);
+  assert.deepEqual(plain(share.props.parts.map(part => [part.label, part.amount])), [['新装刀具登记', 100], ['已确认返修', 20], ['历史登记', 30]]);
+  const review = () => plain(h.nodes().find(node => node.type?.name === 'ReviewList').props.items);
+  assert.deepEqual(review().map(item => [item.name, item.pending]), [['待核对候选金额', false], ['整仓数量核对差额', true]]);
+  assert.equal(`${review()[1].lead}：${review()[1].detail}`, '整仓数量核对差额 2：已确认人工更换汇总 74，同仓全部有效明细 76');
+  assert.equal(review()[1].tip, '此处比较整仓数量；上方实际更换数随刀型、厂家筛选。');
+  assert.equal(h.nodes().some(node => ['analysis-note', 'reconciliation', 'analysis-metrics'].includes(node.props?.class)), false);
+
+  current = { ...kpi, detail_checked_count: 6, replacement_gap: 0, cost_sources: { ...kpi.cost_sources, unresolved: 50, unresolved_count: 1 } };
+  await h.state.load(); await settle();
+  assert.equal(read()[0][2], '明细有检查证据 6 条');
+  assert.deepEqual(review().map(item => [item.name, item.pending]), [['待核对候选金额', true], ['整仓数量核对差额', false]]);
+  assert.equal(`${review()[0].lead}：${review()[0].detail}`, '待核对候选金额 ¥50（1 次更换）：不计入合计');
+});

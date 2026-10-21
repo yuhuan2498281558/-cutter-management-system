@@ -1,5 +1,5 @@
 <template>
-  <div class="amount-share">
+  <div class="amount-share" :class="{ 'is-inline': inline }">
     <div class="share-bar" role="img" :aria-label="barLabel">
       <span v-for="part in rows" :key="part.label" :style="{ width: part.width, background: part.color }" />
     </div>
@@ -18,6 +18,7 @@
 
 <script setup lang="ts">
 // 合计下方的堆叠比例条和图例：每项的金额和占合计的比例；合计为 0 或缺失时占比显示"—"。
+// inline 时图例排成一行，用在一排数字下面。
 import { computed } from 'vue';
 import InfoTip from '/@/components/InfoTip.vue';
 import { formatCurrency, formatPercent } from '../utils/presentation';
@@ -25,6 +26,7 @@ import { formatCurrency, formatPercent } from '../utils/presentation';
 const props = defineProps<{
   parts: Array<{ label: string; amount: number | null | undefined; color: string; tip?: string }>;
   total: number | null | undefined;
+  inline?: boolean;
 }>();
 
 const rows = computed(() => {
@@ -55,4 +57,9 @@ const barLabel = computed(() => rows.value.map(part => `${part.label} ${part.per
 .share-swatch { display: block; width: 10px; height: 10px; border-radius: 2px; }
 .share-legend .share-amount { padding-left: 16px; text-align: right; white-space: nowrap; color: var(--dv-text); }
 .share-legend .share-percent { min-width: 56px; padding-left: 12px; text-align: right; white-space: nowrap; color: var(--dv-text-secondary); }
+.is-inline { gap: 8px; }
+.is-inline .share-bar { height: 6px; }
+.is-inline .share-legend tbody { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.is-inline .share-legend tr { display: flex; align-items: center; gap: 6px; }
+.is-inline .share-legend th, .is-inline .share-legend td, .is-inline .share-legend .share-amount, .is-inline .share-legend .share-percent { width: auto; min-width: 0; padding: 0; }
 </style>

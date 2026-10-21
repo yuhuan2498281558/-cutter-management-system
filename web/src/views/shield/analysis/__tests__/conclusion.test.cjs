@@ -1,9 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vue = require('vue');
-const { setup, plain, descendants } = require('./helpers.cjs');
-
-const text = node => descendants(node).map(item => typeof item.children === 'string' ? item.children : '').join('');
+const { setup, plain, descendants, textOf: text } = require('./helpers.cjs');
 
 test('amount shares divide by the total and show — when the total is zero or missing', t => {
   const parts = [
@@ -53,6 +51,19 @@ test('review list shows only non-zero items, folds zero items into one line, and
   assert.equal(lines().length, 4); assert.ok(lines().every(([name]) => name === 'review-item'), 'no zero line when every item is pending');
   h.props.items = items.map(item => ({ ...item, pending: false }));
   assert.deepEqual(lines(), [['review-quiet', '没有需要核对的记录']]);
+  h.props.items = [{ ...items[1], tip: '此处比较整仓数量' }, items[0]];
+  const item = h.nodes().find(node => node.props?.class === 'review-item');
+  assert.equal(descendants(item).find(node => node.type?.name === 'InfoTip').props.content, '此处比较整仓数量');
+});
+
+test('the inline share keeps the same amounts and percentages on one line', t => {
+  const parts = [{ label: '新装刀具登记', amount: 30, color: '#3f5f7a' }, { label: '已确认返修', amount: 10, color: '#6f8f6a' }];
+  const h = setup(t, 'components/AmountShare.vue', { props: { parts, total: 40, inline: true } });
+  const root = h.nodes()[0];
+  assert.deepEqual(plain(root.props.class), 'amount-share is-inline');
+  assert.deepEqual(h.nodes().filter(node => node.props?.class === 'share-percent').map(node => node.children), ['75.0%', '25.0%']);
+  h.props.inline = false;
+  assert.equal(h.nodes()[0].props.class, 'amount-share');
 });
 
 test('a chart card heading slot replaces the title, keeping toolbar and body states', t => {

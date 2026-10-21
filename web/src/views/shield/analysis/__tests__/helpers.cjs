@@ -100,6 +100,8 @@ function setup(t, filename, options = {}) {
     mount: async () => { await Promise.all(hooks.onMounted.map(fn => fn())); await settle(); },
   };
 }
+// 节点里显示出来的文字（不含 v-if 留下的注释占位）
+const textOf = node => descendants(node).filter(item => item.type !== vue.Comment).map(item => typeof item.children === 'string' ? item.children : '').join('');
 // 只加载图表配置模块时用：chartTheme.ts 在加载时向 echarts 注册主题
 const echartsStub = { registerTheme() {} };
-module.exports = { root, plain, settle, deferred, compile, descendants, setup, echartsStub };
+module.exports = { root, plain, settle, deferred, compile, descendants, textOf, setup, echartsStub };

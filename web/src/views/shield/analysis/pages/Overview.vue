@@ -3,23 +3,21 @@
     <AnalysisActions :target="actionsTarget" :generated-at="data?.overview.meta?.generated_at" :refresh="load" :refreshing="loading"
       :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
     <ScopeSummary :meta="data?.overview.meta" />
-    <div v-if="data" class="analysis-metrics">
-      <div class="analysis-metric"><span>范围内开仓</span><strong>{{ formatNumber(kpi?.total_openings) }} 次</strong><small>明细有检查证据 {{ formatNumber(kpi?.detail_checked_count) }} 条</small></div>
-      <div class="analysis-metric"><span>实际更换明细</span><strong>{{ formatNumber(kpi?.total_replacements) }} 把次</strong><small>含未分类更换 {{ formatNumber(kpi?.total_untyped) }} 把次</small></div>
-      <div class="analysis-metric"><span>新装刀具登记金额</span><strong>{{ formatCurrency(sources?.installation) }}</strong><small>缺登记价格 {{ formatNumber(sources?.missing_price_count) }} 条</small></div>
-      <div class="analysis-metric"><span>已确认返修登记金额</span><strong>{{ formatCurrency(sources?.confirmed_repair) }}</strong><small>待反馈 {{ formatNumber(sources?.pending_repair_count) }} 条 · 缺返修价 {{ formatNumber(sources?.repair_missing_price_count) }} 条</small></div>
-    </div>
-    <p v-if="data" class="analysis-note">
-      明确金额合计 {{ formatCurrency(sources?.total) }}，其中历史登记 {{ formatCurrency(sources?.legacy) }}；
-      待核对候选金额 {{ formatCurrency(sources?.unresolved) }}（{{ formatNumber(sources?.unresolved_count) }} 次更换）不计入合计。
-      平均开仓间隔 {{ formatNumber(kpi?.avg_rings_between_openings, 1) }} 环。
-    </p>
-    <div v-if="data" class="reconciliation">
-      <strong>整仓数量核对</strong>
-      <span>已确认人工更换汇总 {{ formatNumber(kpi?.summary_replaced_count) }}</span>
-      <span>同仓全部有效明细 {{ formatNumber(kpi?.summary_detail_replaced_count) }}</span>
-      <span :class="{ discrepancy: kpi?.replacement_gap }">差额 {{ formatNumber(kpi?.replacement_gap) }}</span>
-      <small>此处比较整仓数量；上方实际更换数随刀型、厂家筛选。</small>
+    <div v-if="data" class="analysis-hero">
+      <section class="hero-card">
+        <div class="kpi-row">
+          <div v-for="item in kpis" :key="item.label" class="kpi" :class="{ 'kpi-minor': item.minor }">
+            <span class="hero-label">{{ item.label }}</span>
+            <strong class="kpi-value">{{ item.value }}<small v-if="item.unit">{{ item.unit }}</small></strong>
+            <span v-if="item.sub" class="kpi-sub">{{ item.sub }}</span>
+          </div>
+        </div>
+        <AmountShare inline :parts="shareParts" :total="sources?.total" />
+      </section>
+      <section class="hero-card">
+        <h4 class="hero-card-title">需要核对</h4>
+        <ReviewList :items="reviewItems" />
+      </section>
     </div>
     <div class="analysis-grid">
       <ChartCard title="更换消耗与刀具费用" description="按开仓环号归集；返修在确认后归回拆除开仓" :loading="loading" :error="error" :is-empty="!data?.trend.items.length" chart-height="340px" @retry="load">
@@ -53,10 +51,13 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import * as echarts from 'echarts';
+import AmountShare from '../components/AmountShare.vue';
 import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
+import ReviewList from '../components/ReviewList.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getCostTrend, getOverview } from '../api';
+import { CHART_COLORS } from '../utils/chartTheme';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { analysisExportMeta, formatCurrency, formatNumber, requireAnalysisV2, STATUS_LABELS } from '../utils/presentation';
 import { buildOverviewTrendOption, buildOverviewTypeOption } from '../utils/overviewChartOptions';
@@ -75,6 +76,37 @@ const { data, loading, error, ready, load } = useAnalysisQuery(() => props.filte
 });
 const kpi = computed(() => data.value?.overview.kpi);
 const sources = computed(() => kpi.value?.cost_sources);
+// 数字下的次要行只在不为 0 时显示
+const nonZero = (value: unknown, text: string) => (Number(value) ? text : '');
+const kpis = computed(() => {
+  const value = kpi.value;
+  const money = sources.value;
+  return [
+    { label: '范围内开仓', value: formatNumber(value?.total_openings), unit: '次', sub: nonZero(value?.detail_checked_count, `明细有检查证据 ${formatNumber(value?.detail_checked_count)} 条`) },
+    { label: '实际更换', value: formatNumber(value?.total_replacements), unit: '把次', sub: nonZero(value?.total_untyped, `含未分类更换 ${formatNumber(value?.total_untyped)} 把次`) },
+    { label: '明确金额合计', value: formatCurrency(money?.total), unit: '', sub: [
+      nonZero(money?.missing_price_count, `缺登记价格 ${formatNumber(money?.missing_price_count)} 条`),
+      nonZero(money?.pending_repair_count, `待反馈 ${formatNumber(money?.pending_repair_count)} 条`),
+      nonZero(money?.repair_missing_price_count, `缺返修价 ${formatNumber(money?.repair_missing_price_count)} 条`),
+    ].filter(Boolean).join(' · ') },
+    { label: '平均开仓间隔', value: formatNumber(value?.avg_rings_between_openings, 1), unit: '环', sub: '', minor: true },
+  ];
+});
+const shareParts = computed(() => [
+  { label: '新装刀具登记', amount: sources.value?.installation, color: CHART_COLORS.primary },
+  { label: '已确认返修', amount: sources.value?.confirmed_repair, color: CHART_COLORS.good },
+  { label: '历史登记', amount: sources.value?.legacy, color: CHART_COLORS.neutral },
+]);
+const reviewItems = computed(() => {
+  const value = kpi.value;
+  const money = sources.value;
+  return [
+    { name: '待核对候选金额', pending: Boolean(Number(money?.unresolved)), lead: `待核对候选金额 ${formatCurrency(money?.unresolved)}（${formatNumber(money?.unresolved_count)} 次更换）`, detail: '不计入合计' },
+    { name: '整仓数量核对差额', pending: Boolean(Number(value?.replacement_gap)), lead: `整仓数量核对差额 ${formatNumber(value?.replacement_gap)}`,
+      detail: `已确认人工更换汇总 ${formatNumber(value?.summary_replaced_count)}，同仓全部有效明细 ${formatNumber(value?.summary_detail_replaced_count)}`,
+      tip: '此处比较整仓数量；上方实际更换数随刀型、厂家筛选。' },
+  ];
+});
 const trendMode = ref('ring');
 const typeMode = ref('total');
 const trendRef = ref<HTMLElement | null>(null);
@@ -116,7 +148,15 @@ onBeforeUnmount(() => { clearTimeout(resizeTimer); observer?.disconnect(); windo
 <style scoped>
 .overview-page { min-width: 0; padding-bottom: 12px; }
 .overview-chart { width: 100%; height: 340px; }
-.reconciliation { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 12px; margin-bottom: 12px; background: var(--el-fill-color-light); border-left: 3px solid var(--el-border-color); font-size: 12px; line-height: 1.7; }
-.reconciliation small { flex-basis: 100%; color: var(--el-text-color-secondary); }
-.discrepancy { color: var(--el-color-warning-dark-2); font-weight: 600; }
+.kpi-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px 20px; align-items: start; }
+.kpi { display: grid; gap: 4px; min-width: 0; }
+.kpi-value { font-size: 28px; font-weight: 600; line-height: 1.15; color: var(--dv-text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kpi-value small { margin-left: 3px; font-size: var(--el-font-size-small); font-weight: 400; color: var(--dv-text-secondary); }
+.kpi-sub { font-size: var(--el-font-size-extra-small); color: var(--dv-text-secondary); }
+.kpi-minor { padding-left: 20px; border-left: 1px solid var(--el-border-color); }
+.kpi-minor .kpi-value { font-size: var(--el-font-size-extra-large); }
+@media (max-width: 760px) {
+  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-minor { padding-left: 0; border-left: 0; }
+}
 </style>
