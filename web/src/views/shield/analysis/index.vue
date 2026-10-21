@@ -63,6 +63,14 @@ function onFilterChange(filter: AnalysisFilter) {
 .analysis-container :deep(.hero-stat) { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; padding-bottom: 14px; }
 .analysis-container :deep(.hero-stat-value) { font-size: var(--el-font-size-extra-large); font-weight: 600; color: var(--dv-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .analysis-container :deep(.hero-card-title) { margin: 0; font-size: var(--el-font-size-small); font-weight: 600; color: var(--dv-text); }
+.analysis-container :deep(.hero-sub) { display: flex; align-items: center; gap: 6px; font-size: var(--el-font-size-small); color: var(--dv-text-secondary); font-variant-numeric: tabular-nums; }
+.analysis-container :deep(.hero-stat-main) { display: grid; justify-items: end; gap: 2px; }
+.analysis-container :deep(.hero-stat-sub) { font-size: var(--el-font-size-extra-small); color: var(--dv-text-secondary); }
+/* 两张以上明细表合成的卡片：页签当卡片标题 */
+.analysis-container :deep(.analysis-detail-card .el-card__header) { padding-top: 4px; padding-bottom: 0; }
+.analysis-container :deep(.detail-tabs) { flex: 1 1 auto; min-width: 0; }
+.analysis-container :deep(.detail-tabs .el-tabs__header) { margin: 0; }
+.analysis-container :deep(.detail-tabs .el-tabs__content) { display: none; }
 .analysis-container :deep(.analysis-note) { margin: 8px 0 12px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.7; }
 .analysis-container :deep(.analysis-grid) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .analysis-container :deep(.analysis-metrics) { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-bottom: 14px; border: 1px solid var(--el-border-color-light); border-radius: 6px; overflow: hidden; background: var(--el-border-color-lighter); }

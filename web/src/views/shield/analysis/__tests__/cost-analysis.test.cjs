@@ -36,7 +36,7 @@ function fixture(config) {
 function create(t, options = {}) { return setup(t, 'pages/CostAnalysis.vue', { request: fixture, ...options }); }
 function bindCharts(s) { for (const key of ['compositionRef', 'costTrendRef', 'typeRef', 'relationshipRef', 'brandTrendRef']) s[key].value = { key }; s.renderCharts(); }
 const latest = (result, key) => result.charts.find(chart => chart.element.key === key)?.options.at(-1);
-const detailCard = result => result.nodes().find(node => node.props?.class === 'cost-detail-card');
+const detailCard = result => result.nodes().find(node => node.props?.class === 'analysis-detail-card');
 
 test('real GET calls retain inherited strata while local manufacturer selections only narrow scope', async t => {
   const r = create(t, { props: { filter: { summary_status: 'CONFIRMED', project: 4, shield_machine: 9, start_ring: '100', end_ring: '200', manufacturers: 'A,B', stratum_types: 'ROCK' } } });

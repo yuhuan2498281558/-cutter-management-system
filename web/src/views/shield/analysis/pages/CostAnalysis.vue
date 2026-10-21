@@ -95,7 +95,7 @@
         </section>
       </div>
     </section>
-    <ChartCard class="cost-detail-card" chart-height="auto" :loading="detailState.loading" :error="detailState.error" :is-empty="detailState.empty" @retry="detailState.retry">
+    <ChartCard class="analysis-detail-card" chart-height="auto" :loading="detailState.loading" :error="detailState.error" :is-empty="detailState.empty" @retry="detailState.retry">
       <template #heading>
         <el-tabs v-model="detailTab" class="detail-tabs">
           <el-tab-pane :label="costReady ? `费用来源明细 · ${formatNumber(sourceRows.length)} 条` : '费用来源明细'" name="sources" />
@@ -418,10 +418,6 @@ onBeforeUnmount(() => { activeCharts = false; cancelChartFrames(); resizeObserve
 .brand-select { width: 300px; }
 .limit-select { width: 200px; }
 .option-error { margin: -4px 0 12px; font-size: var(--el-font-size-extra-small); color: var(--el-color-danger); }
-.detail-tabs { flex: 1 1 auto; min-width: 0; }
-.detail-tabs :deep(.el-tabs__header) { margin: 0; }
-.detail-tabs :deep(.el-tabs__content) { display: none; }
-.cost-detail-card :deep(.el-card__header) { padding-top: 4px; padding-bottom: 0; }
 .detail-truncated { margin: 0 0 8px; font-size: var(--el-font-size-extra-small); color: var(--dv-warning-text); }
 .metric-select { width: 160px; }
 .cell-detail { display: block; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; margin-top: 3px; }
