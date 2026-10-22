@@ -32,10 +32,10 @@
 	// 清掉主题缓存后由这里兜底，取值与 stores/themeConfig.ts 的默认值一致
 	--next-bg-topBar: var(--dv-surface);
 	--next-bg-topBarColor: var(--dv-text-secondary);
-	--next-bg-menuBar: var(--dv-surface-muted);
+	--next-bg-menuBar: var(--dv-side-top);
 	--next-bg-menuBarColor: var(--dv-text-nav);
-	--next-bg-menuBarActiveColor: var(--dv-selected);
-	--next-bg-columnsMenuBar: var(--dv-surface-muted);
+	--next-bg-menuBarActiveColor: var(--dv-raise);
+	--next-bg-columnsMenuBar: var(--dv-side-top);
 	--next-bg-columnsMenuBarColor: var(--dv-text-nav);
 }
 
@@ -51,7 +51,8 @@ body,
 	-webkit-font-smoothing: antialiased;
 	-webkit-tap-highlight-color: transparent;
 	background-color: var(--next-bg-main-color);
-	font-size: 14px;
+	font-size: var(--dv-font-size);
+	line-height: var(--dv-line-height);
 	overflow: hidden;
 	position: relative;
 }

@@ -49,6 +49,7 @@
 	--el-border-radius-round: var(--dv-radius-pill);
 
 	--el-font-family: var(--dv-font-sans);
+	--el-font-size-base: var(--dv-font-size);
 
 	// 卡片不用阴影（见 Card 一节）；弹窗、下拉、气泡统一用一档柔和阴影
 	--el-box-shadow: var(--dv-shadow-overlay);

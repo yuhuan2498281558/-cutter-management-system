@@ -18,7 +18,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 全局主题
 			 */
 			// 默认 primary 主题颜色
-			primary: '#1f1e1d',
+			primary: '#c6613f',
 			// 是否开启深色模式
 			isIsDark: false,
 
@@ -26,9 +26,9 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 顶栏设置
 			 */
 			// 默认顶栏导航背景颜色
-			topBar: '#ffffff',
+			topBar: '#fffefb',
 			// 默认顶栏导航字体颜色
-			topBarColor: '#6b6962',
+			topBarColor: '#73726c',
 			// 是否开启顶栏背景颜色渐变
 			isTopBarColorGradual: false,
 
@@ -36,11 +36,11 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 菜单设置
 			 */
 			// 默认菜单导航背景颜色
-			menuBar: '#efede6',
+			menuBar: '#f9f8f3',
 			// 默认菜单导航字体颜色
-			menuBarColor: '#3d3b36',
+			menuBarColor: '#3d3d3a',
 			// 默认菜单高亮背景色
-			menuBarActiveColor: '#e2dfd5',
+			menuBarActiveColor: '#ffffff',
 			// 是否开启菜单背景颜色渐变
 			isMenuBarColorGradual: false,
 
@@ -48,9 +48,9 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 分栏设置
 			 */
 			// 默认分栏菜单背景颜色
-			columnsMenuBar: '#efede6',
+			columnsMenuBar: '#f9f8f3',
 			// 默认分栏菜单字体颜色
-			columnsMenuBarColor: '#3d3b36',
+			columnsMenuBarColor: '#3d3d3a',
 			// 是否开启分栏菜单背景颜色渐变
 			isColumnsMenuBarColorGradual: false,
 			// 是否开启分栏菜单鼠标悬停预加载(预览菜单)
@@ -125,7 +125,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 中的 `initSetLayoutChange(设置布局切换，重置主题样式)` 方法
 			 */
 			// 布局切换：可选值"<defaults|classic|transverse|columns>"，默认 defaults
-			layout: 'transverse',
+			layout: 'defaults',
 
 			/**
 			 * 后端控制路由
