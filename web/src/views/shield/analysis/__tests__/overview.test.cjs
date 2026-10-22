@@ -120,4 +120,10 @@ test('conclusion shows three big numbers with non-zero secondary lines, the inte
   assert.equal(read()[0][2], '明细有检查证据 6 条');
   assert.deepEqual(review().map(item => [item.name, item.pending]), [['待核对候选金额', true], ['整仓数量核对差额', false]]);
   assert.equal(`${review()[0].lead}：${review()[0].detail}`, '待核对候选金额 ¥50（1 次更换）：不计入合计');
+
+  // 历史维修价和返修价都为 0：金额 0，但仍有 1 次待核对
+  current = { ...kpi, replacement_gap: 0, cost_sources: { ...kpi.cost_sources, unresolved: 0, unresolved_count: 1 } };
+  await h.state.load(); await settle();
+  assert.deepEqual(review().map(item => [item.name, item.pending]), [['待核对候选金额', true], ['整仓数量核对差额', false]]);
+  assert.equal(`${review()[0].lead}：${review()[0].detail}`, '待核对候选金额 ¥0（1 次更换）：不计入合计');
 });

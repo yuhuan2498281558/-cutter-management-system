@@ -101,7 +101,8 @@ const reviewItems = computed(() => {
   const value = kpi.value;
   const money = sources.value;
   return [
-    { name: '待核对候选金额', pending: Boolean(Number(money?.unresolved)), lead: `待核对候选金额 ${formatCurrency(money?.unresolved)}（${formatNumber(money?.unresolved_count)} 次更换）`, detail: '不计入合计' },
+    // 历史维修价和返修价都为 0 时，后端返回待核对 1 次、金额 0，也要列出
+    { name: '待核对候选金额', pending: Number(money?.unresolved_count) > 0 || Boolean(Number(money?.unresolved)), lead: `待核对候选金额 ${formatCurrency(money?.unresolved)}（${formatNumber(money?.unresolved_count)} 次更换）`, detail: '不计入合计' },
     { name: '整仓数量核对差额', pending: Boolean(Number(value?.replacement_gap)), lead: `整仓数量核对差额 ${formatNumber(value?.replacement_gap)}`,
       detail: `已确认人工更换汇总 ${formatNumber(value?.summary_replaced_count)}，同仓全部有效明细 ${formatNumber(value?.summary_detail_replaced_count)}`,
       tip: '此处比较整仓数量；上方实际更换数随刀型、厂家筛选。' },
