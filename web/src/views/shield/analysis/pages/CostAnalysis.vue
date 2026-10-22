@@ -1,6 +1,6 @@
 <template>
   <div ref="pageRef" class="cost-page">
-    <AnalysisActions :target="actionsTarget" :generated-at="costOverview?.meta?.generated_at" :refresh="loadData" :refreshing="costLoading" :exports="[
+    <AnalysisActions :target="actionsTarget" :generated-at="costOverview?.meta?.generated_at" :refresh="refreshAll" :refreshing="costLoading || brandLoading" :exports="[
       { label: '费用来源 PDF', disabled: !costReady, run: exportCompositionPdf },
       { label: '厂家表现 PDF', disabled: !brandReady, run: exportTrendPdf },
     ]" />
@@ -223,6 +223,8 @@ const { data: brandResult, loading: brandLoading, error: brandError, ready: bran
 const { data: optionData, loading: optionsLoading, error: optionsError, load: loadOptions } = useAnalysisQuery<OptionData>(
   () => props.filter, async filter => (await getFilterOptions(filter)).data,
 );
+// 标题行的"刷新"重载整页：费用数据和厂家数据，两者都结束前按钮保持禁用（refreshing 取两者的 loading）
+function refreshAll() { return Promise.all([loadData(), loadBrandData()]); }
 const costOverview = computed(() => costResult.value?.overview);
 const costTrend = computed(() => costResult.value?.trend);
 const sources = computed(() => costOverview.value?.cost_sources);

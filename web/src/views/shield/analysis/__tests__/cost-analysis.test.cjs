@@ -473,3 +473,19 @@ test('cost trend builder switches only the count or cumulative series and its ax
   assert.deepEqual(plain(consumption.yAxis[1]), { type: 'value', name: '更换数量（把）', minInterval: 1 });
   assert.deepEqual(plain(cumulative.yAxis[1]), { type: 'value', name: '累计金额（元）' });
 });
+
+test('the title-row refresh reloads cost and manufacturer data and stays busy until both finish', async t => {
+  let hold = null;
+  const r = create(t, { request: config => hold && /brand_/.test(config.url) ? hold.promise.then(() => fixture(config)) : fixture(config) });
+  await r.mount();
+  const actions = () => r.nodes().find(node => node.type?.name === 'AnalysisActions');
+  assert.equal(actions().props.refresh, r.state.refreshAll); assert.equal(actions().props.refreshing, false);
+  hold = deferred(); r.requests.length = 0;
+  const done = actions().props.refresh(); await settle();
+  assert.deepEqual(r.requests.map(call => call.url.split('/').at(-2)).sort(), ['brand_cost', 'brand_performance_trend', 'brand_price_trend', 'cost_overview', 'cost_trend']);
+  assert.equal(r.state.costLoading.value, false, 'cost data is already back');
+  assert.equal(actions().props.refreshing, true, 'still busy while manufacturer data loads');
+  hold.resolve(); await done; await settle();
+  assert.equal(actions().props.refreshing, false);
+  assert.equal(r.state.costReady.value, true); assert.equal(r.state.brandReady.value, true);
+});

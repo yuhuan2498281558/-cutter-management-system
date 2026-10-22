@@ -43,7 +43,6 @@ function onFilterChange(filter: AnalysisFilter) {
 <style scoped>
 .analysis-container {
   padding: var(--dv-page-gutter);
-  background: var(--dv-bg);
   min-height: 100%;
   min-width: 0;
 }

@@ -40,6 +40,7 @@ export interface AnalysisMeta {
   excluded_invalid_ring_opening_count?: number;
   filter_capabilities?: string[];
   blade_track_basis?: string;
+  stratum_basis?: string;
 }
 
 export interface CostSources {

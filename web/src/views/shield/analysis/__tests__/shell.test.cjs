@@ -151,3 +151,26 @@ test('card looks are defined once in the shell through theme variables, and ever
   assert.match(read('components/ChartCard.vue'), /<el-card class="chart-card analysis-card"/);
   assert.match(read('pages/CustomAnalysis.vue'), /<el-card class="custom-config-card analysis-card/);
 });
+
+test('scope details state the stratum basis only when a stratum is selected', t => {
+  const meta = { opening_count: 3, summary_status: 'CONFIRMED', warnings: [], scope: {}, stratum_basis: '按同项目上次开仓之后至本次开仓的逐环地层筛选。' };
+  const h = setup(t, 'components/ScopeSummary.vue', { props: { meta } });
+  const lines = () => descendants(byClass(h.nodes(), 'scope-details analysis-card')).filter(node => node.type === 'p').map(text);
+  assert.equal(lines().some(line => /地层/.test(line)), false);
+  h.props.meta = { ...meta, scope: { stratum_type: 'ROCK' } };
+  assert.ok(lines().includes('按同项目上次开仓之后至本次开仓的逐环地层筛选。'), 'uses the backend basis');
+  h.props.meta = { ...meta, stratum_basis: undefined, scope: { stratum_types: ['ROCK'] } };
+  assert.ok(lines().includes('地层类型按各次开仓所在环段筛选'), 'falls back when the backend sends no basis');
+  h.props.meta = { ...meta, scope: { stratum_types: [], stratum_type: ' ' } };
+  assert.equal(lines().some(line => /地层/.test(line)), false);
+});
+
+test('the analysis shell leaves the page background to the layout', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { root } = require('./helpers.cjs');
+  const css = fs.readFileSync(path.resolve(root, 'index.vue'), 'utf8').split('<style')[1];
+  const container = css.match(/\n\.analysis-container \{([^}]*)\}/)[1];
+  assert.doesNotMatch(container, /background/);
+  assert.match(container, /padding: var\(--dv-page-gutter\)/);
+});
