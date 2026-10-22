@@ -4,7 +4,7 @@
       :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
     <ScopeSummary :meta="data?.overview.meta" />
     <div v-if="data" class="analysis-hero">
-      <section class="hero-card">
+      <section class="hero-card analysis-card">
         <div class="kpi-row">
           <div v-for="item in kpis" :key="item.label" class="kpi" :class="{ 'kpi-minor': item.minor }">
             <span class="hero-label">{{ item.label }}</span>
@@ -14,7 +14,7 @@
         </div>
         <AmountShare inline :parts="shareParts" :total="sources?.total" />
       </section>
-      <section class="hero-card">
+      <section class="hero-card analysis-card">
         <h4 class="hero-card-title">需要核对</h4>
         <ReviewList :items="reviewItems" />
       </section>

@@ -4,7 +4,7 @@
       <span class="scope-counts">{{ countsText }}</span>
       <span class="scope-toggle">统计口径与已排除记录</span>
     </summary>
-    <div class="scope-details">
+    <div class="scope-details analysis-card">
       <p v-if="meta.draft_opening_count">工程范围草稿 {{ meta.draft_opening_count }} 次{{ meta.summary_status === 'CONFIRMED' ? '（未纳入）' : '（已按当前状态选择）' }}</p>
       <p v-if="meta.unobserved_count">{{ meta.unobserved_count }} 条预建未观察记录未纳入</p>
       <p v-if="meta.excluded_inactive_count">{{ meta.excluded_inactive_count }} 条历史无效刀位已排除</p>
@@ -37,6 +37,6 @@ const countsText = computed(() => {
 .analysis-scope summary:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
 .scope-counts { font-variant-numeric: tabular-nums; }
 .scope-toggle { color: var(--dv-text); border-bottom: 1px dashed var(--dv-text-muted); }
-.scope-details { margin-top: 6px; padding: 8px 12px; border: 1px solid var(--el-border-color); border-radius: var(--dv-radius); background: var(--dv-surface); }
+.scope-details { margin-top: 6px; padding: 8px 12px; }
 .scope-details p { margin: 2px 0; }
 </style>

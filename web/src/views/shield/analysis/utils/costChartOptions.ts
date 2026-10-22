@@ -1,6 +1,6 @@
 import { CHART_COLORS, DV_PALETTE, TOOL_TYPE_LABELS, TOOLTIP_STYLE, DEFAULT_GRID } from './chartTheme';
 import { escapeHtml, formatCurrency, formatNumber, formatPercent } from './presentation';
-import type { BrandCostItem, BrandPerfTrendSeries, BrandPriceTrendData, BrandPriceTrendSeries, CostSources, CostTrendItem, CostTypeBreakdownItem } from '../types';
+import type { BrandCostItem, BrandPerfTrendSeries, BrandPriceTrendData, BrandPriceTrendSeries, CostTrendItem, CostTypeBreakdownItem } from '../types';
 
 const sourceConfig = [
   { key: 'installation', trend: 'installation_cost', name: '新装登记', color: CHART_COLORS.primary },
@@ -14,16 +14,6 @@ export function manufacturerColor(name: string) { let hash = 0; for (const chara
 
 // 格式化已拆刀服役环数。
 export function serviceValue(value: unknown) { return value == null ? '无闭合样本' : `${formatNumber(value, 1)} 环`; }
-
-// 构造费用来源构成图配置。
-export function buildCompositionOption(sources: CostSources) {
-  return {
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', valueFormatter: (value: number) => formatCurrency(value) },
-    legend: { bottom: 0 }, grid: { left: 28, right: 30, top: 16, bottom: 48, containLabel: true },
-    xAxis: { type: 'value', name: '元' }, yAxis: { type: 'category', data: ['明确金额'], axisTick: { show: false } },
-    series: sourceConfig.map(item => ({ name: item.name, type: 'bar', stack: 'sources', barMaxWidth: 32, color: item.color, data: [sources[item.key]] })),
-  };
-}
 
 // 构造开仓环号费用趋势图配置。
 export function buildCostTrendOption(costTrend: { items: CostTrendItem[] } | undefined, costMode: string) {

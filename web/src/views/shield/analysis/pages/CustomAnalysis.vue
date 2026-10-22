@@ -3,7 +3,7 @@
     <AnalysisActions :target="actionsTarget" :generated-at="chartData?.meta?.generated_at"
       :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
 
-    <el-card class="custom-config-card analysis-no-export" shadow="never">
+    <el-card class="custom-config-card analysis-card analysis-no-export" shadow="never">
       <el-form :model="form" :disabled="fieldsLoading || !fieldConfig" label-position="top" class="custom-config-form">
         <el-form-item label="图表类型">
           <el-radio-group v-model="form.chart_type" @change="onChartTypeChange">
@@ -362,7 +362,6 @@ watch(chartHeight, async () => {
 
 .custom-config-card {
   margin-bottom: 12px;
-  border-radius: 8px;
 }
 
 .custom-config-card :deep(.el-card__body) {

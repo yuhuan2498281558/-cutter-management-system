@@ -117,7 +117,7 @@ test('conclusion leads with the abnormal share; counts and wear basis move to th
   assert.equal(textOf(parts.find(node => node.props?.class === 'hero-sub')), '非正常 1 / 已分类 4');
   const tips = parts.filter(node => node.type?.name === 'InfoTip').map(node => node.props.content);
   assert.deepEqual(tips, ['非正常样本数 ÷ 已分类磨损样本数', '正常 3 · 非正常 1', '来自明确检查 / 更换等证据，非整仓人工汇总数', '含未记录或未识别，不计入比例分母']);
-  const stats = parts.filter(node => node.props?.class === 'hero-card hero-stat').map(node => [
+  const stats = parts.filter(node => node.props?.class === 'hero-card hero-stat analysis-card').map(node => [
     descendants(node).find(item => item.props?.class === 'hero-label').children[0].children,
     descendants(node).find(item => item.props?.class === 'hero-stat-value').children,
     descendants(node).find(item => item.props?.class === 'hero-stat-sub')?.children,

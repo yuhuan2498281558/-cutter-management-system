@@ -1,5 +1,5 @@
 <template>
-  <el-card class="chart-card" shadow="never" :style="{ height: height || 'auto' }">
+  <el-card class="chart-card analysis-card" shadow="never" :style="{ height: height || 'auto' }">
     <template #header>
       <div class="chart-card-header">
         <div class="chart-heading">
@@ -51,8 +51,6 @@ const chartHeight = computed(() => props.chartHeight || '300px');
 
 <style scoped>
 .chart-card {
-  border: 1px solid var(--el-border-color);
-  border-radius: var(--dv-radius-lg);
   margin-bottom: 12px;
   min-width: 0;
 }

@@ -54,10 +54,17 @@ function onFilterChange(filter: AnalysisFilter) {
 .analysis-tabs :deep(.el-tabs__header) { margin: 0; }
 .analysis-tabs :deep(.el-tabs__content) { display: none; }
 .analysis-content { min-width: 0; }
+/* 数据分析里所有卡片的外观只在这里定义一次（图表卡片、结论卡片都带 analysis-card） */
+.analysis-container :deep(.analysis-card) {
+  background: var(--dv-card-bg, var(--el-bg-color));
+  border: 1px solid var(--dv-card-border, var(--el-border-color));
+  border-radius: var(--dv-radius-card, var(--dv-radius-lg));
+  box-shadow: var(--dv-shadow-card, none);
+}
 /* 各页结论区：左边主结论，右边次要数字和"需要核对" */
 .analysis-container :deep(.analysis-hero) { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
 .analysis-container :deep(.hero-side) { display: grid; grid-template-rows: auto 1fr; gap: 12px; min-width: 0; }
-.analysis-container :deep(.hero-card) { display: grid; gap: 12px; align-content: start; min-width: 0; padding: 16px 18px; background: var(--dv-surface); border: 1px solid var(--el-border-color); border-radius: var(--dv-radius-lg); }
+.analysis-container :deep(.hero-card) { display: grid; gap: 12px; align-content: start; min-width: 0; padding: 16px 18px; }
 .analysis-container :deep(.hero-label) { display: flex; align-items: center; gap: 6px; font-size: var(--el-font-size-small); color: var(--dv-text-secondary); }
 .analysis-container :deep(.hero-value) { font-size: 34px; font-weight: 600; line-height: 1.1; color: var(--dv-text); font-variant-numeric: tabular-nums; }
 .analysis-container :deep(.hero-stat) { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; padding-bottom: 14px; }
@@ -73,17 +80,8 @@ function onFilterChange(filter: AnalysisFilter) {
 .analysis-container :deep(.detail-tabs .el-tabs__content) { display: none; }
 .analysis-container :deep(.analysis-note) { margin: 8px 0 12px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.7; }
 .analysis-container :deep(.analysis-grid) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.analysis-container :deep(.analysis-metrics) { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-bottom: 14px; border: 1px solid var(--el-border-color-light); border-radius: 6px; overflow: hidden; background: var(--el-border-color-lighter); }
-.analysis-container :deep(.analysis-metric) { padding: 14px 16px; background: var(--el-bg-color); }
-.analysis-container :deep(.analysis-metric span) { display: block; font-size: 12px; color: var(--el-text-color-secondary); }
-.analysis-container :deep(.analysis-metric strong) { display: block; margin-top: 7px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--el-text-color-primary); }
-.analysis-container :deep(.analysis-metric small) { display: block; margin-top: 5px; font-size: 12px; color: var(--el-text-color-secondary); }
 @media (max-width: 900px) {
   .analysis-container :deep(.analysis-hero) { grid-template-columns: minmax(0, 1fr); }
   .analysis-container :deep(.analysis-grid) { grid-template-columns: 1fr; }
-  .analysis-container :deep(.analysis-metrics) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 600px) {
-  .analysis-container :deep(.analysis-metric) { padding: 12px; }
 }
 </style>

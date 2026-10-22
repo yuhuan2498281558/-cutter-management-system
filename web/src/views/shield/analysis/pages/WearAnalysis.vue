@@ -8,17 +8,17 @@
         <p>当前页面展示现场磨损观察。“轻微磨损”“无异常”归正常，“中度磨损”“异常磨损”归非正常，比例不等于设备故障率。100% 表示当前已分类样本全部归为非正常；未记录或未识别的描述不参与分母，原始描述保留。厂家检查结果仍在旧刀返修记录；筛选厂家时按已确认旧刀配对归属原安装厂家。</p>
       </ScopeSummary>
       <div v-if="wearDist" class="analysis-hero">
-        <section class="hero-card">
+        <section class="hero-card analysis-card">
           <div class="hero-label">已分类样本的非正常比例<InfoTip content="非正常样本数 ÷ 已分类磨损样本数" /></div>
           <strong class="hero-value">{{ formatPercent(overallRate) }}</strong>
           <div class="hero-sub">非正常 {{ formatNumber(wearDist.abnormal_count) }} / 已分类 {{ formatNumber(wearDist.wear_recorded_count) }}<InfoTip :content="`正常 ${formatNumber(wearDist.normal_count)} · 非正常 ${formatNumber(wearDist.abnormal_count)}`" /></div>
         </section>
         <div class="hero-side">
-          <section class="hero-card hero-stat">
+          <section class="hero-card hero-stat analysis-card">
             <span class="hero-label">有效观察明细<InfoTip content="来自明确检查 / 更换等证据，非整仓人工汇总数" /></span>
             <strong class="hero-stat-value">{{ formatNumber(wearDist.checked_count) }}</strong>
           </section>
-          <section class="hero-card hero-stat">
+          <section class="hero-card hero-stat analysis-card">
             <span class="hero-label">磨损未分类<InfoTip content="含未记录或未识别，不计入比例分母" /></span>
             <span class="hero-stat-main">
               <strong class="hero-stat-value">{{ formatNumber(wearDist.unrecorded_count) }}</strong>

@@ -81,7 +81,7 @@ test('scope line shows openings and observations; exclusions and basis stay in t
   let nodes = h.nodes();
   const summary = nodes.find(node => node.type === 'summary');
   assert.equal(text(summary), '1,234 次开仓 · 0 条有效观察统计口径与已排除记录');
-  const details = byClass(nodes, 'scope-details');
+  const details = byClass(nodes, 'scope-details analysis-card');
   const lines = descendants(details).filter(node => node.type === 'p').map(text);
   assert.deepEqual(lines.slice(0, 4), ['工程范围草稿 2 次（未纳入）', '3 条历史无效刀位已排除', '范围提示', '磨损口径']);
   assert.ok(lines.includes('观察口径')); assert.ok(lines.includes('页面口径'));
@@ -91,7 +91,7 @@ test('scope line shows openings and observations; exclusions and basis stay in t
   h.props.meta = { ...meta, observed_count: undefined, unobserved_count: 5, excluded_invalid_ring_opening_count: 1, scope: { blade_track_max: '3000' } };
   nodes = h.nodes();
   assert.equal(text(nodes.find(node => node.type === 'summary').children[0]), '1,234 次开仓');
-  const more = descendants(byClass(nodes, 'scope-details')).filter(node => node.type === 'p').map(text);
+  const more = descendants(byClass(nodes, 'scope-details analysis-card')).filter(node => node.type === 'p').map(text);
   assert.ok(more.includes('5 条预建未观察记录未纳入')); assert.ok(more.includes('1 次开仓环号不可用，已排除')); assert.ok(more.includes('轨迹口径'));
   h.props.meta = undefined;
   assert.equal(h.nodes().some(node => node.type === 'details'), false);
@@ -122,4 +122,32 @@ test('InfoTip keeps the full wording in the tooltip, the accessible name and the
   const button = descendants(tooltip).find(node => node.type === 'button');
   assert.deepEqual(plain({ type: button.props.type, label: button.props['aria-label'], data: button.props['data-info-tip'], text: button.children }),
     { type: 'button', label: content, data: content, text: 'i' });
+});
+
+test('card looks are defined once in the shell through theme variables, and every card uses that class', t => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { root } = require('./helpers.cjs');
+  const read = file => fs.readFileSync(path.resolve(root, file), 'utf8');
+  const style = file => read(file).split('<style')[1] || '';
+  // 主题层以后定义 --dv-card-* / --dv-radius-card；没定义时回退到现在的外观
+  const card = style('index.vue').match(/:deep\(\.analysis-card\) \{([^}]*)\}/)[1].split(';').map(rule => rule.trim()).filter(Boolean);
+  assert.deepEqual(card, [
+    'background: var(--dv-card-bg, var(--el-bg-color))',
+    'border: 1px solid var(--dv-card-border, var(--el-border-color))',
+    'border-radius: var(--dv-radius-card, var(--dv-radius-lg))',
+    'box-shadow: var(--dv-shadow-card, none)',
+  ]);
+  const files = ['components/ChartCard.vue', 'components/ScopeSummary.vue', 'components/AmountShare.vue', 'components/ReviewList.vue', 'components/FilterPanel.vue',
+    'components/AnalysisActions.vue', 'pages/CostAnalysis.vue', 'pages/Overview.vue', 'pages/WearAnalysis.vue', 'pages/CustomAnalysis.vue', '../../../components/InfoTip.vue'];
+  for (const file of files) {
+    const css = style(file);
+    assert.doesNotMatch(css, /box-shadow|border-radius:\s*\d|background(-color)?:\s*(#|white|rgb)|var\(--dv-surface\)/, file);
+  }
+  for (const file of ['pages/CostAnalysis.vue', 'pages/Overview.vue', 'pages/WearAnalysis.vue']) {
+    const cards = [...read(file).matchAll(/class="(hero-card(?: [^"]*)?)"/g)].map(match => match[1]);
+    assert.ok(cards.length && cards.every(name => name.split(' ').includes('analysis-card')), file);
+  }
+  assert.match(read('components/ChartCard.vue'), /<el-card class="chart-card analysis-card"/);
+  assert.match(read('pages/CustomAnalysis.vue'), /<el-card class="custom-config-card analysis-card/);
 });

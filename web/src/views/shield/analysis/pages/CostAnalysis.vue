@@ -7,26 +7,22 @@
     <ScopeSummary :meta="costOverview?.meta" />
     <section class="cost-composition-section">
       <div v-if="sources" class="analysis-hero">
-        <section class="hero-card">
+        <section class="hero-card analysis-card">
           <div class="hero-label">已明确刀具费用<InfoTip content="新装登记、已确认返修、历史登记三类之和，不是财务结算额" /></div>
           <strong class="hero-value">{{ formatCurrency(sources.total) }}</strong>
           <AmountShare :parts="shareParts" :total="sources.total" />
         </section>
         <div class="hero-side">
-          <section v-if="perRing" class="hero-card hero-stat">
+          <section v-if="perRing" class="hero-card hero-stat analysis-card">
             <span class="hero-label">按环号跨度摊销<InfoTip v-if="perRing.tip" :content="perRing.tip" /></span>
             <strong class="hero-stat-value">{{ perRing.value }}</strong>
           </section>
-          <section class="hero-card">
+          <section class="hero-card analysis-card">
             <h4 class="hero-card-title">需要核对</h4>
             <ReviewList :items="reviewItems" />
           </section>
         </div>
       </div>
-      <ChartCard title="费用来源构成" description="三类明确来源可以相加；同次换刀的新装登记与旧刀返修是两项费用来源。" chart-height="160px"
-        :loading="costLoading" :error="costError" :is-empty="!sourceRows.length" @retry="loadData">
-        <div ref="compositionRef" class="cost-chart" style="height:160px" />
-      </ChartCard>
     </section>
     <section class="analysis-grid cost-chart-row cost-trend-section">
       <ChartCard :title="costMode === 'consumption' ? '按开仓环号：费用与更换数量' : '按开仓环号：单次与累计费用'"
@@ -58,7 +54,6 @@
     </div>
     <div v-if="optionsError" class="option-error" role="alert">厂家筛选项加载失败，当前统计范围未改变。<el-button link type="primary" @click="loadOptions">重新加载</el-button></div>
     <section class="cost-brand-section">
-      <ScopeSummary :meta="brandCost?.meta" />
       <ChartCard title="厂家综合对照" chart-height="auto" :loading="brandLoading" :error="brandError" :is-empty="!brandSummaryItems.length" @retry="loadBrandData"
         description="表格保留全部厂家，按明确金额排序。安装均价、旧刀磨损与服役环数各有不同样本，不能直接据此判断厂家优劣。">
         <el-table :data="brandSummaryItems" size="small" border :max-height="480" row-key="manufacturer" class="cost-table">
@@ -153,7 +148,7 @@ import ReviewList from '../components/ReviewList.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getFilterOptions, getCostOverview, getCostTrend, getBrandCost, getBrandPriceTrend, getBrandPerformanceTrend } from '../api';
 import { CHART_COLORS } from '../utils/chartTheme';
-import { buildCompositionOption, buildCostTrendOption, buildTypeOption, buildRelationshipOption, buildBrandTrendOption, manufacturerColor, serviceValue } from '../utils/costChartOptions';
+import { buildCostTrendOption, buildTypeOption, buildRelationshipOption, buildBrandTrendOption, manufacturerColor, serviceValue } from '../utils/costChartOptions';
 import { analysisExportMeta, formatCurrency, formatNumber, formatPercent, requireAnalysisV2, SOURCE_LABELS } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
@@ -347,7 +342,6 @@ function exportTrendPdf() {
     ]),
   }]);
 }
-const compositionRef = ref<HTMLElement | null>(null);
 const costTrendRef = ref<HTMLElement | null>(null);
 const typeRef = ref<HTMLElement | null>(null);
 const relationshipRef = ref<HTMLElement | null>(null);
@@ -356,7 +350,7 @@ const chartInstances = new Map<string, echarts.ECharts>();
 const chartInputs = new Map<string, unknown[]>();
 function updateChart(key: string, element: HTMLElement | null, option: any) {
   if (!element) return;
-  const inputs = key === 'composition' ? [sources.value] : key === 'costTrend' ? [costTrend.value, costMode.value]
+  const inputs = key === 'costTrend' ? [costTrend.value, costMode.value]
     : key === 'type' ? [costOverview.value?.type_breakdown] : key === 'relationship' ? [visibleBrands.value]
     : [selectedTrend.value, brandMetric.value];
   let chart = chartInstances.get(key);
@@ -369,7 +363,6 @@ function updateChart(key: string, element: HTMLElement | null, option: any) {
 }
 function renderCharts() {
   if (costReady.value && sources.value) {
-    updateChart('composition', compositionRef.value, buildCompositionOption(sources.value));
     updateChart('costTrend', costTrendRef.value, buildCostTrendOption(costTrend.value, costMode.value));
     const types = costOverview.value?.type_breakdown ?? [];
     updateChart('type', typeRef.value, buildTypeOption(types));
@@ -399,7 +392,7 @@ function cancelChartFrames() {
 }
 let resizeObserver: ResizeObserver | undefined;
 onMounted(() => { resizeObserver = new ResizeObserver(scheduleResize); if (pageRef.value) resizeObserver.observe(pageRef.value); scheduleRender(); });
-watch([costReady, brandReady, costMode, brandMetric, visibleBrands, compositionRef, costTrendRef, typeRef, relationshipRef, brandTrendRef], scheduleRender, { flush: 'post' });
+watch([costReady, brandReady, costMode, brandMetric, visibleBrands, costTrendRef, typeRef, relationshipRef, brandTrendRef], scheduleRender, { flush: 'post' });
 onDeactivated(() => { activeCharts = false; cancelChartFrames(); });
 onActivated(() => { activeCharts = true; scheduleRender(); scheduleResize(); });
 onBeforeUnmount(() => { activeCharts = false; cancelChartFrames(); resizeObserver?.disconnect(); chartInstances.forEach(chart => chart.dispose()); chartInstances.clear(); chartInputs.clear(); });
@@ -422,7 +415,7 @@ onBeforeUnmount(() => { activeCharts = false; cancelChartFrames(); resizeObserve
 .metric-select { width: 160px; }
 .cell-detail { display: block; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; margin-top: 3px; }
 .manufacturer-button { display: inline-flex; align-items: center; gap: 7px; padding: 2px 0; border: 0; color: var(--el-color-primary); background: transparent; text-align: left; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
-.manufacturer-button i { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; }
+.manufacturer-button i { width: 7px; height: 7px; flex: 0 0 7px; border-radius: var(--dv-radius-pill); }
 .manufacturer-button[aria-pressed="true"] { font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
 .manufacturer-button:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
 .graph-scope { display: flex; align-items: center; gap: 12px; font-size: 12px; margin: 2px 0 10px; color: var(--el-text-color-secondary); }

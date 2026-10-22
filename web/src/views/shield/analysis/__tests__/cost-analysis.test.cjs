@@ -34,7 +34,7 @@ function fixture(config) {
   return { data };
 }
 function create(t, options = {}) { return setup(t, 'pages/CostAnalysis.vue', { request: fixture, ...options }); }
-function bindCharts(s) { for (const key of ['compositionRef', 'costTrendRef', 'typeRef', 'relationshipRef', 'brandTrendRef']) s[key].value = { key }; s.renderCharts(); }
+function bindCharts(s) { for (const key of ['costTrendRef', 'typeRef', 'relationshipRef', 'brandTrendRef']) s[key].value = { key }; s.renderCharts(); }
 const latest = (result, key) => result.charts.find(chart => chart.element.key === key)?.options.at(-1);
 const detailCard = result => result.nodes().find(node => node.props?.class === 'analysis-detail-card');
 
@@ -69,7 +69,13 @@ test('top stratum condition reaches every cost and manufacturer endpoint with no
 test('source stacks and source table use explicit amounts, retain unresolved, missing and zero records', async t => {
   const r = create(t); await r.mount(); bindCharts(r.state);
   assert.equal(r.state.sources.value.total, 150); assert.equal(r.state.sourceRows.value.length, 6);
-  assert.deepEqual(plain(latest(r, 'compositionRef').series.map(item => item.data[0])), [100, 20, 30]);
+  // 费用来源构成图已由结论区的比例条代替：三段金额与原图一致，占比按合计 150 计算
+  assert.deepEqual(plain(r.state.shareParts.value.map(item => item.amount)), [100, 20, 30]);
+  const share = setup(t, 'components/AmountShare.vue', { props: { parts: r.state.shareParts.value, total: r.state.sources.value.total } });
+  const cells = name => share.nodes().filter(node => node.props?.class === name).map(node => node.children);
+  assert.deepEqual(cells('share-amount'), ['¥100', '¥20', '¥30']);
+  assert.deepEqual(cells('share-percent'), ['66.7%', '13.3%', '20.0%']);
+  assert.deepEqual(plain(r.nodes().some(node => node.props?.title === '费用来源构成')), false);
   assert.deepEqual(plain(latest(r, 'costTrendRef').series.slice(0, 3).map(item => item.data)), [[100, 0], [20, 0], [0, 30]]);
   assert.equal(r.state.formatCurrency(0), '¥0'); assert.equal(r.state.formatCurrency(null), '未记录');
   assert.equal(r.state.unknownManufacturerAmount.value, 20);
@@ -319,16 +325,17 @@ test('trend requests omit duplicate detail payloads without changing the global 
 test('unrelated charts retain their options and user view when a single metric changes', async t => {
   const r = create(t); await r.mount(); bindCharts(r.state);
   const counts = () => r.charts.map(chart => chart.options.length);
-  assert.deepEqual(counts(), [1, 1, 1, 1, 1]);
-  r.state.renderCharts(); assert.deepEqual(counts(), [1, 1, 1, 1, 1]);
+  // 图表顺序：环号趋势、刀型贡献、厂家关系、厂家趋势（费用来源构成图已由比例条代替）
+  assert.deepEqual(counts(), [1, 1, 1, 1]);
+  r.state.renderCharts(); assert.deepEqual(counts(), [1, 1, 1, 1]);
   r.state.brandMetric.value = 'service'; r.state.renderCharts();
-  assert.deepEqual(counts(), [1, 1, 1, 1, 2]);
+  assert.deepEqual(counts(), [1, 1, 1, 2]);
   r.state.costMode.value = 'cumulative'; r.state.renderCharts();
-  assert.deepEqual(counts(), [1, 2, 1, 1, 2]);
+  assert.deepEqual(counts(), [2, 1, 1, 2]);
   r.state.sourcePage.value = 2; r.state.renderCharts();
-  assert.deepEqual(counts(), [1, 2, 1, 1, 2]);
+  assert.deepEqual(counts(), [2, 1, 1, 2]);
   r.state.relationshipRef.value = { key: 'replacement-element' }; r.state.renderCharts();
-  assert.equal(r.charts[3].disposed, true); assert.equal(r.charts[5].options.length, 1);
+  assert.equal(r.charts[2].disposed, true); assert.equal(r.charts[4].options.length, 1);
 });
 
 test('conclusion leads with the explicit total, its source shares, the per-ring figure and only non-zero review items', async t => {
@@ -356,6 +363,9 @@ test('conclusion leads with the explicit total, its source shares, the per-ring 
     ['金额归属待核对', true, '1 条金额归属待核对（¥50）：未计入合计'],
   ]);
   assert.equal(nodes.some(node => ['analysis-metrics', 'cost-quality', 'analysis-note allocation-note'].includes(node.props?.class)), false);
+  const scopes = nodes.filter(node => node.type?.name === 'ScopeSummary');
+  assert.equal(scopes.length, 1, 'the scope is stated once; the manufacturer section has no second scope line');
+  assert.equal(scopes[0].props.meta, r.state.costOverview.value.meta);
 
   const allocated = create(t, { request: config => {
     const response = fixture(config);
@@ -363,7 +373,7 @@ test('conclusion leads with the explicit total, its source shares, the per-ring 
     return response;
   } });
   await allocated.mount();
-  const stat = descendants(allocated.nodes().find(node => node.props?.class === 'hero-card hero-stat'));
+  const stat = descendants(allocated.nodes().find(node => node.props?.class === 'hero-card hero-stat analysis-card'));
   assert.equal(stat.find(node => node.props?.class === 'hero-stat-value').children, '¥10,457.55 / 环');
   assert.equal(stat.find(node => node.type?.name === 'InfoTip').props.content, '分母 473 环（最大减最小开仓环号加 1），不是实际掘进单环成本');
 });
@@ -426,17 +436,16 @@ function loadCostChartOptions() {
 
 test('cost option builders preserve source order, colors and explicit amounts', () => {
   const { buildCompositionOption, buildTypeOption, buildCostTrendOption } = loadCostChartOptions();
-  const composition = buildCompositionOption(sources);
+  assert.equal(buildCompositionOption, undefined, 'the composition chart was replaced by the share bar');
   const type = buildTypeOption([{ tool_type: 'DISC', cost_sources: sources }, { tool_type: 'OTHER' }]);
   const trend = buildCostTrendOption(fixture({ url: 'cost_trend/', params: {} }).data, 'consumption');
   const expected = [['新装登记', '#3f5f7a'], ['已确认返修', '#6f8f6a'], ['历史登记', '#c2b8a3']];
-  for (const option of [composition, type, trend]) {
+  for (const option of [type, trend]) {
     assert.deepEqual(plain(option.series.slice(0, 3).map(item => [item.name, item.color])), expected);
   }
-  assert.deepEqual(plain(composition.series.map(item => item.data)), [[100], [20], [30]]);
   assert.deepEqual(plain(type.series.map(item => item.data)), [[100, null], [20, null], [30, null]]);
   assert.deepEqual(plain(type.yAxis.data), ['滚刀', 'OTHER']);
-  assert.equal(composition.tooltip.valueFormatter(0), '¥0');
+  assert.equal(type.tooltip.valueFormatter(0), '¥0');
 });
 
 test('manufacturer colors stay stable across chart builders, ordering and focused subsets', () => {

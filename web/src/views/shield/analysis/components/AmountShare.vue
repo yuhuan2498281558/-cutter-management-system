@@ -54,7 +54,7 @@ const barLabel = computed(() => rows.value.map(part => `${part.label} ${part.per
 .share-legend th { width: 100%; padding-left: 8px; color: var(--dv-text); }
 .share-name { display: inline-flex; align-items: center; gap: 6px; }
 .share-swatch-cell { width: 10px; }
-.share-swatch { display: block; width: 10px; height: 10px; border-radius: 2px; }
+.share-swatch { display: block; width: 10px; height: 10px; }
 .share-legend .share-amount { padding-left: 16px; text-align: right; white-space: nowrap; color: var(--dv-text); }
 .share-legend .share-percent { min-width: 56px; padding-left: 12px; text-align: right; white-space: nowrap; color: var(--dv-text-secondary); }
 .is-inline { gap: 8px; }
