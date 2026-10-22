@@ -113,3 +113,36 @@ test('matrix option narrows grid left to the existing width limit', () => {
   assert.equal(buildMatrixChartOption(data, { width: 900, height: '380px' }).grid.left, 180);
   assert.equal(buildMatrixChartOption(data, { width: 320, height: '380px' }).grid.left, 100);
 });
+
+const { descendants, textOf } = require('./helpers.cjs');
+test('config sits on one row with labels inside the controls; the aggregate line keeps its basis in an info tip', async t => {
+  const h = harness(t); await h.mount();
+  const nodes = () => h.nodes();
+  const page = nodes();
+  const order = ['ScopeSummary', 'el-card'].map(name => page.findIndex(node => node.type?.name === name));
+  assert.ok(order[0] >= 0 && order[0] < order[1], 'the scope line comes right under the filters');
+  const actions = page.find(node => node.type?.name === 'AnalysisActions');
+  assert.equal(actions.props.refresh, undefined);
+  assert.deepEqual(plain(actions.props.exports.map(item => [item.label, item.disabled])), [['导出 PDF', false]]);
+  const form = () => nodes().find(node => node.type?.name === 'el-form');
+  assert.equal(form().props['label-position'], undefined);
+  assert.equal(descendants(form()).some(node => node.type?.name === 'el-form-item'), false);
+  const selects = () => descendants(form()).filter(node => node.type?.name === 'el-select').map(node => [node.props['aria-label'], textOf(descendants(node).find(item => item.props?.class === 'config-label'))]);
+  assert.deepEqual(selects(), [['X轴', 'X轴'], ['指标', '指标']]);
+  assert.equal(textOf(descendants(form()).find(node => node.props?.class === 'config-label')), '图表类型');
+  assert.ok(descendants(form()).some(node => node.type?.name === 'el-radio-group'));
+  assert.ok(descendants(form()).some(node => node.type?.name === 'el-button' && textOf(node) === '生成图表'));
+  h.state.form.chart_type = 'matrix';
+  assert.deepEqual(selects().map(([label]) => label), ['X轴', 'Y轴', '指标']);
+  h.state.form.chart_type = 'line'; await settle();
+
+  const line = nodes().find(node => node.props?.class === 'aggregate-line');
+  assert.equal(textOf(line), '本次聚合 1 条记录，展示 1 个分组');
+  assert.equal(descendants(line).find(node => node.type?.name === 'InfoTip').props.content, '未记录与零值分别显示；地层分组可能重叠，不能直接加总。');
+});
+test('an invalid configuration warns in the warning style and keeps its alert role', async t => {
+  const h = harness(t); await h.mount();
+  h.state.form.x_field = 'manufacturer'; await settle();
+  const warning = h.nodes().find(node => node.props?.role === 'alert' && node.props.class === 'config-warning');
+  assert.match(textOf(warning), /厂家磨损请在成本分析的厂家表现中查看/);
+});

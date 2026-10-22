@@ -238,7 +238,7 @@ h2{font-size:12px;margin:0 0 4px;color:#111827;line-height:1.25;}
 .chart-card-body > div,.chart-card-body div[_echarts_instance_]{width:100%!important;height:auto!important;min-height:0!important;overflow:visible!important;position:static!important;}
 .chart-card-header{display:flex;align-items:center;justify-content:space-between;}
 .chart-title{font-size:10px;font-weight:600;color:#111827;line-height:1.2;}
-.chart-description,.analysis-note,.analysis-scope,.graph-scope{font-size:9px;line-height:1.5;margin:4px 0 8px;}
+.chart-description,.analysis-note,.aggregate-line,.analysis-scope,.graph-scope{font-size:9px;line-height:1.5;margin:4px 0 8px;}
 .info-tip-note{display:block;font-weight:400;}
 .analysis-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
 .analysis-grid>section{min-width:0;}

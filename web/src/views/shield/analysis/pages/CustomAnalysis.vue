@@ -3,73 +3,35 @@
     <AnalysisActions :target="actionsTarget" :generated-at="chartData?.meta?.generated_at"
       :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
 
+    <ScopeSummary :meta="chartData?.meta" />
     <el-card class="custom-config-card analysis-card analysis-no-export" shadow="never">
-      <el-form :model="form" :disabled="fieldsLoading || !fieldConfig" label-position="top" class="custom-config-form">
-        <el-form-item label="图表类型">
+      <el-form :model="form" :disabled="fieldsLoading || !fieldConfig" class="custom-config-form" @submit.prevent>
+        <span class="config-group" role="group" aria-label="图表类型">
+          <span class="config-label">图表类型</span>
           <el-radio-group v-model="form.chart_type" @change="onChartTypeChange">
             <el-radio-button label="line">单维比较</el-radio-button>
             <el-radio-button label="matrix">双维矩阵</el-radio-button>
           </el-radio-group>
-        </el-form-item>
-
-        <el-form-item label="X轴">
-          <el-select
-            v-model="form.x_field"
-            filterable
-            placeholder="选择X轴"
-          >
-            <el-option
-              v-for="item in dimensionOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item v-if="form.chart_type === 'matrix'" label="Y轴">
-          <el-select
-            v-model="form.y_field"
-            filterable
-            placeholder="选择Y轴"
-          >
-            <el-option
-              v-for="item in matrixYOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="指标">
-          <el-select
-            v-model="form.metrics"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            :multiple-limit="2"
-            filterable
-            placeholder="最多选择2个指标"
-          >
-            <el-option
-              v-for="item in metricOptions"
-              :key="item.value"
-              :label="formatMetricLabel(item)"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item>
-          <el-button type="primary" :loading="loading || fieldsLoading" :disabled="!form.metrics.length || !!validationError" @click="loadChart">生成图表</el-button>
-        </el-form-item>
+        </span>
+        <el-select v-model="form.x_field" class="config-axis" filterable placeholder="选择X轴" aria-label="X轴">
+          <template #prefix><span class="config-label">X轴</span></template>
+          <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-if="form.chart_type === 'matrix'" v-model="form.y_field" class="config-axis" filterable placeholder="选择Y轴" aria-label="Y轴">
+          <template #prefix><span class="config-label">Y轴</span></template>
+          <el-option v-for="item in matrixYOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="form.metrics" class="config-metrics" multiple collapse-tags collapse-tags-tooltip :multiple-limit="2" filterable
+          placeholder="最多选择2个指标" aria-label="指标">
+          <template #prefix><span class="config-label">指标</span></template>
+          <el-option v-for="item in metricOptions" :key="item.value" :label="formatMetricLabel(item)" :value="item.value" />
+        </el-select>
+        <el-button type="primary" :loading="loading || fieldsLoading" :disabled="!form.metrics.length || !!validationError" @click="loadChart">生成图表</el-button>
       </el-form>
     </el-card>
-    <p v-if="validationError" role="alert" class="analysis-note">{{ validationError }}</p>
+    <p v-if="validationError" role="alert" class="config-warning">{{ validationError }}</p>
     <div v-if="fieldsError" role="alert" class="analysis-note">{{ fieldsError }} <el-button size="small" @click="retryFields">重新读取字段</el-button></div>
-    <ScopeSummary :meta="chartData?.meta" />
-    <p v-if="chartData" class="analysis-note">本次聚合 {{ formatNumber(chartData.record_count) }} 条记录，展示 {{ tableRows.length }} 个分组。未记录与零值分别显示；地层分组可能重叠，不能直接加总。</p>
+    <p v-if="chartData" class="aggregate-line">本次聚合 {{ formatNumber(chartData.record_count) }} 条记录，展示 {{ tableRows.length }} 个分组<InfoTip content="未记录与零值分别显示；地层分组可能重叠，不能直接加总。" /></p>
 
     <ChartCard
       :title="chartTitle"
@@ -122,6 +84,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import * as echarts from 'echarts';
+import InfoTip from '/@/components/InfoTip.vue';
 import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
@@ -365,16 +328,25 @@ watch(chartHeight, async () => {
 }
 
 .custom-config-card :deep(.el-card__body) {
-  padding: 12px 14px 2px;
+  padding: 12px 14px;
 }
 
-.custom-config-form :deep(.el-form-item) {
-  margin: 0;
+/* 配置区一行：标签放进控件，放不下时换行 */
+.custom-config-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.config-group { display: inline-flex; align-items: center; gap: 8px; }
+.config-label { font-size: var(--el-font-size-extra-small); color: var(--dv-text-muted); white-space: nowrap; }
+.config-axis { width: 200px; }
+.config-metrics { width: 320px; }
+@media (max-width: 600px) { .config-axis, .config-metrics { width: 100%; } }
+
+.config-warning,
+.aggregate-line {
+  margin: 0 0 12px;
+  font-size: var(--el-font-size-extra-small);
+  line-height: 1.7;
 }
-.custom-config-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: end; padding-bottom: 12px; }
-.custom-config-form :deep(.el-select) { width: 100%; }
-@media (max-width: 900px) { .custom-config-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 520px) { .custom-config-form { grid-template-columns: 1fr; } }
+.config-warning { color: var(--dv-warning-text); }
+.aggregate-line { display: flex; align-items: center; gap: 6px; color: var(--dv-text-secondary); }
 
 .custom-chart {
   width: 100%;
@@ -382,8 +354,8 @@ watch(chartHeight, async () => {
 
 .matrix-note {
   margin: -4px 16px 12px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--dv-text-secondary);
+  font-size: var(--el-font-size-extra-small);
   line-height: 1.5;
 }
 </style>
