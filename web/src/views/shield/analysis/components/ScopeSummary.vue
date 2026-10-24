@@ -11,7 +11,7 @@
       <p v-if="meta.excluded_invalid_ring_opening_count">{{ meta.excluded_invalid_ring_opening_count }} 次开仓环号不可用，已排除</p>
       <p v-for="warning in meta.warnings" :key="warning">{{ warning }}</p>
       <p>{{ meta.wear_basis }}</p>
-      <p>“轻微磨损”“中度磨损”等有记录但非正常词，按现有规则计入非正常描述；非正常比例为 100% 表示本次有记录样本全部归为非正常。</p>
+      <p>“轻微磨损”归正常，“中度磨损”“偏磨”等计入非正常描述；非正常比例为 100% 表示本次有记录样本全部归为非正常。</p>
       <p v-if="meta.scope.blade_track_min || meta.scope.blade_track_max">{{ meta.blade_track_basis }}</p>
       <p v-if="stratumSelected">{{ meta.stratum_basis || '地层类型按各次开仓所在环段筛选' }}</p>
       <p v-if="meta.observed_basis">{{ meta.observed_basis }}</p>
