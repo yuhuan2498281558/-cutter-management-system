@@ -72,6 +72,8 @@ test('tokens.scss defines every design variable with the agreed value', () => {
     '--dv-info': '#4a6d96', '--dv-info-bg': '#e8eef5', '--dv-info-text': '#4a6d96',
     '--dv-radius-sm': '9px', '--dv-radius': '11px', '--dv-radius-lg': '22px', '--dv-radius-xl': '28px',
     '--dv-radius-card': '26px', '--dv-radius-table': '24px', '--dv-radius-popover': '18px', '--dv-radius-badge': '7px',
+    '--dv-radius-seg': '12px', '--dv-radius-seg-sm': '8px', '--dv-radius-toast': '14px',
+    '--dv-control-height': '34px', '--dv-control-height-sm': '30px',
     '--dv-radius-pill': '999px', '--dv-page-gutter': '10px', '--dv-content-pad': '32px',
     '--dv-content-pad-top': '32px', '--dv-content-pad-bottom': '80px', '--dv-content-max': '1320px',
     '--dv-aside-width': '256px', '--dv-aside-mobile-width': '280px', '--dv-topbar-height': '52px', '--dv-footer-height': '28px',
@@ -153,14 +155,14 @@ test('fonts.scss declares the bundled font files with font-display swap', () => 
   for (const dir of fs.readdirSync(fontsDir)) assert.match(fs.readFileSync(path.join(fontsDir, dir, 'LICENSE'), 'utf8'), /SIL Open Font License/, dir);
 });
 
-test('fs-page becomes a card inset by the page gutter without a fixed height', () => {
+test('fs-page is a transparent page padded like the main content, without a fixed height', () => {
   const css = sass.compile(path.resolve(themeDir, 'index.scss'), { style: 'expanded', loadPaths: [themeDir] }).css;
   const rules = [...css.matchAll(/(^|\n)div\.fs-page \{([^}]*)\}/g)].map(match => match[2]);
   assert.equal(rules.length, 1);
-  for (const side of ['top', 'right', 'bottom', 'left']) assert.match(rules[0], new RegExp(`${side}: var\\(--dv-page-gutter\\);`));
-  assert.match(rules[0], /width: auto !important;/);
-  assert.match(rules[0], /border: 1px solid var\(--el-border-color\);/);
-  assert.match(rules[0], /border-radius: var\(--dv-radius-lg\);/);
+  // 主面板已经是白底大圆角面板：CRUD 页不再画卡片（边框、圆角、底色、四边内缩），只留与主内容一致的内边距
+  assert.match(rules[0], /padding: var\(--dv-content-pad\);/);
+  for (const side of ['top', 'right', 'bottom', 'left']) assert.doesNotMatch(rules[0], new RegExp(`(^|\\n)\\s*${side}:`));
+  assert.doesNotMatch(rules[0], /border|background|radius|width/);
   assert.doesNotMatch(rules[0], /height|shadow|margin/);
 });
 

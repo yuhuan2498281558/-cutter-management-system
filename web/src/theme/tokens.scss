@@ -73,7 +73,12 @@ $dv-radius-card: 26px; // 平铺块
 $dv-radius-table: 24px; // 表格外框
 $dv-radius-popover: 18px; // 下拉、气泡、日期面板
 $dv-radius-badge: 7px; // 标签
+$dv-radius-seg: 12px; // 分段控件底槽
+$dv-radius-seg-sm: 8px; // 小号分段控件的项
+$dv-radius-toast: 14px; // 消息提示
 $dv-radius-pill: 999px; // 圆形按钮
+$dv-control-height: 34px; // 按钮、输入框、选择器（默认尺寸）
+$dv-control-height-sm: 30px; // 小按钮
 $dv-page-gutter: 10px; // 侧栏、主面板离窗口边缘和彼此的距离
 $dv-content-pad: 32px; // 主面板内容的左右内边距
 $dv-content-pad-top: 32px;
@@ -182,6 +187,11 @@ $dv-line-height: 1.54;
 	--dv-radius-table: #{$dv-radius-table};
 	--dv-radius-popover: #{$dv-radius-popover};
 	--dv-radius-badge: #{$dv-radius-badge};
+	--dv-radius-seg: #{$dv-radius-seg};
+	--dv-radius-seg-sm: #{$dv-radius-seg-sm};
+	--dv-radius-toast: #{$dv-radius-toast};
+	--dv-control-height: #{$dv-control-height};
+	--dv-control-height-sm: #{$dv-control-height-sm};
 	--dv-radius-pill: #{$dv-radius-pill};
 	--dv-page-gutter: #{$dv-page-gutter};
 	--dv-content-pad: #{$dv-content-pad};
