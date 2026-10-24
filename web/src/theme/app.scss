@@ -220,8 +220,10 @@ body,
 		transition: width 0.3s ease;
 	}
 	// 主面板：面板色、大圆角、细描边投影，内部滚动
+	// isolation：页面里的 z-index 只在主面板内部比较，不会盖到窄屏的侧栏抽屉上
 	.layout-container-view {
 		position: relative;
+		isolation: isolate;
 		min-width: 0;
 		overflow: hidden;
 		border-radius: var(--dv-radius-lg);
@@ -248,16 +250,20 @@ body,
 		}
 	}
 	// 窄屏：侧栏是离窗口边一个页面间距的浮动抽屉，主面板去掉圆角和投影铺满
+	// 抽屉和遮罩的层级要低于 Element Plus 的浮层（从 2000 起）：抽屉里的用户菜单、搜索建议、退出确认框都挂在 body 上
 	.layout-aside-panel.layout-aside-mobile {
 		top: var(--dv-page-gutter);
 		bottom: var(--dv-page-gutter);
 		left: calc(-1 * (var(--dv-aside-mobile-width) + 2 * var(--dv-page-gutter)));
 		width: var(--dv-aside-mobile-width);
 		height: auto;
-		z-index: 9999999;
+		z-index: 1001;
 		&.layout-aside-mobile-open {
 			left: var(--dv-page-gutter);
 		}
+	}
+	.layout-aside-mobile-mode {
+		z-index: 1000;
 	}
 }
 @media screen and (max-width: 1000px) {

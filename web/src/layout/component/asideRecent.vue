@@ -11,7 +11,7 @@
 				tabindex="0"
 				:aria-current="page.isActive ? 'page' : undefined"
 				@click="onOpen(page.route)"
-				@keydown.enter="onOpen(page.route)"
+				@keydown.enter.self="onOpen(page.route)"
 			>
 				<i class="layout-aside-recent-dot"></i>
 				<span class="layout-aside-recent-title">{{ other.setTagsViewNameI18n(page.route) }}</span>

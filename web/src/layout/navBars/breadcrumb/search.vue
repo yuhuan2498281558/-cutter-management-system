@@ -1,6 +1,7 @@
 <template>
-	<div class="layout-search-dialog">
-		<el-dialog v-model="state.isShowSearch" destroy-on-close :show-close="false">
+	<div>
+		<!-- 挂到 body：顶栏（侧边栏布局里浮在主面板上，带 z-index）会把没挂出去的弹窗压在页面里层级更高的元素下面 -->
+		<el-dialog v-model="state.isShowSearch" destroy-on-close append-to-body modal-class="layout-search-dialog" :show-close="false">
 			<template #footer>
 				<el-autocomplete
 					v-model="state.menuQuery"
@@ -98,10 +99,10 @@ defineExpose({
 });
 </script>
 
-<style scoped lang="scss">
+<style lang="scss">
+// 弹窗挂在 body 上，scoped 样式够不着，用 modal-class 给遮罩加的 .layout-search-dialog 限定范围
 .layout-search-dialog {
-	position: relative;
-	:deep(.el-dialog) {
+	.el-dialog {
 		.el-dialog__header,
 		.el-dialog__body {
 			display: none;
@@ -113,7 +114,7 @@ defineExpose({
 			top: -53vh;
 		}
 	}
-	:deep(.el-autocomplete) {
+	.el-autocomplete {
 		width: 560px;
 		position: absolute;
 		top: 150px;

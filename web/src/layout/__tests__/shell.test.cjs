@@ -48,6 +48,8 @@ test('the sidebar recent list mirrors the tags view, which still owns the open p
   assert.match(recent, /recentOpenedPages\(openedPages\.list\)/);
   assert.match(recent, /openedPages\.close\?\.\(route\)/);
   assert.match(recent, /v-if="!page\.route\.meta\?\.isAffix"/);
+  // 在关闭按钮上按 Enter 只关闭，不冒泡成"打开"
+  assert.match(recent, /@keydown\.enter\.self="onOpen\(page\.route\)"/);
 });
 
 test('the sidebar panel holds logo, menu search, menu, recent pages and the user block', () => {
@@ -98,6 +100,15 @@ test('the sidebar layout insets two panels by the page gutter and floats a glass
   const drawer = rule('.layout-container.layout-shell .layout-aside-panel.layout-aside-mobile');
   for (const decl of ['top: var(--dv-page-gutter);', 'bottom: var(--dv-page-gutter);', 'width: var(--dv-aside-mobile-width);']) assert.ok(drawer.includes(decl), decl);
   assert.match(css, /\.layout-aside-mobile-mode \{[^}]*background-color: var\(--dv-scrim\);/);
+  // 抽屉里的用户菜单、搜索建议、退出确认框挂在 body 上，层级从 2000 起：抽屉和遮罩要比它们低，主面板隔离自己的 z-index
+  const z = selector => Number(rule(selector).match(/z-index: (\d+);/)[1]);
+  assert.ok(z('.layout-container.layout-shell .layout-aside-panel.layout-aside-mobile') < 2000);
+  assert.ok(z('.layout-container.layout-shell .layout-aside-mobile-mode') < z('.layout-container.layout-shell .layout-aside-panel.layout-aside-mobile'));
+  assert.match(mainPanel, /isolation: isolate;/);
+  // 顶栏带 z-index：菜单搜索弹窗挂到 body，免得被顶栏的层级压在页面元素下面
+  const search = read('layout/navBars/breadcrumb/search.vue');
+  assert.match(search, /<el-dialog [^>]*append-to-body modal-class="layout-search-dialog"/);
+  assert.match(search, /<style lang="scss">\s*\/\/[^\n]*\n\.layout-search-dialog \{/);
   // 毛玻璃画在 ::before 上：加在顶栏本身会让顶栏里的菜单搜索弹窗遮罩只剩顶栏大小
   const header = read('layout/navBars/breadcrumb/index.vue');
   const glass = header.slice(header.indexOf('&.is-glass {'));
