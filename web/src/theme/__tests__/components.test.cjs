@@ -73,17 +73,18 @@ test('tables: framed with a large radius, tile header, 48px rows and an accent b
 });
 
 test('cards are flat tiles; dialogs, drawers and popovers use the large radii and the overlay shadow', () => {
-  has('.el-card', '--el-card-bg-color: var(--dv-card-bg);', '--el-card-border-radius: var(--dv-radius-card);', 'border: none;');
+  // 卡片边线跟着配色：暖白透明（平铺块），灰白蓝 1px 灰线；两套都不加阴影
+  has('.el-card', '--el-card-bg-color: var(--dv-card-bg);', '--el-card-border-radius: var(--dv-radius-card);', 'border: 1px solid var(--dv-card-border);');
   has('.el-card__header', 'padding: 20px 22px 0;', 'border-bottom: none;');
   has('.el-card__body', 'padding: 20px 22px;');
   has('.el-dialog', '--el-dialog-border-radius: var(--dv-radius-xl);', '--el-dialog-box-shadow: var(--dv-shadow-overlay);');
-  has('.el-dialog .el-dialog__title', 'font-family: var(--dv-font-serif);');
+  has('.el-dialog .el-dialog__title', 'font-family: var(--dv-font-title);');
   assert.doesNotMatch(css, /\.el-dialog \.el-dialog__(header|footer) \{\s*border-(bottom|top): 1px/);
-  has('.el-message-box .el-message-box__title', 'font-family: var(--dv-font-serif);');
+  has('.el-message-box .el-message-box__title', 'font-family: var(--dv-font-title);');
   has('.el-drawer', 'border-radius: var(--dv-radius-xl);', 'box-shadow: var(--dv-shadow-overlay);');
   has('.el-drawer.rtl, .el-drawer.ltr','top: var(--dv-page-gutter);', 'bottom: var(--dv-page-gutter);', 'height: auto;');
   has('.el-drawer.rtl', 'right: var(--dv-page-gutter);');
-  has('.el-drawer .el-drawer__title', 'font-family: var(--dv-font-serif);');
+  has('.el-drawer .el-drawer__title', 'font-family: var(--dv-font-title);');
   has('.el-drawer .el-drawer__footer', 'border-top: 1px solid var(--el-border-color);');
   has('.el-popper.is-light', '--el-popper-border-radius: var(--dv-radius-popover);', 'box-shadow: var(--dv-shadow-overlay);');
   has('.el-select-dropdown__item.is-selected', 'color: var(--dv-accent-strong);');
@@ -96,6 +97,9 @@ test('toasts are dark, pagination and focus use the terracotta family, and serif
   assert.match(css, /\.el-pagination\.is-background \.el-pager li\.is-active \{\s*background-color: var\(--el-color-primary\) !important;\s*color: var\(--dv-on-primary\) !important;/);
   has('.el-pagination', '--el-pagination-button-color: var(--el-text-color-secondary);', '--el-pagination-border-radius: var(--dv-radius-sm);');
   has(":focus-visible:not(input, textarea, [tabindex=\"-1\"])", 'outline: 2px solid var(--dv-accent) !important;', 'outline-offset: 2px;');
-  has('.dv-page-title', 'font-family: var(--dv-font-serif);', 'font-size: 24px;', 'font-weight: 600;', 'line-height: 1.25;');
-  has('.dv-section-title', 'font-family: var(--dv-font-serif);', 'font-size: 19px;', 'font-weight: 600;');
+  has('.dv-page-title', 'font-family: var(--dv-font-title);', 'font-size: 24px;', 'font-weight: 600;', 'line-height: 1.25;');
+  has('.dv-section-title', 'font-family: var(--dv-font-title);', 'font-size: 19px;', 'font-weight: 600;');
+  // 标题一律走 --dv-font-title（暖白衬线、灰白蓝无衬线），不直接写衬线
+  assert.doesNotMatch(css, /font-family: var\(--dv-font-serif\)/);
+  assert.match(fs.readFileSync(path.resolve(themeDir, '..', 'layout/logo/index.vue'), 'utf8'), /&__title \{\s*font-family: var\(--dv-font-title\);/);
 });

@@ -92,6 +92,7 @@ test('tokens.scss defines every design variable with the agreed value', () => {
     '--dv-font-sans': '"Geist", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif',
     '--dv-font-serif': '"Source Serif 4", "Noto Serif SC", "Songti SC", "STSong", Georgia, serif',
     '--dv-font-mono': '"Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+    '--dv-font-title': 'var(--dv-font-serif)',
     '--dv-font-size': '13px', '--dv-line-height': '1.54',
   };
   const css = sass.compile(path.resolve(themeDir, 'tokens.scss'), { style: 'expanded' }).css;
@@ -100,6 +101,55 @@ test('tokens.scss defines every design variable with the agreed value', () => {
   for (const [name, value] of Object.entries(expected)) assert.equal(defined[name], value, name);
   // 主面板内容的内边距：宽度 ≤640px 时收成 22px 16px 56px
   assert.match(css, /@media \(max-width: 640px\) \{\s*:root \{\s*--dv-content-pad: 16px;\s*--dv-content-pad-top: 22px;\s*--dv-content-pad-bottom: 56px;\s*\}\s*\}/);
+});
+
+test('the grey-white-blue scheme overrides the tokens with the Win11 light values', () => {
+  const css = sass.compile(path.resolve(themeDir, 'tokens.scss'), { style: 'expanded' }).css;
+  const block = selector => {
+    const at = css.indexOf(`\n${selector} {`);
+    assert.ok(at >= 0, selector);
+    return Object.fromEntries([...css.slice(at, css.indexOf('}', at)).matchAll(/^\s*(--dv-[\w-]+):\s*(.+);$/gm)].map(([, name, value]) => [name, value.trim()]));
+  };
+  const root = block(':root');
+  const blue = block(':root[data-scheme=blue]');
+  const expected = {
+    // 背景一律白，灰只用在悬停、选中、表头/浅底块
+    '--dv-bg': '#ffffff', '--dv-surface': '#ffffff', '--dv-side-bg': '#ffffff', '--dv-card-bg': 'var(--dv-surface)',
+    '--dv-hover': '#f0f0f0', '--dv-hover-solid': '#f0f0f0', '--dv-selected': '#ebebeb', '--dv-tile': '#f7f7f7', '--dv-surface-muted': '#f7f7f7',
+    '--dv-divider': '#e5e5e5', '--dv-border': '#e5e5e5', '--dv-border-strong': '#d1d1d1', '--dv-card-border': 'var(--dv-border)',
+    '--dv-text': '#1b1b1b', '--dv-text-nav': '#1b1b1b', '--dv-text-secondary': '#5d5d5d', '--dv-text-muted': '#8a8a8a',
+    // 主题蓝；悬停加深一档、最浅一档用于选中行和焦点光晕（Element Plus 的深浅色算法）；链接文字 #005fb8
+    '--dv-primary': '#0067c0', '--dv-primary-hover': '#005dad', '--dv-accent': '#0067c0', '--dv-accent-strong': '#005fb8', '--dv-accent-soft': '#e6f0f9',
+    // info 是中性灰蓝，不和主题蓝撞色
+    '--dv-info': '#5b6b7d', '--dv-info-bg': '#eef1f4', '--dv-info-text': '#5b6b7d',
+    // 控件 4px，卡片/表格/弹窗/浮层 8px
+    '--dv-radius-sm': '4px', '--dv-radius': '4px', '--dv-radius-badge': '4px', '--dv-radius-card': '8px', '--dv-radius-table': '8px',
+    '--dv-radius-xl': '8px', '--dv-radius-popover': '8px', '--dv-radius-toast': '8px', '--dv-radius-lg': '8px',
+    // 阴影只留浮层、弹窗和抽屉；卡片不加阴影
+    '--dv-shadow-overlay': '0 8px 16px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06)', '--dv-shadow-drawer': '8px 0 24px -8px rgba(0, 0, 0, 0.18)',
+    '--dv-shadow-1': '0 0 0 1px rgba(0, 0, 0, 0.08)', '--dv-shadow-button-plain': 'none', '--dv-shadow-logo': 'none',
+    '--dv-logo-bg': '#0067c0', '--dv-topbar-bg': 'rgba(255, 255, 255, 0.84)',
+    // 标题不用衬线
+    '--dv-font-title': 'var(--dv-font-sans)',
+  };
+  for (const [name, value] of Object.entries(expected)) assert.equal(blue[name], value, name);
+  // 只覆盖暖白里有的变量；状态色（成功/警告/危险）、卡片阴影沿用暖白
+  for (const name of Object.keys(blue)) assert.ok(name in root, name);
+  for (const name of ['--dv-success', '--dv-warning', '--dv-danger', '--dv-shadow-card', '--dv-font-sans', '--dv-font-size']) assert.equal(blue[name], undefined, name);
+  assert.equal(root['--dv-shadow-card'], 'none');
+});
+
+test('the grey-white-blue scheme regenerates the Element Plus primary and info shades', () => {
+  const css = sass.compile(path.resolve(themeDir, 'index.scss'), { style: 'expanded', loadPaths: [themeDir] }).css;
+  const blocks = [...css.matchAll(/\n:root\[data-scheme=blue\] \{([^}]*)\}/g)].map(match => match[1]);
+  const el = blocks.find(body => body.includes('--el-color-primary'));
+  assert.ok(el);
+  const shades = { 'light-3': '#4d95d3', 'light-5': '#80b3e0', 'light-7': '#b3d1ec', 'light-8': '#cce1f2', 'light-9': '#e6f0f9', 'dark-2': '#00529a' };
+  for (const [level, value] of Object.entries(shades)) assert.match(el, new RegExp(`--el-color-primary-${level}: ${value};`), level);
+  assert.match(el, /--el-color-primary: var\(--dv-primary\);/);
+  assert.match(el, /--el-color-primary-rgb: 0, 103, 192;/);
+  assert.match(el, /--el-color-info-rgb: 91, 107, 125;/);
+  assert.doesNotMatch(el, /--el-color-(success|warning|danger)/);
 });
 
 test('fonts.scss is the first theme import, tokens.scss comes next and element plus colours derive from it', () => {
@@ -174,20 +224,43 @@ test('fast-crud row buttons and table overrides take their colours from the them
   assert.doesNotMatch(reset, /#[0-9a-fA-F]{3,6}\b/);
 });
 
-test('layout defaults use the sidebar layout and the new theme colours', () => {
+function loadColorSchemes() {
+  const context = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(read('theme/colorSchemes.ts'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText, context);
+  return context.exports;
+}
+
+test('layout defaults use the sidebar layout and the warm scheme colours', () => {
   const store = read('stores/themeConfig.ts');
-  const defaults = { layout: 'defaults', primary: '#c6613f', menuBar: '#f9f8f3', menuBarColor: '#3d3d3a', menuBarActiveColor: '#e2dfd5', topBar: '#fffefb', topBarColor: '#73726c', columnsMenuBar: '#f9f8f3', columnsMenuBarColor: '#3d3d3a' };
-  for (const [key, value] of Object.entries(defaults)) assert.match(store, new RegExp(`\\n\\s*${key}: '${value}',`), key);
+  assert.match(store, /\n\s*layout: 'defaults',/);
   assert.match(store, /\n\s*isBreadcrumb: true,/);
-  // 设置抽屉按这些默认值写内联变量；app.scss 的兜底值要指向同一组 token
+  // 默认配色暖白；主题色、顶栏、菜单颜色取自 colorSchemes.ts 的暖白
+  assert.match(store, /\n\s*colorScheme: 'claude',/);
+  assert.match(store, /const defaultColors = colorSchemeColors\('claude'\);/);
+  const keys = ['primary', 'topBar', 'topBarColor', 'menuBar', 'menuBarColor', 'menuBarActiveColor', 'columnsMenuBar', 'columnsMenuBarColor'];
+  for (const key of keys) assert.match(store, new RegExp(`\\n\\s*${key}: defaultColors\\.${key},`), key);
+});
+
+test('each scheme sets the layout colours to the values of its own tokens', () => {
+  const { COLOR_SCHEMES } = loadColorSchemes();
+  assert.deepEqual(Array.from(COLOR_SCHEMES, s => [s.value, s.label]), [['claude', '暖白'], ['blue', '灰白蓝']]);
+  // 设置抽屉按这些颜色写内联变量；app.scss 的兜底值要指向同一组 token，两套配色下都对得上
   const tokens = sass.compile(path.resolve(themeDir, 'tokens.scss'), { style: 'expanded' }).css;
-  const token = name => tokens.match(new RegExp(`--dv-${name}: ([^;]+);`))[1];
+  const block = selector => {
+    const at = tokens.indexOf(`\n${selector} {`);
+    return Object.fromEntries([...tokens.slice(at, tokens.indexOf('}', at)).matchAll(/^\s*--dv-([\w-]+):\s*(.+);$/gm)].map(([, name, value]) => [name, value.trim()]));
+  };
+  const root = block(':root');
+  const values = { claude: root, blue: { ...root, ...block(':root[data-scheme=blue]') } };
   const app = read('theme/app.scss');
   // 菜单高亮背景色是选中项的灰底（Win11 侧栏：选中灰底 + 左侧竖线），不再是白色凸起块
-  const fallback = { topBar: 'surface', topBarColor: 'text-secondary', menuBar: 'side-bg', menuBarColor: 'text-nav', menuBarActiveColor: 'selected', columnsMenuBar: 'side-bg', columnsMenuBarColor: 'text-nav' };
-  for (const [key, name] of Object.entries(fallback)) {
-    assert.match(app, new RegExp(`--next-bg-${key}: var\\(--dv-${name}\\);`), key);
-    assert.equal(token(name), defaults[key], key);
+  const fallback = { primary: 'primary', topBar: 'surface', topBarColor: 'text-secondary', menuBar: 'side-bg', menuBarColor: 'text-nav', menuBarActiveColor: 'selected', columnsMenuBar: 'side-bg', columnsMenuBarColor: 'text-nav' };
+  for (const scheme of COLOR_SCHEMES) {
+    for (const [key, name] of Object.entries(fallback)) {
+      if (key !== 'primary') assert.match(app, new RegExp(`--next-bg-${key}: var\\(--dv-${name}\\);`), key);
+      assert.equal(scheme.colors[key], values[scheme.value][name], `${scheme.value}.${key}`);
+    }
   }
-  assert.equal(token('primary'), defaults.primary);
 });

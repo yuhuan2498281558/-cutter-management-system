@@ -60,6 +60,11 @@
 	--el-box-shadow-lighter: var(--dv-shadow-overlay);
 	--el-box-shadow-dark: var(--dv-shadow-overlay);
 }
+// 灰白蓝：主题色和 info 换了，派生色跟着重新生成（基础色指向的 --dv-* 已在 tokens.scss 里换掉）
+:root[data-scheme='blue'] {
+	@include dv-el-color(primary, primary, $dv-blue-primary);
+	@include dv-el-color(info, info, $dv-blue-info);
+}
 
 /* 数字等宽：表格、统计数字
 ------------------------------- */
@@ -378,12 +383,12 @@
 	box-shadow: var(--dv-shadow-overlay);
 	font-size: var(--dv-font-size);
 }
-// 确认框：大圆角、浮层阴影，标题衬线
+// 确认框：大圆角、浮层阴影，标题用标题字体（暖白衬线、灰白蓝无衬线）
 .el-message-box {
 	--el-messagebox-border-radius: var(--dv-radius-xl);
 	box-shadow: var(--dv-shadow-overlay);
 	.el-message-box__title {
-		font-family: var(--dv-font-serif);
+		font-family: var(--dv-font-title);
 		font-size: 16px;
 		font-weight: 600;
 	}
@@ -746,13 +751,13 @@
 	overflow-y: auto;
 	overflow-x: hidden;
 }
-// 28px 大圆角、浮层阴影；头尾不画分隔线，用留白分开；标题衬线 16px
+// 大圆角（暖白 28px、灰白蓝 8px）、浮层阴影；头尾不画分隔线，用留白分开；标题 16px 标题字体
 .el-dialog {
 	--el-dialog-border-radius: var(--dv-radius-xl);
 	--el-dialog-box-shadow: var(--dv-shadow-overlay);
 	--el-dialog-title-font-size: 16px;
 	.el-dialog__title {
-		font-family: var(--dv-font-serif);
+		font-family: var(--dv-font-title);
 		font-weight: 600;
 	}
 }
@@ -762,20 +767,20 @@
 		border-bottom: none;
 	}
 	.fs-form-header-left {
-		font-family: var(--dv-font-serif);
+		font-family: var(--dv-font-title);
 		font-size: 16px;
 		font-weight: 600;
 		color: var(--el-text-color-primary);
 	}
 }
 
-/* Card 卡片：主面板里的平铺块，平铺块底色、无边框、无阴影、26px 大圆角，标题和内容之间不画分隔线
+/* Card 卡片：无阴影，标题和内容之间不画分隔线。暖白是平铺块底色、透明边线、26px 大圆角；灰白蓝是白底、1px 灰边线、8px 圆角
 ------------------------------- */
 .el-card {
 	--el-card-bg-color: var(--dv-card-bg);
 	--el-card-border-color: var(--dv-card-border);
 	--el-card-border-radius: var(--dv-radius-card);
-	border: none;
+	border: 1px solid var(--dv-card-border);
 	&,
 	&.is-always-shadow,
 	&.is-hover-shadow:hover,
@@ -904,7 +909,7 @@
 	color: var(--dv-on-primary) !important;
 }
 
-/* Drawer 抽屉：离窗口边一个页面间距浮起来，四角 28px 大圆角、浮层阴影；标题衬线，标题下不画分隔线，
+/* Drawer 抽屉：离窗口边一个页面间距浮起来，四角大圆角、浮层阴影；标题用标题字体，标题下不画分隔线，
  * 底部操作区上边一道细线
 ------------------------------- */
 .el-drawer {
@@ -920,7 +925,7 @@
 		color: var(--el-text-color-primary);
 	}
 	.el-drawer__title {
-		font-family: var(--dv-font-serif);
+		font-family: var(--dv-font-title);
 		font-size: 16px;
 		font-weight: 600;
 	}

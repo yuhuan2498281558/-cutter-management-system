@@ -1,6 +1,7 @@
-/* 设计变量（样板 C「Claude · 浅色」：象牙白面板、暖灰底、陶土色主按钮、衬线标题）
- * 颜色、圆角、字体、阴影只在下面这组 SCSS 变量里写一次：
- * :root 的 --dv-* 变量和 Element Plus 的 light/dark 派生色（element.scss）都由它们生成。
+/* 设计变量，两套配色（<html data-scheme>，切换入口在布局设置抽屉，取值也见 theme/colorSchemes.ts）：
+ * - 暖白（默认，样板 C「Claude · 浅色」）：象牙白面板、暖灰侧栏、陶土色主按钮、衬线标题，写在 :root
+ * - 灰白蓝（Win11 浅色）：白底、灰色只用于悬停和选中、蓝色主题、无衬线标题、小圆角，写在文件末尾的 [data-scheme='blue']
+ * 颜色、圆角、字体、阴影只在这个文件里写：--dv-* 变量和 Element Plus 的 light/dark 派生色（element.scss）都由这里的 SCSS 变量生成。
  * 其他样式文件只引用 var(--dv-*) / var(--el-*)，不写色值。
  * 图表色板在 views/shield/analysis/utils/chartTheme.ts，改这里的颜色时要同步检查那边。
 ------------------------------- */
@@ -220,6 +221,7 @@ $dv-line-height: 1.54;
 	--dv-font-sans: #{inspect($dv-font-sans)};
 	--dv-font-serif: #{inspect($dv-font-serif)};
 	--dv-font-mono: #{inspect($dv-font-mono)};
+	--dv-font-title: var(--dv-font-serif); // 页面标题、弹窗和抽屉标题、侧栏系统名
 	--dv-font-size: #{$dv-font-size};
 	--dv-line-height: #{$dv-line-height};
 }
@@ -229,4 +231,79 @@ $dv-line-height: 1.54;
 		--dv-content-pad-top: #{$dv-content-pad-top-sm};
 		--dv-content-pad-bottom: #{$dv-content-pad-bottom-sm};
 	}
+}
+
+/* 灰白蓝（Win11 浅色）：只覆盖与暖白不同的变量
+ * 蓝是主题色，白是背景（侧栏、主内容区、卡片、弹窗、浮层），灰只用在悬停、选中和表头/浅底块；
+ * 控件 4px、卡片/表格/弹窗/浮层 8px 圆角；阴影只留给浮层、弹窗和窄屏抽屉，卡片、分段控件、头像用 1px 边线；状态色沿用暖白
+ * 用 :root[data-scheme] 而不是 [data-scheme]：比 :root 高一级，不受文件先后顺序影响（element.scss 的 :root 在后面）
+------------------------------- */
+$dv-blue-primary: #0067c0; // Win11 浅色默认强调色
+$dv-blue-info: #5b6b7d; // 中性灰蓝，不和主题蓝撞色
+:root[data-scheme='blue'] {
+	// 底色与表面
+	--dv-bg: #ffffff;
+	--dv-surface: #ffffff;
+	--dv-tile: #f7f7f7;
+	--dv-surface-muted: #f7f7f7;
+	--dv-selected: #ebebeb;
+	--dv-hover: #f0f0f0;
+	--dv-hover-solid: #f0f0f0;
+	--dv-fill: rgba(0, 0, 0, 0.06);
+	// 侧栏：白底；搜索框是白底 + 细边、底边深一档（Win11 输入框）
+	--dv-side-bg: #ffffff;
+	--dv-side-inset: #ffffff;
+	// 凸起块
+	--dv-raise-sh: rgba(0, 0, 0, 0.08);
+	--dv-raise-border: rgba(0, 0, 0, 0.06);
+	--dv-drop: rgba(0, 0, 0, 0.14);
+	// 文字
+	--dv-text: #1b1b1b;
+	--dv-text-regular: #1b1b1b;
+	--dv-text-secondary: #5d5d5d;
+	--dv-text-muted: #8a8a8a;
+	--dv-text-nav: #1b1b1b;
+	// 线
+	--dv-border: #e5e5e5;
+	--dv-border-strong: #d1d1d1;
+	--dv-divider: #e5e5e5;
+	// 主色：悬停加深一档、选中行和焦点光晕用最浅一档（与 Element Plus 深浅色同一算法）；链接文字 #005fb8
+	--dv-primary: #{$dv-blue-primary};
+	--dv-primary-hover: #{dv-dark($dv-blue-primary, 1)};
+	--dv-accent: #{$dv-blue-primary};
+	--dv-accent-strong: #005fb8;
+	--dv-accent-soft: #{dv-light($dv-blue-primary, 9)};
+	--dv-ai: #{$dv-blue-primary};
+	--dv-info: #{$dv-blue-info};
+	--dv-info-bg: #eef1f4;
+	--dv-info-text: #{$dv-blue-info};
+	// 形状
+	--dv-radius-sm: 4px;
+	--dv-radius: 4px;
+	--dv-radius-lg: 8px;
+	--dv-radius-xl: 8px;
+	--dv-radius-card: 8px;
+	--dv-radius-table: 8px;
+	--dv-radius-popover: 8px;
+	--dv-radius-badge: 4px;
+	--dv-radius-seg: 6px;
+	--dv-radius-seg-sm: 4px;
+	--dv-radius-toast: 8px;
+	// 外壳
+	--dv-topbar-bg: #{rgba(#ffffff, 0.84)};
+	--dv-logo-bg: #{$dv-blue-primary};
+	// 阴影：浮层、弹窗、抽屉保留；其余换成 1px 边线（主按钮只在底边加一道深色细线）
+	--dv-shadow-1: 0 0 0 1px rgba(0, 0, 0, 0.08);
+	--dv-shadow-raised: 0 0 0 1px rgba(0, 0, 0, 0.08);
+	--dv-shadow-inset: inset 0 0 0 1px rgba(0, 0, 0, 0.08), inset 0 -1px 0 rgba(0, 0, 0, 0.16);
+	--dv-shadow-drawer: 8px 0 24px -8px rgba(0, 0, 0, 0.18);
+	--dv-shadow-button: inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+	--dv-shadow-button-plain: none;
+	--dv-shadow-overlay: 0 8px 16px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06);
+	--dv-shadow-logo: none;
+	// 卡片：白底 + 1px 边线，不加阴影
+	--dv-card-bg: var(--dv-surface);
+	--dv-card-border: var(--dv-border);
+	// 字体：标题不用衬线，与正文同一套无衬线
+	--dv-font-title: var(--dv-font-sans);
 }

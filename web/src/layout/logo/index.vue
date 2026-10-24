@@ -6,7 +6,7 @@
 		<!--  注释编号:django-vue3-admin__index531415:修改主页的名称 -->
 		<!-- <span style="font-size: x-large">{{ themeConfig.globalTitle }}</span> -->
 
-		<!-- 陶土色渐变方块里画一个刀盘图形 -->
+		<!-- 主题色方块（暖白是陶土色渐变）里画一个刀盘图形 -->
 		<span class="layout-logo__mark" aria-hidden="true">
 			<svg viewBox="0 0 24 24" width="17" height="17">
 				<circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.8" />
@@ -65,7 +65,7 @@ const siteLogo = computed(() => {
 </script>
 
 <style scoped lang="scss">
-// 32px 陶土色渐变方块 + 系统名称（衬线）+ 英文名
+// 32px 主题色方块 + 系统名称（标题字体）+ 英文名
 // 侧边栏布局放在侧栏顶部；经典、横向布局放在顶栏左侧，高度跟顶栏一致
 .layout-logo {
 	min-height: 50px;
@@ -97,7 +97,7 @@ const siteLogo = computed(() => {
 		line-height: 1.25;
 	}
 	&__title {
-		font-family: var(--dv-font-serif);
+		font-family: var(--dv-font-title);
 		font-size: 14px;
 		font-weight: 600;
 		color: var(--dv-text);
