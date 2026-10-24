@@ -157,7 +157,9 @@ def extract(args):
         'estimated':True,'source':args.pdf.name,'source_sha256':digest,'dxf_sha256':DXF_SHA,
         'method':'每环完整纵断面内按原图子岩性面积归并六类；标注孤石轮廓优先，凸起区间内弱岩单列，其他岩性按显式归并表；未知不归一化。',
         'child_classes':CHILD_CLASSES,'bedrock_intervals_dxf':bedrock,'boulder_contours':evidence,
-        'calibration':{'columns':args.columns,'samples':args.samples,'dxf_ring0':DXF_START,'pdf_ring0':START_X,'pdf_per_ring':X_PER_RING},
+        'calibration':{'columns':args.columns,'samples':args.samples,'dxf_ring0':DXF_START,'pdf_ring0':START_X,'pdf_per_ring':X_PER_RING,
+            'dxf_geometry_sha256':hashlib.sha256(args.geometry.read_bytes()).hexdigest(),
+            'candidate_geometry_method':geometry.get('candidate_geometry_method','legacy_buffer_zero')},
         'quality':{'boulder_rings':boulder_hits,'unallocated_rings':[r for r,v in rings.items() if v.get('OTHER_IDENTIFIED')],
                    'mixed_rings':sum(sum(k.startswith('AREA_') for k in v)>1 for v in rings.values())},
         'rings':rings,'raw_lithology_rings':raw_rings}

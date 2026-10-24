@@ -8,6 +8,7 @@ from .analysis_views import AnalysisViewSet
 from .models import (
     NewToolRecord, OldToolRecord, ProjectInfo, ShieldMachineBasicInfo,
     ToolChangeDetail, ToolInstance, WarehouseOpeningBasicInfo,
+    StratumBasicInfo,
 )
 
 
@@ -46,6 +47,47 @@ class AnalysisContractTests(TestCase):
         NewToolRecord.objects.create(tool_change_detail=detail, tool_instance=instance)
         return instance
 
+    def test_stratum_options_include_dictionary_categories_without_openings(self):
+        from django.core.cache import cache
+        from dvadmin.system.models import Dictionary
+
+        cache.delete('stratum_label_map')
+        self.addCleanup(cache.delete, 'stratum_label_map')
+        parent = Dictionary.objects.create(value='stratum_type', label='地层类型')
+        categories = [
+            ('CLAY_SAND', '黏土夹砂地层'), ('SOFT_HARD', '上软下硬地层'),
+            ('WEAK_GRANITE', '全断面弱风化花岗岩'), ('BEDROCK_PROTRUSION', '基岩凸起地层'),
+            ('SOFT_SOIL', '软土地基'), ('BOULDER', '孤石'),
+        ]
+        for index, (code, label) in reversed(list(enumerate(categories))):
+            Dictionary.objects.create(parent=parent, value=code, label=label, sort=index, status=True)
+        Dictionary.objects.create(parent=parent, value='DISABLED', label='停用项', status=False)
+        expected = [{'value': code, 'label': label} for code, label in categories]
+        self.assertEqual(self.query('filter_options')['stratum_types'], expected)
+
+        self.detail(self.opening(100, stratum_info_between={'CLAY_SAND': 100}),
+                    is_replaced=True, manufacturer='黏土厂家', price=10)
+        # A narrow or empty scope must not remove the other configured options.
+        self.assertEqual(self.query('filter_options', end_ring=100)['stratum_types'], expected)
+        for code in ('SOFT_SOIL', 'BOULDER'):
+            self.assertEqual(self.query('filter_options', stratum_type=code)['stratum_types'], expected)
+            self.assertEqual(self.query('filter_options', stratum_type=code)['manufacturers'], [])
+            self.assertEqual(self.query('overview', stratum_type=code)['kpi']['total_replacements'], 0)
+
+        self.detail(self.opening(200, stratum_info_between={'SOFT_SOIL': 80}),
+                    is_replaced=True, manufacturer='软土厂家', price=20)
+        self.detail(self.opening(300, stratum_info_between={'BOULDER': 20}),
+                    is_replaced=True, manufacturer='孤石厂家', price=30)
+        for code, manufacturer, cost in (('SOFT_SOIL', '软土厂家', 20), ('BOULDER', '孤石厂家', 30)):
+            self.assertEqual(self.query('filter_options', stratum_type=code)['manufacturers'], [manufacturer])
+            data = self.query('overview', stratum_type=code)['kpi']
+            self.assertEqual(data['total_replacements'], 1)
+            self.assertEqual(data['total_cost'], cost)
+
+        self.opening(400, stratum_info_between={'HISTORICAL': 10})
+        self.assertEqual(self.query('filter_options')['stratum_types'],
+                         expected + [{'value': 'HISTORICAL', 'label': 'HISTORICAL'}])
+
     def test_confirmed_default_active_observed_and_summary_gap(self):
         opening = self.opening(100, checked_tool_count=6, replaced_tool_count=3)
         self.detail(opening, is_checked=True, is_replaced=True, price=100)
@@ -61,6 +103,82 @@ class AnalysisContractTests(TestCase):
         self.assertEqual(data['meta']['unobserved_count'], 1)
         self.assertEqual(data['meta']['schema_version'], 2)
         self.assertEqual(self.query('overview', summary_status='ALL')['kpi']['total_replacements'], 2)
+
+    def test_current_area_classes_drive_all_analysis_queries_not_stale_snapshots(self):
+        soft = self.opening(106, last_ring_no='67', stratum_info_between={'WEAK_GRANITE': 39})
+        boulder = self.opening(400, last_ring_no='369', stratum_info_between={'CLAY_SAND': 31})
+        for opening, vendor, price in ((soft, '软土厂家', 100), (boulder, '孤石厂家', 200)):
+            self.install(self.detail(opening, is_replaced=True, is_checked=True,
+                                     manufacturer=vendor, price=price, wear_condition='NORMAL'))
+        StratumBasicInfo.objects.create(project=self.project, ring_no='81',
+            stratum_type_codes='WEAK_GRANITE', longitudinal_type_ratios={'AREA_SOFT_SOIL': 100})
+        StratumBasicInfo.objects.create(project=self.project, ring_no='389',
+            stratum_type_codes='CLAY_SAND', longitudinal_type_ratios={'AREA_BOULDER': 5, 'AREA_SOFT_HARD': 95})
+        for code, vendor, cost, ring in (('SOFT_SOIL', '软土厂家', 100, '106'), ('BOULDER', '孤石厂家', 200, '400')):
+            with self.subTest(code=code):
+                scope = {'stratum_type': code}
+                overview = self.query('overview', **scope)
+                self.assertEqual(overview['kpi']['total_replacements'], 1)
+                self.assertEqual(overview['kpi']['total_cost'], cost)
+                self.assertEqual(self.query('filter_options', **scope)['manufacturers'], [vendor])
+                self.assertEqual(self.query('cost_overview', **scope)['cost_sources']['total'], cost)
+                self.assertEqual(self.query('cost_trend', **scope)['items'][0]['total_cost'], cost)
+                self.assertEqual(self.query('brand_cost', **scope)['items'][0]['manufacturer'], vendor)
+                self.assertEqual(self.query('brand_price_trend', **scope)['series'][0]['data'], [cost])
+                self.assertEqual(self.query('brand_performance_trend', **scope)['time_axis'][0]['ring_no'], ring)
+                self.assertEqual(self.query('wear_distribution', **scope)['normal_count'], 1)
+                wear = self.query('wear_trend', **scope)['items'][0]
+                self.assertEqual(wear['ring_no'], ring)
+                self.assertIn(code, wear['stratum_types'])
+                custom = self.query('custom_chart', x_field='stratum_types', metrics='total_cost', **scope)
+                self.assertEqual(custom['record_count'], 1)
+                self.assertNotIn('WEAK_GRANITE', custom['categories'])
+                self.assertIn(code, custom['categories'])
+        self.assertEqual(self.query('overview', stratum_type='WEAK_GRANITE')['kpi']['total_replacements'], 0)
+        self.assertEqual(self.query('overview', stratum_types='SOFT_SOIL,BOULDER')['kpi']['total_replacements'], 2)
+
+    def test_stratum_interval_bounds_project_machine_and_first_opening(self):
+        from .analysis_strata import opening_strata
+        first = self.opening(10, stratum_info_between={'STALE': 10})
+        self.opening(20, summary_status='DRAFT')
+        second = self.opening(30, stratum_info_between={'STALE': 10})
+        other_machine = ShieldMachineBasicInfo.objects.create(shield_model_id='OTHER', shield_model='另机')
+        self.opening(25, shield_model=other_machine)
+        other_project = ProjectInfo.objects.create(project_id='OTHER', project_name='另项目')
+        StratumBasicInfo.objects.create(project=other_project, ring_no='29', longitudinal_type_ratios={'AREA_BOULDER': 100})
+        for ring, ratios in ((1, {'AREA_SOFT_SOIL': 100}), (20, {'AREA_BOULDER': 100}),
+                             (23, {'AREA_SOFT_HARD': 100}), (30, {'AREA_CLAY_SAND': 100}),
+                             (31, {'AREA_BOULDER': 100})):
+            StratumBasicInfo.objects.create(project=self.project, ring_no=str(ring), longitudinal_type_ratios=ratios)
+        result = opening_strata([first, second])
+        self.assertEqual(result[first.pk], {'SOFT_SOIL': 1})
+        self.assertEqual(result[second.pk], {'SOFT_HARD': 1, 'CLAY_SAND': 1})
+        # Status/ring filters must not move the preceding interval boundary.
+        self.detail(second, is_replaced=True)
+        self.assertEqual(self.query('overview', start_ring=30, stratum_type='BOULDER')['kpi']['total_replacements'], 0)
+        self.assertEqual(self.query('overview', start_ring=30, stratum_type='SOFT_HARD')['kpi']['total_replacements'], 1)
+
+    def test_stratum_edits_are_visible_next_request_and_zero_or_unknown_do_not_match(self):
+        from dvadmin.system.models import Users
+        user = Users.objects.create(username='stratum-refresh-admin', is_superuser=True)
+        self.detail(self.opening(100, stratum_info_between={'BOULDER': 100}), is_replaced=True)
+        row = StratumBasicInfo.objects.create(project=self.project, ring_no='81',
+            stratum_type_codes='BOULDER', longitudinal_type_ratios={'AREA_SOFT_SOIL': 100, 'AREA_BOULDER': 0})
+        view = AnalysisViewSet.as_view({'get': 'overview'})
+        def query():
+            request = APIRequestFactory().get('/api/shield/analysis/overview/', {'stratum_type': 'SOFT_SOIL'})
+            force_authenticate(request, user=user)
+            response = view(request)
+            self.assertEqual(response.data['code'], 2000)
+            return response.data['data']['kpi']['total_replacements']
+        self.assertEqual(query(), 1)
+        self.assertEqual(self.query('overview', stratum_type='BOULDER')['kpi']['total_replacements'], 0)
+        StratumBasicInfo.objects.filter(pk=row.pk).update(longitudinal_type_ratios={'UNRESOLVED': 100})
+        self.assertEqual(query(), 0)
+        self.assertEqual(self.query('overview', stratum_type='BOULDER')['kpi']['total_replacements'], 0)
+        # With no area dataset, explicitly entered per-ring tags still work.
+        StratumBasicInfo.objects.filter(pk=row.pk).update(longitudinal_type_ratios={})
+        self.assertEqual(self.query('overview', stratum_type='BOULDER')['kpi']['total_replacements'], 1)
 
     def test_untyped_replacements_are_in_monthly_total(self):
         self.detail(self.opening(100), is_replaced=True, price=100)

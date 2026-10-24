@@ -39,6 +39,7 @@ from .analysis_metrics import (
     RING_NUMERIC_REGEX,
     ANALYSIS_REQUEST, scoped_queryset, blade_track_range,
 )
+from .analysis_strata import opening_strata
 
 
 class _AnalysisCache:
@@ -79,7 +80,7 @@ def _get_stratum_label_map():
         from dvadmin.system.models import Dictionary
         items = Dictionary.objects.filter(
             parent__value='stratum_type', status=True
-        ).values('value', 'label')
+        ).order_by('sort', 'id').values('value', 'label')
         label_map = {item['value']: item['label'] for item in items}
     except Exception:
         label_map = {}
@@ -310,7 +311,9 @@ def _build_opening_queryset(params, include_all_statuses=False, include_invalid_
             qs = qs.filter(ring_int__lte=end_ring_int)
 
     if stratum_types:
-        qs = qs.filter(stratum_info_between__has_any_keys=stratum_types)
+        selected = set(stratum_types)
+        matched = [pk for pk, codes in opening_strata(qs).items() if selected.intersection(codes)]
+        qs = qs.filter(pk__in=matched)
 
     return qs
 
@@ -331,6 +334,7 @@ def _meta(openings, params, details=None):
     ).exclude(ring_no__regex=_RING_NUMERIC_REGEX).count()
     if result['excluded_invalid_ring_opening_count']:
         result['warnings'].append('环号必须为1至9位数字；范围内存在不可定位的历史开仓，已排除并单列数量。')
+    result['stratum_basis'] = '按同项目上次开仓之后至本次开仓的逐环地层筛选；优先当前六类正占比，未提供占比时沿用逐环标签，无逐环记录时沿用历史开仓快照。首仓从第1环起。'
     return result
 
 
@@ -788,6 +792,7 @@ def _build_custom_records(openings, details, metrics=None, params=None):
 
     label_map = _get_stratum_label_map()
     replacement_type_labels = {'COMPLETE': '整刀更换', 'REPAIR': '维修'}
+    strata_by_opening = opening_strata(opening_list)
     empty = '未填写'
     records = []
     detail_qs = (
@@ -802,7 +807,7 @@ def _build_custom_records(openings, details, metrics=None, params=None):
     for detail in detail_qs:
         op = opening_map.get(detail.warehouse_id) or detail.warehouse
         tunneling = tunneling_map.get((op.project_id, op.shield_model_id, op.ring_no), {})
-        stratum_info = op.stratum_info_between if isinstance(op.stratum_info_between, dict) else {}
+        stratum_info = strata_by_opening.get(op.id, {})
         stratum_types = [label_map.get(code, code) for code in stratum_info.keys() if code]
         tool_info = detail.cutter_position.tool_info if detail.cutter_position else None
         price = _safe_float(detail.price)
@@ -1112,8 +1117,10 @@ class AnalysisViewSet(viewsets.ViewSet):
             for row in tool_type_rows
         ]
         label_map = _get_stratum_label_map()
-        stratum_codes = []
-        for info in openings.values_list('stratum_info_between', flat=True):
+        # Keep configured categories selectable even when the current opening
+        # scope has no matching records; retain historical codes as a fallback.
+        stratum_codes = list(label_map)
+        for info in opening_strata(openings).values():
             if not isinstance(info, dict):
                 continue
             for code in info.keys():
@@ -1662,6 +1669,8 @@ class AnalysisViewSet(viewsets.ViewSet):
             .filter(ring_no__regex=_RING_NUMERIC_REGEX).annotate(ring_int=Cast('ring_no', output_field=IntegerField()))
             .order_by('ring_int')
         )
+        strata_by_opening = opening_strata(sorted_openings)
+        label_map = _get_stratum_label_map()
         items = []
         for op in sorted_openings:
             samples = wear_rows[op.id]
@@ -1671,10 +1680,9 @@ class AnalysisViewSet(viewsets.ViewSet):
             abnormal_rate = round(abnormal / total, 3) if total else None
             # 地层类型信息（转换为中文名）
             stratum_types = ''
-            if hasattr(op, 'stratum_info_between') and op.stratum_info_between:
-                label_map = _get_stratum_label_map()
+            if strata_by_opening.get(op.id):
                 stratum_types = '、'.join(
-                    label_map.get(k, k) for k in op.stratum_info_between.keys()
+                    label_map.get(k, k) for k in strata_by_opening[op.id]
                 )
             items.append({
                 'ring_no': op.ring_no,
