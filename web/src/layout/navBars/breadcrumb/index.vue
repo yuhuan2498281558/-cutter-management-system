@@ -1,5 +1,5 @@
 <template>
-	<div class="layout-navbars-breadcrumb-index">
+	<div class="layout-navbars-breadcrumb-index" :class="{ 'is-glass': themeConfig.layout === 'defaults' }">
 		<Logo v-if="setIsShowLogo" />
 		<Breadcrumb />
 		<Horizontal :menuList="state.menuList" v-if="isLayoutTransverse" />
@@ -103,5 +103,30 @@ onUnmounted(() => {
 	align-items: center;
 	background: var(--next-bg-topBar);
 	border-bottom: 1px solid var(--next-border-color-light);
+	// 侧边栏布局：主面板顶部的毛玻璃顶栏，上两角跟主面板同圆角（窄屏时主面板铺满，圆角见 app.scss）
+	// 毛玻璃画在 ::before 上：backdrop-filter 会让元素成为 fixed 子元素的定位容器，
+	// 直接加在顶栏上，顶栏里的菜单搜索弹窗（没有挂到 body）的遮罩就只剩顶栏那么大
+	&.is-glass {
+		position: relative;
+		height: var(--dv-topbar-height);
+		padding: 0 14px;
+		gap: 8px;
+		background: transparent;
+		border-bottom-color: var(--dv-border);
+		border-radius: var(--dv-radius-lg) var(--dv-radius-lg) 0 0;
+		&::before {
+			content: '';
+			position: absolute;
+			inset: 0;
+			z-index: -1;
+			border-radius: inherit;
+			background: var(--dv-topbar-bg);
+			-webkit-backdrop-filter: var(--dv-backdrop);
+			backdrop-filter: var(--dv-backdrop);
+		}
+		:deep(.layout-navbars-breadcrumb-user) {
+			padding-right: 0 !important;
+		}
+	}
 }
 </style>

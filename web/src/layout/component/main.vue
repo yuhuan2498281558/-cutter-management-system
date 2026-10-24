@@ -1,5 +1,5 @@
 <template>
-	<el-main class="layout-main"
+	<el-main class="layout-main" :class="{ 'layout-main-under-topbar': isUnderTopbar, 'layout-main-no-footer': !isFooter }"
 		:style="isFixedHeader ? `height: calc(100% - ${setMainHeight})` : `minHeight: calc(100% - ${setMainHeight})`">
 		<el-scrollbar ref="layoutMainScrollbarRef" class="layout-main-scroll layout-backtop-header-fixed"
 			wrap-class="layout-main-scroll" view-class="layout-main-scroll">
@@ -43,10 +43,15 @@ const setBacktopClass = computed(() => {
 	if (themeConfig.value.isFixedHeader) return `.layout-backtop-header-fixed .el-scrollbar__wrap`;
 	else return `.layout-backtop .el-scrollbar__wrap`;
 });
+// 侧边栏布局：顶栏浮在主面板顶部，主内容区铺满主面板，用上内边距让出顶栏高度
+const isUnderTopbar = computed(() => {
+	return themeConfig.value.layout === 'defaults' && !isTagsViewCurrenFull.value;
+});
 // 设置主内容区的高度
 const setMainHeight = computed(() => {
 	if (isTagsViewCurrenFull.value) return '0px';
 	const { isTagsview, layout } = themeConfig.value;
+	if (layout === 'defaults') return '0px';
 	if (isTagsview && layout !== 'classic') return '85px';
 	else return '51px';
 });

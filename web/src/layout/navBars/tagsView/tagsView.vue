@@ -60,6 +60,7 @@ import { Session } from '/@/utils/storage';
 import { isObjectValueEqual } from '/@/utils/arrayOperation';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
+import { openedPages } from '/@/layout/navBars/tagsView/openedPages';
 
 // 引入组件
 const Contextmenu = defineAsyncComponent(() => import('/@/layout/navBars/tagsView/contextmenu.vue'));
@@ -548,8 +549,24 @@ onBeforeMount(() => {
 		}
 	});
 });
+// 侧栏"最近打开"：同步打开的页面列表，关闭时走标签栏自己的关闭逻辑
+const closeFromOpenedPages = (v: RouteItem) => {
+	closeCurrentTagsView(getThemeConfig.value.isShareTagsView ? v.path : v.url);
+};
+watch(
+	() => [state.tagsViewList, state.routeActive, state.routePath, getThemeConfig.value.isShareTagsView],
+	() => {
+		openedPages.list = state.tagsViewList.map((v: RouteItem) => ({ route: v, isActive: isActive(v) }));
+	},
+	{ deep: true, immediate: true }
+);
+openedPages.close = closeFromOpenedPages;
 // 页面卸载时
 onUnmounted(() => {
+	if (openedPages.close === closeFromOpenedPages) {
+		openedPages.list = [];
+		openedPages.close = null;
+	}
 	// 取消非本页面调用监听
 	mittBus.off('onCurrentContextmenuClick', () => {});
 	// 取消监听布局配置界面开启/关闭拖拽

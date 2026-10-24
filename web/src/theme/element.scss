@@ -268,6 +268,85 @@
 .el-sub-menu.is-active.is-opened .el-sub-menu__title {
 	background-color: unset !important;
 }
+// 侧栏的竖向菜单（侧边栏、经典、分栏布局）：34px 圆角项，未选中次一级正文色、图标次要色，悬停浅填充；
+// 选中项是白色凸起块（正文色、550 字重、图标陶土色）；有子菜单的右侧 14px 箭头；子菜单项同样式、多缩进一级
+.layout-aside .el-menu {
+	--el-menu-item-height: 34px;
+	--el-menu-sub-item-height: 34px;
+	--el-menu-base-level-padding: 10px;
+	--el-menu-level-padding: 26px; // 图标 16px + 间距 10px：子菜单项的图标对齐上一级的文字
+	--el-menu-icon-width: 16px;
+	--el-menu-active-color: var(--dv-text);
+	--el-menu-hover-bg-color: var(--dv-fill) !important;
+	width: 100%;
+	.el-menu-item,
+	.el-sub-menu__title {
+		height: var(--el-menu-item-height) !important;
+		line-height: var(--el-menu-item-height) !important;
+		margin-bottom: 2px;
+		border-radius: var(--dv-radius);
+		transition: background-color 0.15s, color 0.15s;
+		&:hover {
+			color: var(--dv-text);
+		}
+		// 菜单图标（SvgIcon 的根元素）
+		> i:not(.el-sub-menu__icon-arrow) {
+			width: 16px;
+			margin-right: 10px;
+			font-size: 16px !important;
+			color: var(--dv-text-secondary);
+		}
+		> span {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+	}
+	.el-sub-menu__icon-arrow {
+		right: var(--el-menu-base-level-padding);
+		margin-top: -7px;
+		font-size: 14px;
+		color: var(--dv-text-muted);
+	}
+	.el-menu-item.is-active,
+	.el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title {
+		color: var(--dv-text);
+		font-weight: 550;
+		box-shadow: var(--dv-shadow-raised);
+		> i:not(.el-sub-menu__icon-arrow) {
+			color: var(--dv-accent-strong);
+		}
+	}
+	.el-menu--inline {
+		background-color: transparent;
+	}
+	// 收起成图标列：图标居中
+	&.el-menu--collapse {
+		width: 100% !important;
+		> .el-menu-item,
+		> .el-sub-menu > .el-sub-menu__title {
+			justify-content: center;
+			padding: 0 !important;
+			> i:not(.el-sub-menu__icon-arrow) {
+				margin-right: 0;
+			}
+		}
+	}
+}
+// 经典、分栏布局的侧栏不是面板，菜单自己留出四周的间距
+.layout-aside:not(.layout-aside-panel) .el-menu:not(.el-menu--inline) {
+	padding: 6px 8px;
+}
+// 收起时悬停弹出的子菜单：与侧栏菜单同样的 34px 圆角项
+.el-menu--vertical.el-menu--popup-container .el-menu--popup {
+	padding: 6px;
+	.el-menu-item,
+	.el-sub-menu__title {
+		height: 34px !important;
+		line-height: 34px !important;
+		border-radius: var(--dv-radius);
+	}
+}
 // 子级菜单背景颜色
 // .el-menu--inline {
 // 	background: var(--next-bg-menuBar-light-1);

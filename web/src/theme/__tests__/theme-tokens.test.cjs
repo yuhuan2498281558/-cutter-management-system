@@ -73,6 +73,12 @@ test('tokens.scss defines every design variable with the agreed value', () => {
     '--dv-radius-sm': '9px', '--dv-radius': '11px', '--dv-radius-lg': '22px', '--dv-radius-xl': '28px',
     '--dv-radius-card': '26px', '--dv-radius-table': '24px', '--dv-radius-popover': '18px', '--dv-radius-badge': '7px',
     '--dv-radius-pill': '999px', '--dv-page-gutter': '10px', '--dv-content-pad': '32px',
+    '--dv-content-pad-top': '32px', '--dv-content-pad-bottom': '80px', '--dv-content-max': '1320px',
+    '--dv-aside-width': '256px', '--dv-aside-mobile-width': '280px', '--dv-topbar-height': '52px', '--dv-footer-height': '28px',
+    '--dv-side-bg': 'linear-gradient(180deg, var(--dv-side-top), var(--dv-side-bot-mix))',
+    '--dv-topbar-bg': 'rgba(255, 254, 251, 0.84)', '--dv-backdrop': 'saturate(1.6) blur(14px)', '--dv-scrim': 'rgba(8, 9, 11, 0.4)',
+    '--dv-logo-bg': 'linear-gradient(160deg, #e4a089, #d97757 50%, #c15f3c)',
+    '--dv-shadow-logo': 'inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -1px 0 rgba(0, 0, 0, 0.14), 0 2px 4px -2px rgba(217, 119, 87, 0.45)',
     '--dv-shadow-1': '0 1px 2px rgba(70, 52, 34, 0.05), 0 0 0 1px rgba(20, 20, 19, 0.06)',
     '--dv-shadow-raised': 'inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(20, 20, 19, 0.07), 0 1px 2px rgba(70, 52, 34, 0.085)',
     '--dv-shadow-side': 'inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(20, 20, 19, 0.08), 0 1px 2px rgba(70, 52, 34, 0.065), 0 10px 24px -22px rgba(70, 52, 34, 0.22)',
@@ -91,8 +97,8 @@ test('tokens.scss defines every design variable with the agreed value', () => {
   const rootBlock = css.slice(css.indexOf(':root {'), css.indexOf('}', css.indexOf(':root {')));
   const defined = Object.fromEntries([...rootBlock.matchAll(/^\s*(--dv-[\w-]+):\s*(.+);$/gm)].map(([, name, value]) => [name, value.trim()]));
   for (const [name, value] of Object.entries(expected)) assert.equal(defined[name], value, name);
-  // 主面板内容的左右内边距：宽度 ≤640px 时收成 16px
-  assert.match(css, /@media \(max-width: 640px\) \{\s*:root \{\s*--dv-content-pad: 16px;\s*\}\s*\}/);
+  // 主面板内容的内边距：宽度 ≤640px 时收成 22px 16px 56px
+  assert.match(css, /@media \(max-width: 640px\) \{\s*:root \{\s*--dv-content-pad: 16px;\s*--dv-content-pad-top: 22px;\s*--dv-content-pad-bottom: 56px;\s*\}\s*\}/);
 });
 
 test('fonts.scss is the first theme import, tokens.scss comes next and element plus colours derive from it', () => {

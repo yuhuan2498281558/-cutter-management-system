@@ -76,7 +76,25 @@ $dv-radius-badge: 7px; // 标签
 $dv-radius-pill: 999px; // 圆形按钮
 $dv-page-gutter: 10px; // 侧栏、主面板离窗口边缘和彼此的距离
 $dv-content-pad: 32px; // 主面板内容的左右内边距
-$dv-content-pad-sm: 16px; // 同上，宽度 ≤640px 时
+$dv-content-pad-top: 32px;
+$dv-content-pad-bottom: 80px;
+// 宽度 ≤640px 时
+$dv-content-pad-sm: 16px;
+$dv-content-pad-top-sm: 22px;
+$dv-content-pad-bottom-sm: 56px;
+$dv-content-max: 1320px; // 主面板内容的最大宽度
+$dv-aside-width: 256px; // 侧栏面板宽度（收起时沿用 64px）
+$dv-aside-mobile-width: 280px; // 窄屏时浮动侧栏的宽度
+$dv-topbar-height: 52px; // 主面板顶栏高度（含底边线）
+$dv-footer-height: 28px; // 主内容区底部的版权行
+
+// 主面板顶栏：半透明面板色 + 毛玻璃，内容从它下面滚过
+$dv-topbar-bg: rgba($dv-surface, 0.84);
+$dv-backdrop: saturate(1.6) blur(14px);
+// 窄屏侧栏抽屉的遮罩
+$dv-scrim: rgba(#08090b, 0.4);
+// 侧栏 Logo：陶土色渐变方块
+$dv-logo-bg: linear-gradient(160deg, mix($dv-accent, #ffffff, 70%), $dv-accent 50%, $dv-accent-strong);
 
 // 阴影
 $dv-shadow-1: 0 1px 2px rgba($dv-shadow-tint, 0.05), 0 0 0 1px rgba($dv-text, 0.06); // 主面板、分段控件选中项
@@ -86,6 +104,7 @@ $dv-shadow-inset: inset 0 1px 1.5px rgba($dv-shadow-tint, 0.07); // 侧栏搜索
 $dv-shadow-button: inset 0 1px 0 rgba(#ffffff, 0.22), 0 1px 2px $dv-raise-sh, 0 4px 10px -6px $dv-primary; // 主按钮
 $dv-shadow-button-plain: 0 1px 1px rgba(#0d0f12, 0.04); // 默认按钮
 $dv-shadow-overlay: 0 24px 48px -12px rgba($dv-shadow-tint, 0.26), 0 0 0 1px rgba($dv-text, 0.08); // 弹窗、抽屉、下拉、气泡
+$dv-shadow-logo: inset 0 1px 0 rgba(#ffffff, 0.35), inset 0 -1px 0 rgba(#000000, 0.14), 0 2px 4px -2px rgba($dv-accent, 0.45); // 侧栏 Logo 方块
 
 // 字体（字体文件在 assets/fonts，@font-face 在 fonts.scss）
 $dv-font-sans: 'Geist', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -166,6 +185,19 @@ $dv-line-height: 1.54;
 	--dv-radius-pill: #{$dv-radius-pill};
 	--dv-page-gutter: #{$dv-page-gutter};
 	--dv-content-pad: #{$dv-content-pad};
+	--dv-content-pad-top: #{$dv-content-pad-top};
+	--dv-content-pad-bottom: #{$dv-content-pad-bottom};
+	--dv-content-max: #{$dv-content-max};
+	--dv-aside-width: #{$dv-aside-width};
+	--dv-aside-mobile-width: #{$dv-aside-mobile-width};
+	--dv-topbar-height: #{$dv-topbar-height};
+	--dv-footer-height: #{$dv-footer-height};
+	// 外壳
+	--dv-side-bg: linear-gradient(180deg, var(--dv-side-top), var(--dv-side-bot-mix));
+	--dv-topbar-bg: #{$dv-topbar-bg};
+	--dv-backdrop: #{$dv-backdrop};
+	--dv-scrim: #{$dv-scrim};
+	--dv-logo-bg: #{$dv-logo-bg};
 	// 阴影
 	--dv-shadow-1: #{$dv-shadow-1};
 	--dv-shadow-raised: #{$dv-shadow-raised};
@@ -174,6 +206,7 @@ $dv-line-height: 1.54;
 	--dv-shadow-button: #{$dv-shadow-button};
 	--dv-shadow-button-plain: #{$dv-shadow-button-plain};
 	--dv-shadow-overlay: #{$dv-shadow-overlay};
+	--dv-shadow-logo: #{$dv-shadow-logo};
 	// 卡片：数据分析页等页面的公共卡片引用这四个变量，主面板里的卡片画成平铺块
 	--dv-card-bg: var(--dv-tile);
 	--dv-card-border: transparent;
@@ -188,5 +221,7 @@ $dv-line-height: 1.54;
 @media (max-width: 640px) {
 	:root {
 		--dv-content-pad: #{$dv-content-pad-sm};
+		--dv-content-pad-top: #{$dv-content-pad-top-sm};
+		--dv-content-pad-bottom: #{$dv-content-pad-bottom-sm};
 	}
 }

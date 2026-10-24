@@ -1,10 +1,18 @@
 <template>
 	<div class="h100" v-show="!isTagsViewCurrenFull">
-		<el-aside class="layout-aside" :class="setCollapseStyle">
+		<el-aside class="layout-aside" :class="[setCollapseStyle, { 'layout-aside-panel': isPanel, 'is-collapse': isPanelCollapse }]">
 			<Logo v-if="setShowLogo" />
+			<!-- 侧边栏布局：侧栏是一块圆角面板，依次是 Logo、菜单搜索、菜单、最近打开、用户 -->
+			<button v-if="isPanel" type="button" class="layout-aside-search" @click="onSearchClick">
+				<el-icon :size="16"><ele-Search /></el-icon>
+				<span>搜索菜单</span>
+			</button>
 			<el-scrollbar class="flex-auto" ref="layoutAsideScrollbarRef" @mouseenter="onAsideEnterLeave(true)" @mouseleave="onAsideEnterLeave(false)">
 				<Vertical :menuList="state.menuList" />
+				<AsideRecent v-if="isPanel && !isPanelCollapse" />
 			</el-scrollbar>
+			<AsideUser v-if="isPanel" />
+			<Search v-if="isPanel" ref="searchRef" />
 		</el-aside>
 	</div>
 </template>
@@ -21,9 +29,13 @@ import mittBus from '/@/utils/mitt';
 // 引入组件
 const Logo = defineAsyncComponent(() => import('/@/layout/logo/index.vue'));
 const Vertical = defineAsyncComponent(() => import('/@/layout/navMenu/vertical.vue'));
+const AsideRecent = defineAsyncComponent(() => import('/@/layout/component/asideRecent.vue'));
+const AsideUser = defineAsyncComponent(() => import('/@/layout/component/asideUser.vue'));
+const Search = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/search.vue'));
 
 // 定义变量内容
 const layoutAsideScrollbarRef = ref();
+const searchRef = ref();
 const stores = useRoutesList();
 const storesThemeConfig = useThemeConfig();
 const storesTagsViewRoutes = useTagsViewRoutes();
@@ -61,12 +73,20 @@ const setCollapseStyle = computed(() => {
 			if (isCollapse) return [asideBrColor, 'layout-aside-pc-1'];
 			else return [asideBrColor, 'layout-aside-pc-220'];
 		} else {
-			// 其它布局给 64px
+			// 其它布局给 64px；侧边栏布局展开时是 256px 的面板
 			if (isCollapse) return [asideBrColor, 'layout-aside-pc-64'];
-			else return [asideBrColor, 'layout-aside-pc-220'];
+			else return [asideBrColor, layout === 'defaults' ? 'layout-aside-pc-256' : 'layout-aside-pc-220'];
 		}
 	}
 });
+// 侧边栏布局：侧栏画成圆角面板，带菜单搜索、最近打开和用户区（窄屏时变成浮动抽屉）
+const isPanel = computed(() => themeConfig.value.layout === 'defaults');
+// 面板收起成 64px（窄屏时 isCollapse 表示抽屉打开，不算收起）
+const isPanelCollapse = computed(() => isPanel.value && themeConfig.value.isCollapse && state.clientWidth > 1000);
+// 菜单搜索：打开与顶栏搜索图标相同的菜单搜索弹窗
+const onSearchClick = () => {
+	searchRef.value.openSearch();
+};
 // 设置显示/隐藏 logo
 const setShowLogo = computed(() => {
 	let { layout, isShowLogo } = themeConfig.value;
@@ -152,3 +172,63 @@ watch(
 	}
 );
 </script>
+
+<style scoped lang="scss">
+// 侧边栏布局的侧栏面板（面板本身的底色、圆角、投影和宽度见 theme/app.scss 的 .layout-shell）
+.layout-aside-panel {
+	// 菜单搜索：轻微凹进去的按钮，点开菜单搜索弹窗
+	.layout-aside-search {
+		height: 34px;
+		flex: none;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 10px;
+		padding: 0 10px;
+		border: 0;
+		border-radius: var(--dv-radius);
+		background: var(--dv-side-inset);
+		box-shadow: var(--dv-shadow-inset);
+		color: var(--dv-text-secondary);
+		font: inherit;
+		white-space: nowrap;
+		cursor: pointer;
+		&:hover {
+			color: var(--dv-text-regular);
+		}
+		span {
+			flex: 1;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			text-align: left;
+		}
+	}
+	// 菜单滚动区左右各伸进面板内边距 4px，再用内边距收回：选中项的凸起描边和投影不被滚动区裁掉
+	> .el-scrollbar {
+		width: auto;
+		margin: 0 -4px;
+		:deep(.el-scrollbar__view) {
+			padding: 1px 4px;
+		}
+	}
+	// 收起成 64px：只留图标
+	&.is-collapse {
+		.layout-aside-search {
+			justify-content: center;
+			padding: 0;
+			span {
+				display: none;
+			}
+		}
+		:deep(.layout-aside-user) {
+			flex-direction: column;
+			gap: 6px;
+			padding: 10px 0 0;
+			.layout-aside-user-who {
+				display: none;
+			}
+		}
+	}
+}
+</style>

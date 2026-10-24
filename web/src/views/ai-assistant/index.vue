@@ -397,8 +397,8 @@ onUnmounted(() => {
 
 <style scoped lang="scss">
 .ai-assistant-container {
-  // 113px = 顶部导航 + 标签栏实测高度，刚好填满到页脚上沿
-  height: calc(100vh - 113px);
+  // 布局给出的路由页面可用高度（顶栏、页脚以外），刚好填满到页脚上沿
+  height: var(--dv-main-height);
   padding: 10px 12px 8px;
 
   .chat-card {

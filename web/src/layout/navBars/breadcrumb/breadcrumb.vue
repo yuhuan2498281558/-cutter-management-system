@@ -1,12 +1,9 @@
 <template>
 	<div v-if="isShowBreadcrumb" class="layout-navbars-breadcrumb">
-		<SvgIcon
-			class="layout-navbars-breadcrumb-icon"
-			:name="themeConfig.isCollapse ? 'ele-Expand' : 'ele-Fold'"
-			:size="16"
-			@click="onThemeConfigChange"
-		/>
-		<el-breadcrumb class="layout-navbars-breadcrumb-hide">
+		<button type="button" class="layout-navbars-breadcrumb-icon" @click="onThemeConfigChange">
+			<SvgIcon :name="themeConfig.isCollapse ? 'ele-Expand' : 'ele-Fold'" :size="16" />
+		</button>
+		<el-breadcrumb class="layout-navbars-breadcrumb-hide" :separator-icon="ArrowRight">
 			<transition-group name="breadcrumb">
 				<el-breadcrumb-item v-for="(v, k) in state.breadcrumbList" :key="!v.meta.tagsViewName ? v.meta.title : v.meta.tagsViewName">
 					<span v-if="k === state.breadcrumbList.length - 1" class="layout-navbars-breadcrumb-span">
@@ -26,6 +23,7 @@
 <script setup lang="ts" name="layoutBreadcrumb">
 import { reactive, computed, onMounted } from 'vue';
 import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
+import { ArrowRight } from '@element-plus/icons-vue';
 import { Local } from '/@/utils/storage';
 import other from '/@/utils/other';
 import { storeToRefs } from 'pinia';
@@ -108,41 +106,56 @@ onBeforeRouteUpdate((to) => {
 <style scoped lang="scss">
 .layout-navbars-breadcrumb {
 	flex: 1;
+	min-width: 0;
 	height: inherit;
 	display: flex;
 	align-items: center;
+	gap: 6px;
+	// 收起/展开菜单：34px 圆角图标按钮，与顶栏右侧工具图标同样式
 	.layout-navbars-breadcrumb-icon {
-		cursor: pointer;
-		font-size: 18px;
+		width: 34px;
+		height: 34px;
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: 0;
+		border-radius: var(--dv-radius);
+		background: transparent;
 		color: var(--next-bg-topBarColor);
-		height: 100%;
-		width: 40px;
-		opacity: 0.8;
+		cursor: pointer;
+		transition: background-color 0.15s, color 0.15s;
 		&:hover {
-			opacity: 1;
+			background: var(--dv-hover);
+			color: var(--dv-text);
 		}
 	}
 	:deep(.el-breadcrumb) {
 		font-size: 13px;
+		white-space: nowrap;
 	}
 	// 当前页用正文色，前面的层级用顶栏文字色（默认是次要文字色）
 	.layout-navbars-breadcrumb-span {
 		display: flex;
 		color: var(--el-text-color-primary);
+		font-weight: 500;
 	}
 	.layout-navbars-breadcrumb-iconfont {
 		font-size: 14px;
 		margin-right: 5px;
 	}
+	// 分隔：14px 右箭头
 	:deep(.el-breadcrumb__separator) {
-		opacity: 0.7;
-		color: var(--next-bg-topBarColor);
+		margin: 0 6px;
+		font-size: 14px;
+		color: var(--dv-text-muted);
 	}
 	:deep(.el-breadcrumb__inner a, .el-breadcrumb__inner.is-link) {
 		font-weight: unset !important;
 		color: var(--next-bg-topBarColor);
 		&:hover {
-			color: var(--el-color-primary) !important;
+			color: var(--el-text-color-primary) !important;
 		}
 	}
 }

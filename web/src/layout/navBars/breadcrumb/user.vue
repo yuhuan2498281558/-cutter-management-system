@@ -28,6 +28,7 @@
 				</el-dropdown-menu>
 			</template>
 		</el-dropdown>
+		<span class="layout-navbars-breadcrumb-user-divider"></span>
 		<div class="layout-navbars-breadcrumb-user-icon" @click="onSearchClick">
 			<el-icon :title="$t('message.user.title2')">
 				<ele-Search />
@@ -39,7 +40,7 @@
 		<div class="layout-navbars-breadcrumb-user-icon">
 			<el-popover placement="bottom" trigger="click" transition="el-zoom-in-top" :width="300" :persistent="false">
 				<template #reference>
-					<el-badge :value="messageCenter.unread" :hidden="messageCenter.unread === 0">
+					<el-badge class="layout-navbars-breadcrumb-user-news" :value="messageCenter.unread" :hidden="messageCenter.unread === 0">
 						<el-icon :title="$t('message.user.title4')">
 							<ele-Bell />
 						</el-icon>
@@ -50,14 +51,16 @@
 				</template>
 			</el-popover>
 		</div>
-		<div class="layout-navbars-breadcrumb-user-icon mr10" @click="onScreenfullClick">
+		<div class="layout-navbars-breadcrumb-user-icon" @click="onScreenfullClick">
 			<i
 				class="iconfont"
 				:title="state.isScreenfull ? $t('message.user.title6') : $t('message.user.title5')"
 				:class="!state.isScreenfull ? 'icon-fullscreen' : 'icon-tuichuquanping'"
 			></i>
 		</div>
-    <div>
+		<!-- 侧边栏布局的头像和用户菜单在侧栏底部（layout/component/asideUser.vue），顶栏不再显示 -->
+		<template v-if="themeConfig.layout !== 'defaults'">
+    <div class="ml10">
       <span v-if="!isSocketOpen">
         <el-popconfirm
           width="250"
@@ -77,7 +80,7 @@
         </el-popconfirm>
       </span>
     </div>
-		<el-dropdown :show-timeout="70" :hide-timeout="50" @command="onHandleCommandClick">
+		<UserDropdown :show-timeout="70" :hide-timeout="50">
 			<span class="layout-navbars-breadcrumb-user-link">
         <span v-if="isSocketOpen">
           <el-badge is-dot class="item" :class="{'online-status': isSocketOpen,'online-down':!isSocketOpen}">
@@ -89,22 +92,15 @@
 					<ele-ArrowDown />
 				</el-icon>
 			</span>
-			<template #dropdown>
-				<el-dropdown-menu>
-					<el-dropdown-item command="/home">{{ $t('message.user.dropdown1') }}</el-dropdown-item>
-					<el-dropdown-item command="/personal">{{ $t('message.user.dropdown2') }}</el-dropdown-item>
-					<el-dropdown-item divided command="logOut">{{ $t('message.user.dropdown5') }}</el-dropdown-item>
-				</el-dropdown-menu>
-			</template>
-		</el-dropdown>
+		</UserDropdown>
+		</template>
 		<Search ref="searchRef" />
 	</div>
 </template>
 
 <script setup lang="ts" name="layoutBreadcrumbUser">
-import { defineAsyncComponent, ref, computed, reactive, onMounted, unref, watch } from 'vue';
-import { useRouter } from 'vue-router';
-import { ElMessageBox, ElMessage } from 'element-plus';
+import { defineAsyncComponent, ref, computed, reactive, onMounted } from 'vue';
+import { ElMessage } from 'element-plus';
 import screenfull from 'screenfull';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
@@ -112,17 +108,17 @@ import { useUserInfo } from '/@/stores/userInfo';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
-import { Session, Local } from '/@/utils/storage';
+import { Local } from '/@/utils/storage';
 import headerImage from '/@/assets/img/headerImage.png';
-import websocket from '/@/utils/websocket';
 import { InfoFilled } from '@element-plus/icons-vue'
+import { useOnlineReconnect } from '/@/layout/navBars/breadcrumb/useOnlineReconnect';
 // 引入组件
 const UserNews = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/userNews.vue'));
 const Search = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/search.vue'));
+const UserDropdown = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/userDropdown.vue'));
 
 // 定义变量内容
-const { locale, t } = useI18n();
-const router = useRouter();
+const { locale } = useI18n();
 const stores = useUserInfo();
 const storesThemeConfig = useThemeConfig();
 const { userInfos } = storeToRefs(stores);
@@ -144,20 +140,8 @@ const layoutUserFlexNum = computed(() => {
 	return num;
 });
 
-// 定义变量内容
-const { isSocketOpen } = storeToRefs(useUserInfo());
-
 // websocket状态
-const onlinePopoverRef = ref()
-const onlineConfirmEvent = () => {
-  if (!isSocketOpen.value) {
-      websocket.is_reonnect = true
-      websocket.reconnect_current = 1
-      websocket.reconnect()
-  }
-  // 手动隐藏弹出
-  unref(onlinePopoverRef).popperRef?.delayHide?.()
-}
+const { isSocketOpen, onlinePopoverRef, onlineConfirmEvent } = useOnlineReconnect();
 // 全屏点击时
 const onScreenfullClick = () => {
 	if (!screenfull.isEnabled) {
@@ -173,44 +157,6 @@ const onScreenfullClick = () => {
 // 布局配置 icon 点击时
 const onLayoutSetingClick = () => {
 	mittBus.emit('openSetingsDrawer');
-};
-// 下拉菜单点击时
-const onHandleCommandClick = (path: string) => {
-	if (path === 'logOut') {
-		ElMessageBox({
-			closeOnClickModal: false,
-			closeOnPressEscape: false,
-			title: t('message.user.logOutTitle'),
-			message: t('message.user.logOutMessage'),
-			showCancelButton: true,
-			confirmButtonText: t('message.user.logOutConfirm'),
-			cancelButtonText: t('message.user.logOutCancel'),
-			buttonSize: 'default',
-			beforeClose: (action, instance, done) => {
-				if (action === 'confirm') {
-					instance.confirmButtonLoading = true;
-					instance.confirmButtonText = t('message.user.logOutExit');
-					setTimeout(() => {
-						done();
-						setTimeout(() => {
-							instance.confirmButtonLoading = false;
-						}, 300);
-					}, 700);
-				} else {
-					done();
-				}
-			},
-		})
-			.then(async () => {
-				// 清除缓存/token等
-				Session.clear();
-				// 使用 reload 时，不需要调用 resetRoute() 重置路由
-				window.location.reload();
-			})
-			.catch(() => {});
-	} else {
-		router.push(path);
-	}
 };
 // 菜单搜索点击
 const onSearchClick = () => {
@@ -255,6 +201,7 @@ const messageCenter = messageCenterStore();
 	display: flex;
 	align-items: center;
 	justify-content: flex-end;
+	gap: 2px;
 	&-link {
 		height: 100%;
 		display: flex;
@@ -266,21 +213,36 @@ const messageCenter = messageCenterStore();
 			border-radius: 100%;
 		}
 	}
+	// 工具图标：34px 圆角图标按钮，透明底，悬停浅底 + 正文色
 	&-icon {
-		padding: 0 10px;
-		cursor: pointer;
-		color: var(--next-bg-topBarColor);
-		height: 50px;
-		line-height: 50px;
+		width: 34px;
+		height: 34px;
+		flex: none;
 		display: flex;
 		align-items: center;
+		justify-content: center;
+		border-radius: var(--dv-radius);
+		cursor: pointer;
+		color: var(--next-bg-topBarColor);
+		transition: background-color 0.15s, color 0.15s;
 		&:hover {
-			background: var(--next-color-user-hover);
-			i {
-				display: inline-block;
-				animation: logoAnimation 0.3s ease-in-out;
-			}
+			background: var(--dv-hover);
+			color: var(--dv-text);
 		}
+	}
+	// 图标分组的竖线
+	&-divider {
+		width: 1px;
+		height: 18px;
+		margin: 0 6px;
+		flex: none;
+		background: var(--dv-border);
+	}
+	// 通知未读数：危险色，外圈一道面板色描边
+	:deep(.layout-navbars-breadcrumb-user-news .el-badge__content) {
+		border: none;
+		background-color: var(--dv-danger);
+		box-shadow: 0 0 0 2px var(--dv-surface);
 	}
 	:deep(.el-dropdown) {
 		color: var(--next-bg-topBarColor);
@@ -315,7 +277,8 @@ const messageCenter = messageCenterStore();
       height: 12px;
       width: 12px;
       padding: 0;
-      background-color: var(--dv-info);
+      // 离线用灰点（信息色已改成蓝色）
+      background-color: var(--dv-text-muted);
     }
   }
 }

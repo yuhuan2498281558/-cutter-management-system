@@ -1,9 +1,10 @@
 <template>
-	<el-container class="layout-container">
+	<el-container class="layout-container layout-shell">
 		<LayoutAside />
+		<!-- 主面板：顶栏浮在顶部（半透明毛玻璃），内容从它下面滚过；主内容区用上内边距让出顶栏高度（见 main.vue） -->
 		<el-container class="layout-container-view h100">
+			<LayoutHeader />
 			<el-scrollbar ref="layoutScrollbarRef" class="layout-backtop">
-				<LayoutHeader />
 				<LayoutMain ref="layoutMainRef" />
 			</el-scrollbar>
 		</el-container>

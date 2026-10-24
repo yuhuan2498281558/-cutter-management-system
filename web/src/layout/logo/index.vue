@@ -6,8 +6,16 @@
 		<!--  注释编号:django-vue3-admin__index531415:修改主页的名称 -->
 		<!-- <span style="font-size: x-large">{{ themeConfig.globalTitle }}</span> -->
 
+		<!-- 陶土色渐变方块里画一个刀盘图形 -->
+		<span class="layout-logo__mark" aria-hidden="true">
+			<svg viewBox="0 0 24 24" width="17" height="17">
+				<circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.8" />
+				<path d="M12 3.4v17.2M4.55 7.7l14.9 8.6M4.55 16.3l14.9-8.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+				<circle cx="12" cy="12" r="2.6" fill="currentColor" />
+			</svg>
+		</span>
 		<div class = "layout-logo__text">
-			<span class = "layout-logo__title">盾构隧道刀具管理系统</span><br>
+			<span class = "layout-logo__title">盾构刀具管理系统</span>
 			<span class = "layout-logo__subtitle">Information Management System of Shield Tunnel Cutter</span>
 		</div>
 
@@ -57,44 +65,58 @@ const siteLogo = computed(() => {
 </script>
 
 <style scoped lang="scss">
+// 32px 陶土色渐变方块 + 系统名称（衬线）+ 英文名
+// 侧栏面板里铺满宽度；经典、横向布局放在顶栏左侧，高度跟顶栏一致
 .layout-logo {
-	width: 220px;
-	height: 50px;
+	min-height: 50px;
+	flex: none;
 	display: flex;
 	align-items: center;
-	justify-content: center;
-	color: var(--el-color-primary);
-	font-size: 5px;
+	gap: 10px;
+	padding: 4px 16px;
 	cursor: pointer;
 	animation: logoAnimation 0.3s ease-in-out;
 
-	span {
-		white-space: nowrap;
-		display: inline-block;
-	}
-
-	&:hover {
-		span {
-			color: var(--color-primary-light-2);
-		}
+	&__mark {
+		width: 32px;
+		height: 32px;
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 10px;
+		color: var(--dv-on-primary);
+		background: var(--dv-logo-bg);
+		box-shadow: var(--dv-shadow-logo);
 	}
 	&__text {
+		min-width: 0;
+		max-width: 210px; // 英文名最多折成两行，放进 50px 高的顶栏
+		display: flex;
 		flex-direction: column;
-		justify-content: center;
-		align-items: center;
+		line-height: 1.25;
 	}
 	&__title {
-		font-size: 18px;
-
+		font-family: var(--dv-font-serif);
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--dv-text);
+		white-space: nowrap;
 	}
 	&__subtitle {
-		font-size: 8px;
+		font-size: 11px;
+		line-height: 1.2;
+		color: var(--dv-text-secondary);
 	}
 
 	&-medium-img {
 		width: 40px;
 		margin-right: 5px;
 	}
+}
+.layout-aside-panel .layout-logo {
+	min-height: 0;
+	padding: 4px 6px 16px;
 }
 
 .layout-logo-size {

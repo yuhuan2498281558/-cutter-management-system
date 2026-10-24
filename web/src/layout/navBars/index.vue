@@ -1,7 +1,8 @@
 <template>
 	<div class="layout-navbars-container">
 		<BreadcrumbIndex />
-		<TagsView v-if="setShowTagsView" />
+		<!-- 侧边栏布局用侧栏的"最近打开"代替横向标签栏：横条只隐藏，组件照常挂载，打开页面的记录和 keep-alive 缓存仍由它维护 -->
+		<TagsView v-if="setShowTagsView" v-show="themeConfig.layout !== 'defaults'" />
 	</div>
 </template>
 

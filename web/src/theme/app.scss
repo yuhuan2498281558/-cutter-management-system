@@ -181,7 +181,7 @@ body,
 		bottom: 0;
 		left: 0;
 		height: 100%;
-		background-color: rgba(0, 0, 0, 0.5);
+		background-color: var(--dv-scrim);
 		z-index: 9999998;
 		animation: error-img 0.3s;
 	}
@@ -195,6 +195,116 @@ body,
 	}
 	.layout-hide {
 		display: none;
+	}
+}
+
+/* 侧边栏布局（defaults）外壳：窗口底上放两块圆角面板（侧栏、主面板），四周和彼此之间各留一个页面间距
+ * 结构见 layout/main/defaults.vue、layout/component/aside.vue；宽度 ≤1000px 时侧栏变成浮动抽屉、主面板铺满
+------------------------------- */
+.layout-container.layout-shell {
+	padding: var(--dv-page-gutter);
+	gap: var(--dv-page-gutter);
+	background-color: var(--dv-bg);
+	// 侧栏面板：上下两色的浅渐变、细描边和很淡的投影
+	.layout-aside.layout-aside-panel {
+		padding: 14px 12px 12px;
+		border-right: none;
+		border-radius: var(--dv-radius-lg);
+		background: var(--dv-side-bg);
+		box-shadow: var(--dv-shadow-side);
+		// 不建层叠上下文：侧栏里的菜单搜索弹窗（没有挂到 body）要盖住主面板的顶栏
+		z-index: auto;
+	}
+	.layout-aside-pc-256 {
+		width: var(--dv-aside-width) !important;
+		transition: width 0.3s ease;
+	}
+	// 主面板：面板色、大圆角、细描边投影，内部滚动
+	.layout-container-view {
+		position: relative;
+		min-width: 0;
+		overflow: hidden;
+		border-radius: var(--dv-radius-lg);
+		background-color: var(--dv-surface);
+		box-shadow: var(--dv-shadow-1);
+		// 顶栏浮在主面板顶部，内容从它下面滚过
+		> .layout-header {
+			position: absolute;
+			top: 0;
+			right: 0;
+			left: 0;
+			z-index: 10;
+		}
+		.layout-main {
+			background-color: transparent;
+			--dv-main-height: calc(100vh - 2 * var(--dv-page-gutter) - var(--dv-topbar-height) - var(--dv-footer-height));
+			&.layout-main-under-topbar {
+				padding-top: var(--dv-topbar-height) !important;
+			}
+			// 当前页全屏（标签栏右键菜单）时顶栏隐藏
+			&:not(.layout-main-under-topbar) {
+				--dv-topbar-height: 0px;
+			}
+		}
+	}
+	// 窄屏：侧栏是离窗口边一个页面间距的浮动抽屉，主面板去掉圆角和投影铺满
+	.layout-aside-panel.layout-aside-mobile {
+		top: var(--dv-page-gutter);
+		bottom: var(--dv-page-gutter);
+		left: calc(-1 * (var(--dv-aside-mobile-width) + 2 * var(--dv-page-gutter)));
+		width: var(--dv-aside-mobile-width);
+		height: auto;
+		z-index: 9999999;
+		&.layout-aside-mobile-open {
+			left: var(--dv-page-gutter);
+		}
+	}
+}
+@media screen and (max-width: 1000px) {
+	.layout-container.layout-shell {
+		padding: 0;
+		gap: 0;
+		.layout-container-view {
+			border-radius: 0;
+			box-shadow: none;
+			.layout-navbars-breadcrumb-index.is-glass {
+				border-radius: 0;
+			}
+			.layout-main {
+				--dv-main-height: calc(100vh - var(--dv-topbar-height) - var(--dv-footer-height));
+			}
+		}
+	}
+}
+
+/* 路由页面区（layout/routerView/parent.vue 的 .layout-parent）：限宽居中，四周留内边距
+ * 页面自己的内边距叠在里面。下面几类铺满主内容区，不套：
+ * CRUD 页（根元素 .fs-page 绝对定位铺满，自己留内边距，见 fastCrud.scss）、首页大屏（.layout-parent-full）、智能助手（整页高的对话界面）
+------------------------------- */
+.layout-container {
+	.layout-parent {
+		width: 100%;
+		max-width: var(--dv-content-max);
+		margin: 0 auto;
+		padding: var(--dv-content-pad-top) var(--dv-content-pad) var(--dv-content-pad-bottom);
+		&.layout-parent-full,
+		.layout-parent {
+			max-width: none;
+			padding: 0;
+		}
+		// :has 单独一条：不认识 :has 的浏览器只丢掉这一条，不连累上面的首页
+		&:has(> .fs-page, > .ai-assistant-container) {
+			max-width: none;
+			padding: 0;
+		}
+	}
+	// 路由页面能用的高度（顶栏、标签栏、页脚以外），整页铺满的页面（智能助手）用它定高度。
+	// 这里是经典、横向、分栏布局的值（顶栏 50px + 标签栏 35px）；侧边栏布局的值见上面 .layout-shell
+	.layout-main {
+		--dv-main-height: calc(100vh - 85px - var(--dv-footer-height));
+		&.layout-main-no-footer {
+			--dv-footer-height: 0px;
+		}
 	}
 }
 
