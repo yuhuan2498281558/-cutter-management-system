@@ -18,15 +18,30 @@ function loadOpenedPages() {
   return context.exports;
 }
 
-test('recent pages list the current page first, then the other open pages newest first, at most six', () => {
-  const { recentOpenedPages } = loadOpenedPages();
+test('recent pages list the five most recently visited pages, newest first, without the home page', () => {
+  const { recentOpenedPages, overflowOpenedPages, RECENT_PAGES_LIMIT } = loadOpenedPages();
+  assert.equal(RECENT_PAGES_LIMIT, 5);
   // 函数在 vm 里运行，返回的数组属于另一个 realm，先转成本地数组再比较
   const paths = list => Array.from(recentOpenedPages(list), p => p.route.path);
-  const page = (path, isActive = false) => ({ route: { path, url: path }, isActive });
-  const list = ['/a', '/b', '/c', '/d', '/e', '/f', '/g', '/h'].map(p => page(p, p === '/c'));
-  assert.deepEqual(paths(list), ['/c', '/h', '/g', '/f', '/e', '/d']);
-  assert.deepEqual(paths([page('/a'), page('/b', true)]), ['/b', '/a']);
+  const overflow = list => Array.from(overflowOpenedPages(list), p => p.route.path);
+  const page = (path, lastVisit = 0, isActive = false, isAffix = false) => ({ route: { path, url: path, meta: { isAffix } }, isActive, lastVisit });
+  const home = page('/home', 900, false, true);
+  // 打开顺序 a..g，访问顺序与打开顺序不同；当前页 /d 最后访问
+  const list = [home, page('/a', 100), page('/b', 600), page('/c', 300), page('/d', 700, true), page('/e', 200), page('/f', 500), page('/g', 400)];
+  assert.deepEqual(paths(list), ['/d', '/b', '/f', '/g', '/c']);
+  // 挤出去的是最久没访问的，首页（固定页）不列也不关
+  assert.deepEqual(overflow(list), ['/e', '/a']);
+  // 没有访问记录的（刷新前打开、之后没再访问）排在后面，按打开先后倒序；当前页总在第一个
+  assert.deepEqual(paths([page('/a'), page('/b'), page('/c', 0, true), page('/d', 50)]), ['/c', '/d', '/b', '/a']);
+  assert.deepEqual(paths([page('/a', 900), page('/b', 100, true)]), ['/b', '/a']);
+  for (let n = 0; n <= 8; n++) {
+    const pages = Array.from({ length: n }, (_, k) => page(`/p${k}`, k + 1, k === 0));
+    assert.equal(paths(pages).length, Math.min(n, 5));
+    assert.equal(overflow(pages).length, Math.max(n - 5, 0));
+    assert.equal(overflow(pages).includes('/p0'), false);
+  }
   assert.deepEqual(paths([]), []);
+  assert.deepEqual(paths([home]), []);
 });
 
 test('the sidebar recent list mirrors the tags view, which still owns the open pages and the keep-alive cache', () => {
@@ -36,25 +51,53 @@ test('the sidebar recent list mirrors the tags view, which still owns the open p
   // 侧边栏布局只隐藏横条，组件照常挂载
   const navBars = read('layout/navBars/index.vue');
   assert.match(navBars, /<TagsView v-if="setShowTagsView" v-show="themeConfig\.layout !== 'defaults'" \/>/);
-  // tagsView.vue 把打开的页面同步给侧栏，关闭走它自己的 closeCurrentTagsView
+  // tagsView.vue 把打开的页面和最后访问时间同步给侧栏，关闭走它自己的 closeCurrentTagsView
   const tagsView = read('layout/navBars/tagsView/tagsView.vue');
-  assert.match(tagsView, /import \{ openedPages \} from '\/@\/layout\/navBars\/tagsView\/openedPages';/);
-  assert.match(tagsView, /openedPages\.list = state\.tagsViewList\.map\(\(v: RouteItem\) => \(\{ route: v, isActive: isActive\(v\) \}\)\);/);
-  assert.match(tagsView, /const closeFromOpenedPages = \(v: RouteItem\) => \{\s*closeCurrentTagsView\(getThemeConfig\.value\.isShareTagsView \? v\.path : v\.url\);/);
+  assert.match(tagsView, /import \{ openedPages, overflowOpenedPages \} from '\/@\/layout\/navBars\/tagsView\/openedPages';/);
+  assert.match(tagsView, /const getOpenedPageKey = \(v: RouteItem\) => \(getThemeConfig\.value\.isShareTagsView \? v\.path : v\.url\);/);
+  assert.match(tagsView, /const closeFromOpenedPages = \(v: RouteItem\) => \{\s*closeCurrentTagsView\(getOpenedPageKey\(v\)\);/);
+  assert.match(tagsView, /openedPages\.list = state\.tagsViewList\.map\(\(v: RouteItem\) => \(\{ route: v, isActive: isActive\(v\), lastVisit: visits\[getOpenedPageKey\(v\)\] \}\)\);/);
+  // 当前页的访问时间记成现在，其余沿用上次的记录；记录存在会话缓存里，列表重新载入时短暂清空不丢记录
+  assert.match(tagsView, /\[getOpenedPageKey\(v\), isActive\(v\) \? now : lastVisits\[getOpenedPageKey\(v\)\] \|\| 0\]/);
+  assert.match(tagsView, /let lastVisits: Record<string, number> = Session\.get\('tagsViewLastVisits'\) \|\| \{\};/);
+  assert.match(tagsView, /if \(state\.tagsViewList\.length\) \{\s*lastVisits = visits;\s*Session\.set\('tagsViewLastVisits', lastVisits\);/);
+  // 侧边栏布局（没有标签栏横条）里，挤出最近 5 个的页面走标签栏的关闭逻辑真正关掉，释放 keep-alive 缓存；
+  // 切换布局也要重新检查，所以 layout 在监听的来源里
+  assert.match(tagsView, /getThemeConfig\.value\.isShareTagsView, getThemeConfig\.value\.layout\]/);
+  assert.match(tagsView, /if \(getThemeConfig\.value\.layout === 'defaults'\) \{\s*overflowOpenedPages\(openedPages\.list\)\.forEach\(\(page\) => closeFromOpenedPages\(page\.route\)\);/);
+  const close = tagsView.slice(tagsView.indexOf('const closeCurrentTagsView'), tagsView.indexOf('// 4、关闭其它'));
+  assert.match(close, /storesKeepALiveNames\.delCachedView\(v\);/);
   assert.match(tagsView, /openedPages\.close = closeFromOpenedPages;/);
   assert.match(tagsView, /if \(openedPages\.close === closeFromOpenedPages\) \{\s*openedPages\.list = \[\];\s*openedPages\.close = null;/);
-  // 侧栏读这份镜像，关闭调用登记的 close
+  // 侧栏读这份镜像，关闭调用登记的 close；首页等固定页已在 recentOpenedPages 里排除，每一项都能关
   const recent = read('layout/component/asideRecent.vue');
   assert.match(recent, /recentOpenedPages\(openedPages\.list\)/);
   assert.match(recent, /openedPages\.close\?\.\(route\)/);
-  assert.match(recent, /v-if="!page\.route\.meta\?\.isAffix"/);
+  assert.match(recent, /<button type="button" class="layout-aside-recent-close" @click\.stop="onClose\(page\.route\)">/);
   // 在关闭按钮上按 Enter 只关闭，不冒泡成"打开"
   assert.match(recent, /@keydown\.enter\.self="onOpen\(page\.route\)"/);
 });
 
-test('the sidebar panel holds logo, menu search, menu, recent pages and the user block', () => {
+test('recent pages sit right under the home menu item and look like quiet 32px rows without a selection bar', () => {
+  // 菜单在"首页"那一项后面留插槽，侧栏把"最近打开"放进去；收起时不传插槽
+  const vertical = read('layout/navMenu/vertical.vue');
+  assert.match(vertical, /const homeIndex = computed\(\(\) => menuLists\.value\.findIndex\(\(val\) => val\.path === '\/home'\)\);/);
+  assert.match(vertical, /<li v-if="\$slots\.afterHome && k === homeIndex" [^>]*role="none"><slot name="afterHome" \/><\/li>\s*<\/template>\s*<\/el-menu>/);
+  assert.match(vertical, /<li v-if="\$slots\.afterHome && homeIndex < 0" [^>]*><slot name="afterHome" \/><\/li>\s*<template v-for="\(val, k\) in menuLists">/);
   const aside = read('layout/component/aside.vue');
-  const order = ['<Logo v-if="setShowLogo" />', 'class="layout-aside-search"', '<Vertical :menuList="state.menuList" />', '<AsideRecent v-if="isPanel && !isPanelCollapse" />', '<AsideUser v-if="isPanel" />'];
+  assert.match(aside, /<Vertical :menuList="state\.menuList">\s*<template v-if="isPanel && !isPanelCollapse" #afterHome>\s*<AsideRecent \/>\s*<\/template>\s*<\/Vertical>/);
+  const recent = read('layout/component/asideRecent.vue');
+  const style = recent.slice(recent.indexOf('<style'));
+  assert.match(style, /&-label \{[^}]*font-size: 12px;[^}]*color: var\(--dv-text-muted\);/);
+  assert.match(style, /&-item \{[^}]*height: 32px;[^}]*font-size: 13px;/);
+  assert.match(style, /&\.is-current \{[^}]*\.layout-aside-recent-dot::before \{\s*background: var\(--el-color-primary\);/);
+  assert.match(style, /&::before \{[^}]*border-radius: 50%;/);
+  assert.doesNotMatch(style, /width: 3px/);
+});
+
+test('the sidebar holds logo, menu search, menu with recent pages, and the user block', () => {
+  const aside = read('layout/component/aside.vue');
+  const order = ['<Logo v-if="setShowLogo" />', 'class="layout-aside-search"', '<Vertical :menuList="state.menuList">', '<AsideRecent />', '<AsideUser v-if="isPanel" />'];
   const at = order.map(snippet => aside.indexOf(snippet));
   for (const [k, index] of at.entries()) assert.ok(index > 0, order[k]);
   assert.deepEqual([...at].sort((a, b) => a - b), at);

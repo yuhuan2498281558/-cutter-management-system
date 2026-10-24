@@ -2,14 +2,17 @@
 	<div class="h100" v-show="!isTagsViewCurrenFull">
 		<el-aside class="layout-aside" :class="[setCollapseStyle, { 'layout-aside-panel': isPanel, 'is-collapse': isPanelCollapse }]">
 			<Logo v-if="setShowLogo" />
-			<!-- 侧边栏布局：侧栏依次是 Logo、菜单搜索、菜单、最近打开、用户 -->
+			<!-- 侧边栏布局：侧栏依次是 Logo、菜单搜索、菜单（"最近打开"插在"首页"下面，收起时不显示）、用户 -->
 			<button v-if="isPanel" type="button" class="layout-aside-search" @click="onSearchClick">
 				<el-icon :size="16"><ele-Search /></el-icon>
 				<span>搜索菜单</span>
 			</button>
 			<el-scrollbar class="flex-auto" ref="layoutAsideScrollbarRef" @mouseenter="onAsideEnterLeave(true)" @mouseleave="onAsideEnterLeave(false)">
-				<Vertical :menuList="state.menuList" />
-				<AsideRecent v-if="isPanel && !isPanelCollapse" />
+				<Vertical :menuList="state.menuList">
+					<template v-if="isPanel && !isPanelCollapse" #afterHome>
+						<AsideRecent />
+					</template>
+				</Vertical>
 			</el-scrollbar>
 			<AsideUser v-if="isPanel" />
 			<Search v-if="isPanel" ref="searchRef" />

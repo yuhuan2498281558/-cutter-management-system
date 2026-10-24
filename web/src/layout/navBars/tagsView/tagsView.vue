@@ -60,7 +60,7 @@ import { Session } from '/@/utils/storage';
 import { isObjectValueEqual } from '/@/utils/arrayOperation';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
-import { openedPages } from '/@/layout/navBars/tagsView/openedPages';
+import { openedPages, overflowOpenedPages } from '/@/layout/navBars/tagsView/openedPages';
 
 // 引入组件
 const Contextmenu = defineAsyncComponent(() => import('/@/layout/navBars/tagsView/contextmenu.vue'));
@@ -549,14 +549,32 @@ onBeforeMount(() => {
 		}
 	});
 });
-// 侧栏"最近打开"：同步打开的页面列表，关闭时走标签栏自己的关闭逻辑
+// 侧栏"最近打开"：同步打开的页面列表和各页最后访问的时间，关闭时走标签栏自己的关闭逻辑
+// 页面的键与关闭标签用的一致：共用标签时按 path，否则按 url
+const getOpenedPageKey = (v: RouteItem) => (getThemeConfig.value.isShareTagsView ? v.path : v.url);
 const closeFromOpenedPages = (v: RouteItem) => {
-	closeCurrentTagsView(getThemeConfig.value.isShareTagsView ? v.path : v.url);
+	closeCurrentTagsView(getOpenedPageKey(v));
 };
+// 最后访问时间存在会话缓存里（和标签列表一样），刷新页面后顺序不乱
+let lastVisits: Record<string, number> = Session.get('tagsViewLastVisits') || {};
 watch(
-	() => [state.tagsViewList, state.routeActive, state.routePath, getThemeConfig.value.isShareTagsView],
+	() => [state.tagsViewList, state.routeActive, state.routePath, getThemeConfig.value.isShareTagsView, getThemeConfig.value.layout],
 	() => {
-		openedPages.list = state.tagsViewList.map((v: RouteItem) => ({ route: v, isActive: isActive(v) }));
+		const now = Date.now();
+		const visits = Object.fromEntries(
+			state.tagsViewList.map((v: RouteItem) => [getOpenedPageKey(v), isActive(v) ? now : lastVisits[getOpenedPageKey(v)] || 0])
+		);
+		// 标签列表重新载入时会先清空再从会话缓存恢复（getTagsViewRoutes），清空的那一下不能把访问记录也清掉
+		if (state.tagsViewList.length) {
+			lastVisits = visits;
+			Session.set('tagsViewLastVisits', lastVisits);
+		}
+		openedPages.list = state.tagsViewList.map((v: RouteItem) => ({ route: v, isActive: isActive(v), lastVisit: visits[getOpenedPageKey(v)] }));
+		// 侧边栏布局没有标签栏横条，页面只能在"最近打开"里关：挤出最近 5 个的页面要真正关掉（同时释放 keep-alive 缓存），
+		// 只是不显示的话，它们再也关不掉，缓存会一直涨。当前页总排在第一个，不会被关
+		if (getThemeConfig.value.layout === 'defaults') {
+			overflowOpenedPages(openedPages.list).forEach((page) => closeFromOpenedPages(page.route));
+		}
 	},
 	{ deep: true, immediate: true }
 );

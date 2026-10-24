@@ -15,7 +15,7 @@
 			>
 				<i class="layout-aside-recent-dot"></i>
 				<span class="layout-aside-recent-title">{{ other.setTagsViewNameI18n(page.route) }}</span>
-				<button v-if="!page.route.meta?.isAffix" type="button" class="layout-aside-recent-close" @click.stop="onClose(page.route)">
+				<button type="button" class="layout-aside-recent-close" @click.stop="onClose(page.route)">
 					<el-icon :size="12"><ele-Close /></el-icon>
 				</button>
 			</div>
@@ -29,7 +29,8 @@ import { useRouter } from 'vue-router';
 import other from '/@/utils/other';
 import { openedPages, recentOpenedPages } from '/@/layout/navBars/tagsView/openedPages';
 
-// 侧栏"最近打开"：数据来自标签栏（tagsView.vue）维护的打开页面列表，当前页在前，其余按打开时间从新到旧，最多 6 个
+// 侧栏"最近打开"（插在菜单的"首页"下面）：数据来自标签栏（tagsView.vue）维护的打开页面列表，
+// 按最后访问从新到旧最多 5 个，不含首页等固定页；超出 5 个的页面由 tagsView.vue 关掉
 
 // 定义变量内容
 const router = useRouter();
@@ -46,10 +47,13 @@ const onClose = (route: RouteItem) => {
 </script>
 
 <style scoped lang="scss">
+// 小标题和圆点对齐菜单的图标列，页面名对齐菜单文字；不加选中竖线，免得和菜单的竖线重复
 .layout-aside-recent {
+	margin-bottom: 8px;
 	&-label {
-		padding: 18px 10px 6px;
-		font-size: 11.5px;
+		padding: 6px 12px 4px;
+		font-size: 12px;
+		line-height: 18px;
 		color: var(--dv-text-muted);
 		white-space: nowrap;
 	}
@@ -60,16 +64,17 @@ const onClose = (route: RouteItem) => {
 	&-item {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: 12px;
 		height: 32px;
-		padding: 0 4px 0 10px;
+		padding: 0 4px 0 12px;
 		border-radius: var(--dv-radius);
+		font-size: 13px;
 		color: var(--dv-text-secondary);
 		white-space: nowrap;
 		cursor: pointer;
 		transition: background-color 0.15s, color 0.15s;
 		&:hover {
-			background: var(--dv-fill);
+			background: var(--dv-hover);
 			color: var(--dv-text);
 		}
 		&:hover,
@@ -80,19 +85,26 @@ const onClose = (route: RouteItem) => {
 		}
 		&.is-current {
 			color: var(--dv-text);
-			.layout-aside-recent-dot {
-				background: var(--dv-accent);
-				box-shadow: 0 0 0 3px var(--dv-accent-soft);
+			.layout-aside-recent-dot::before {
+				background: var(--el-color-primary);
 			}
 		}
 	}
+	// 16px 宽的位置（与菜单图标同宽）里居中一个 6px 圆点
 	&-dot {
-		width: 6px;
-		height: 6px;
-		margin: 0 5px;
+		width: 16px;
+		height: 16px;
 		flex: none;
-		border-radius: 2px;
-		background: var(--dv-border-strong);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		&::before {
+			content: '';
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: var(--dv-border-strong);
+		}
 	}
 	&-title {
 		flex: 1;
@@ -115,7 +127,7 @@ const onClose = (route: RouteItem) => {
 		cursor: pointer;
 		visibility: hidden;
 		&:hover {
-			background: var(--dv-fill);
+			background: var(--dv-selected);
 			color: var(--dv-text);
 		}
 	}
