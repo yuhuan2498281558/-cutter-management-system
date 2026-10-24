@@ -66,7 +66,7 @@ const siteLogo = computed(() => {
 
 <style scoped lang="scss">
 // 32px 陶土色渐变方块 + 系统名称（衬线）+ 英文名
-// 侧栏面板里铺满宽度；经典、横向布局放在顶栏左侧，高度跟顶栏一致
+// 侧边栏布局放在侧栏顶部；经典、横向布局放在顶栏左侧，高度跟顶栏一致
 .layout-logo {
 	min-height: 50px;
 	flex: none;
@@ -114,9 +114,10 @@ const siteLogo = computed(() => {
 		margin-right: 5px;
 	}
 }
+// 方块左边离侧栏 12px（侧栏内边距 8px + 4px），中线与下面的菜单图标对齐
 .layout-aside-panel .layout-logo {
 	min-height: 0;
-	padding: 4px 6px 16px;
+	padding: 4px 4px 12px;
 }
 
 .layout-logo-size {

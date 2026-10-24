@@ -1,6 +1,6 @@
 // 主题版本号。全站配色换版时改这个值：旧的布局配置缓存里存着旧颜色，
 // 其中 themeConfigStyle 会整串写进 html 的内联样式，盖掉样式表里的新变量。
-export const THEME_VERSION = 'c-2026-10';
+export const THEME_VERSION = 'd-2026-10';
 
 interface ThemeCacheStorage {
 	get(key: string): any;

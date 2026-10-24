@@ -57,13 +57,14 @@ const roleNames = computed(() =>
 </script>
 
 <style scoped lang="scss">
+// 头像左边离侧栏 12px（侧栏内边距 8px + 4px），中线与菜单图标对齐
 .layout-aside-user {
 	display: flex;
 	align-items: center;
 	gap: 10px;
 	margin-top: auto;
-	padding: 12px 6px 2px;
-	border-top: 1px solid var(--dv-side-border);
+	padding: 8px 0 0 4px;
+	border-top: 1px solid var(--dv-divider);
 	&-status {
 		flex: none;
 		display: flex;
@@ -76,7 +77,7 @@ const roleNames = computed(() =>
 			height: 8px;
 			border: none;
 			background-color: var(--dv-success);
-			box-shadow: 0 0 0 2px var(--dv-side-top);
+			box-shadow: 0 0 0 2px var(--dv-side-bg);
 		}
 		&.is-offline :deep(.el-badge__content.is-dot) {
 			background-color: var(--dv-text-muted);
@@ -112,8 +113,8 @@ const roleNames = computed(() =>
 		}
 	}
 	&-more {
-		width: 34px;
-		height: 34px;
+		width: var(--dv-control-height);
+		height: var(--dv-control-height);
 		flex: none;
 		display: flex;
 		align-items: center;

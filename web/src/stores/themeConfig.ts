@@ -39,8 +39,8 @@ export const useThemeConfig = defineStore('themeConfig', {
 			menuBar: '#f9f8f3',
 			// 默认菜单导航字体颜色
 			menuBarColor: '#3d3d3a',
-			// 默认菜单高亮背景色
-			menuBarActiveColor: '#ffffff',
+			// 默认菜单高亮背景色（选中项的灰底，左侧另有主题色竖线）
+			menuBarActiveColor: '#e2dfd5',
 			// 是否开启菜单背景颜色渐变
 			isMenuBarColorGradual: false,
 

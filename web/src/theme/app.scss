@@ -32,10 +32,10 @@
 	// 清掉主题缓存后由这里兜底，取值与 stores/themeConfig.ts 的默认值一致
 	--next-bg-topBar: var(--dv-surface);
 	--next-bg-topBarColor: var(--dv-text-secondary);
-	--next-bg-menuBar: var(--dv-side-top);
+	--next-bg-menuBar: var(--dv-side-bg);
 	--next-bg-menuBarColor: var(--dv-text-nav);
-	--next-bg-menuBarActiveColor: var(--dv-raise);
-	--next-bg-columnsMenuBar: var(--dv-side-top);
+	--next-bg-menuBarActiveColor: var(--dv-selected);
+	--next-bg-columnsMenuBar: var(--dv-side-bg);
 	--next-bg-columnsMenuBarColor: var(--dv-text-nav);
 }
 
@@ -198,38 +198,34 @@ body,
 	}
 }
 
-/* 侧边栏布局（defaults）外壳：窗口底上放两块圆角面板（侧栏、主面板），四周和彼此之间各留一个页面间距
- * 结构见 layout/main/defaults.vue、layout/component/aside.vue；宽度 ≤1000px 时侧栏变成浮动抽屉、主面板铺满
+/* 侧边栏布局（defaults）外壳：侧栏贴左边、主内容区贴右边，都满高、无圆角，中间只有一条 1px 分割线
+ * 结构见 layout/main/defaults.vue、layout/component/aside.vue；宽度 ≤1000px 时侧栏变成从左边滑出的抽屉、主内容区铺满
 ------------------------------- */
 .layout-container.layout-shell {
-	padding: var(--dv-page-gutter);
-	gap: var(--dv-page-gutter);
-	background-color: var(--dv-bg);
-	// 侧栏面板：上下两色的浅渐变、细描边和很淡的投影
+	// 侧栏：纯色底，右边一条分割线；左右各留 8px，菜单项、搜索框、用户区都在这 8px 以内（见 aside.vue）
+	// 分割线画成内阴影、不占宽度：收起成 64px 时内容区正好 48px，图标中线落在 32px（边框会把中线往左挤半像素）。
+	// 菜单栏是白色时 aside.vue 会加 .layout-el-aside-br-color 画右边框，这里一并去掉
 	.layout-aside.layout-aside-panel {
-		padding: 14px 12px 12px;
+		padding: 12px 8px 8px;
 		border-right: none;
-		border-radius: var(--dv-radius-lg);
+		box-shadow: inset -1px 0 0 var(--dv-divider);
 		background: var(--dv-side-bg);
-		box-shadow: var(--dv-shadow-side);
-		// 不建层叠上下文：侧栏里的菜单搜索弹窗（没有挂到 body）要盖住主面板的顶栏
+		// 不建层叠上下文：侧栏里的菜单搜索弹窗（没有挂到 body）要盖住主内容区的顶栏
 		z-index: auto;
 	}
 	.layout-aside-pc-256 {
 		width: var(--dv-aside-width) !important;
 		transition: width 0.3s ease;
 	}
-	// 主面板：面板色、大圆角、细描边投影，内部滚动
-	// isolation：页面里的 z-index 只在主面板内部比较，不会盖到窄屏的侧栏抽屉上
+	// 主内容区：面板色底，内部滚动
+	// isolation：页面里的 z-index 只在主内容区内部比较，不会盖到窄屏的侧栏抽屉上
 	.layout-container-view {
 		position: relative;
 		isolation: isolate;
 		min-width: 0;
 		overflow: hidden;
-		border-radius: var(--dv-radius-lg);
 		background-color: var(--dv-surface);
-		box-shadow: var(--dv-shadow-1);
-		// 顶栏浮在主面板顶部，内容从它下面滚过
+		// 顶栏浮在主内容区顶部，内容从它下面滚过
 		> .layout-header {
 			position: absolute;
 			top: 0;
@@ -239,7 +235,7 @@ body,
 		}
 		.layout-main {
 			background-color: transparent;
-			--dv-main-height: calc(100vh - 2 * var(--dv-page-gutter) - var(--dv-topbar-height) - var(--dv-footer-height));
+			--dv-main-height: calc(100vh - var(--dv-topbar-height) - var(--dv-footer-height));
 			&.layout-main-under-topbar {
 				padding-top: var(--dv-topbar-height) !important;
 			}
@@ -249,37 +245,23 @@ body,
 			}
 		}
 	}
-	// 窄屏：侧栏是离窗口边一个页面间距的浮动抽屉，主面板去掉圆角和投影铺满
+	// 窄屏：侧栏是从左边贴边滑出的满高抽屉，右侧投影，后面一层遮罩
 	// 抽屉和遮罩的层级要低于 Element Plus 的浮层（从 2000 起）：抽屉里的用户菜单、搜索建议、退出确认框都挂在 body 上
 	.layout-aside-panel.layout-aside-mobile {
-		top: var(--dv-page-gutter);
-		bottom: var(--dv-page-gutter);
-		left: calc(-1 * (var(--dv-aside-mobile-width) + 2 * var(--dv-page-gutter)));
+		top: 0;
+		bottom: 0;
+		left: calc(-1 * var(--dv-aside-mobile-width));
 		width: var(--dv-aside-mobile-width);
 		height: auto;
 		z-index: 1001;
+		// 投影只在打开时加：收起时抽屉正好藏在窗口左边外，投影会漏进来
 		&.layout-aside-mobile-open {
-			left: var(--dv-page-gutter);
+			left: 0;
+			box-shadow: var(--dv-shadow-drawer);
 		}
 	}
 	.layout-aside-mobile-mode {
 		z-index: 1000;
-	}
-}
-@media screen and (max-width: 1000px) {
-	.layout-container.layout-shell {
-		padding: 0;
-		gap: 0;
-		.layout-container-view {
-			border-radius: 0;
-			box-shadow: none;
-			.layout-navbars-breadcrumb-index.is-glass {
-				border-radius: 0;
-			}
-			.layout-main {
-				--dv-main-height: calc(100vh - var(--dv-topbar-height) - var(--dv-footer-height));
-			}
-		}
 	}
 }
 

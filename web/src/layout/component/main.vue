@@ -43,7 +43,7 @@ const setBacktopClass = computed(() => {
 	if (themeConfig.value.isFixedHeader) return `.layout-backtop-header-fixed .el-scrollbar__wrap`;
 	else return `.layout-backtop .el-scrollbar__wrap`;
 });
-// 侧边栏布局：顶栏浮在主面板顶部，主内容区铺满主面板，用上内边距让出顶栏高度
+// 侧边栏布局：顶栏浮在主内容区顶部，内容区铺满，用上内边距让出顶栏高度
 const isUnderTopbar = computed(() => {
 	return themeConfig.value.layout === 'defaults' && !isTagsViewCurrenFull.value;
 });

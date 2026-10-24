@@ -1,4 +1,4 @@
-/* fast-crud 页面容器：主面板已经是面板色的大圆角面板，CRUD 页本身透明，四周留出与主内容一致的内边距
+/* fast-crud 页面容器：主内容区已经是面板色底，CRUD 页本身透明，四周留出与主内容一致的内边距
  * （宽度 ≤640px 时 16px，见 tokens.scss 的 --dv-content-pad）；表格自己画外框（见 element.scss 的 Table 一节）。
  * fast-crud 自带样式让 .fs-page 绝对定位铺满内容区（width:100%; top:0; bottom:0），这里只加内边距，
  * 高度仍随内容区自适应，分页留在底部。

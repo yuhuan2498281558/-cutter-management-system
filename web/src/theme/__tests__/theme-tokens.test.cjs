@@ -24,8 +24,8 @@ function memoryStorage(initial) {
 
 test('stale or missing theme version clears both theme caches and records the current version', () => {
   const { THEME_VERSION, resetStaleThemeCache } = loadThemeVersion();
-  assert.equal(THEME_VERSION, 'c-2026-10');
-  for (const version of ['a-2026-10', 'old-version', undefined]) {
+  assert.equal(THEME_VERSION, 'd-2026-10');
+  for (const version of ['a-2026-10', 'c-2026-10', 'old-version', undefined]) {
     const initial = { themeConfig: { primary: '#409eff' }, themeConfigStyle: '--el-color-primary: #409eff;', oldLayout: 'transverse', token: 'kept' };
     if (version) initial.themeVersion = version;
     const storage = memoryStorage(initial);
@@ -34,14 +34,14 @@ test('stale or missing theme version clears both theme caches and records the cu
     assert.equal(storage.data.has('themeConfigStyle'), false);
     // 窗口宽度变化时 layout/index.vue 会按 oldLayout 切回上次的布局，旧值留着会盖掉新的默认布局
     assert.equal(storage.data.has('oldLayout'), false);
-    assert.equal(storage.get('themeVersion'), 'c-2026-10');
+    assert.equal(storage.get('themeVersion'), 'd-2026-10');
     assert.equal(storage.get('token'), 'kept');
   }
 });
 
 test('current theme version keeps the cached layout config', () => {
   const { resetStaleThemeCache } = loadThemeVersion();
-  const storage = memoryStorage({ themeVersion: 'c-2026-10', themeConfig: { layout: 'classic' }, themeConfigStyle: '--x: 1;', oldLayout: 'classic' });
+  const storage = memoryStorage({ themeVersion: 'd-2026-10', themeConfig: { layout: 'classic' }, themeConfigStyle: '--x: 1;', oldLayout: 'classic' });
   assert.equal(resetStaleThemeCache(storage), false);
   assert.deepEqual(storage.get('themeConfig'), { layout: 'classic' });
   assert.equal(storage.get('themeConfigStyle'), '--x: 1;');
@@ -60,10 +60,10 @@ test('tokens.scss defines every design variable with the agreed value', () => {
   const expected = {
     '--dv-bg': '#eae7de', '--dv-surface': '#fffefb', '--dv-tile': '#f6f4ee', '--dv-surface-muted': '#efede6', '--dv-selected': '#e2dfd5',
     '--dv-hover': '#f2f0e9', '--dv-hover-solid': '#f2f0e9', '--dv-fill': 'rgba(20, 20, 19, 0.06)',
-    '--dv-side-top': '#f9f8f3', '--dv-side-bot': '#f2f0e8', '--dv-side-bot-mix': '#f5f4ed', '--dv-side-border': 'rgba(20, 20, 19, 0.08)', '--dv-side-inset': '#efede6',
+    '--dv-side-bg': '#f9f8f3', '--dv-side-inset': '#efede6',
     '--dv-raise': '#ffffff', '--dv-raise-hl': 'rgba(255, 255, 255, 0.95)', '--dv-raise-sh': 'rgba(70, 52, 34, 0.13)', '--dv-raise-border': 'rgba(20, 20, 19, 0.07)', '--dv-drop': 'rgba(70, 52, 34, 0.22)',
     '--dv-text': '#141413', '--dv-text-regular': '#3d3d3a', '--dv-text-secondary': '#73726c', '--dv-text-muted': '#adaba2', '--dv-text-nav': '#3d3d3a',
-    '--dv-border': '#e9e6dd', '--dv-border-strong': '#ddd9ce',
+    '--dv-border': '#e9e6dd', '--dv-border-strong': '#ddd9ce', '--dv-divider': '#e9e6dd',
     '--dv-primary': '#c6613f', '--dv-primary-hover': '#b4542f', '--dv-on-primary': '#ffffff', '--dv-ai': '#c96442',
     '--dv-accent': '#d97757', '--dv-accent-strong': '#c15f3c', '--dv-accent-soft': '#fbede6',
     '--dv-success': '#5b7841', '--dv-success-bg': '#ecf1e4', '--dv-success-text': '#5b7841',
@@ -77,14 +77,13 @@ test('tokens.scss defines every design variable with the agreed value', () => {
     '--dv-radius-pill': '999px', '--dv-page-gutter': '10px', '--dv-content-pad': '32px',
     '--dv-content-pad-top': '32px', '--dv-content-pad-bottom': '80px', '--dv-content-max': '1320px',
     '--dv-aside-width': '256px', '--dv-aside-mobile-width': '280px', '--dv-topbar-height': '52px', '--dv-footer-height': '28px',
-    '--dv-side-bg': 'linear-gradient(180deg, var(--dv-side-top), var(--dv-side-bot-mix))',
     '--dv-topbar-bg': 'rgba(255, 254, 251, 0.84)', '--dv-backdrop': 'saturate(1.6) blur(14px)', '--dv-scrim': 'rgba(8, 9, 11, 0.4)',
     '--dv-logo-bg': 'linear-gradient(160deg, #e4a089, #d97757 50%, #c15f3c)',
     '--dv-shadow-logo': 'inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -1px 0 rgba(0, 0, 0, 0.14), 0 2px 4px -2px rgba(217, 119, 87, 0.45)',
     '--dv-shadow-1': '0 1px 2px rgba(70, 52, 34, 0.05), 0 0 0 1px rgba(20, 20, 19, 0.06)',
     '--dv-shadow-raised': 'inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(20, 20, 19, 0.07), 0 1px 2px rgba(70, 52, 34, 0.085)',
-    '--dv-shadow-side': 'inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(20, 20, 19, 0.08), 0 1px 2px rgba(70, 52, 34, 0.065), 0 10px 24px -22px rgba(70, 52, 34, 0.22)',
     '--dv-shadow-inset': 'inset 0 1px 1.5px rgba(70, 52, 34, 0.07)',
+    '--dv-shadow-drawer': '8px 0 24px -8px rgba(70, 52, 34, 0.22)',
     '--dv-shadow-button': 'inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 2px rgba(70, 52, 34, 0.13), 0 4px 10px -6px #c6613f',
     '--dv-shadow-button-plain': '0 1px 1px rgba(13, 15, 18, 0.04)',
     '--dv-shadow-overlay': '0 24px 48px -12px rgba(70, 52, 34, 0.26), 0 0 0 1px rgba(20, 20, 19, 0.08)',
@@ -177,14 +176,15 @@ test('fast-crud row buttons and table overrides take their colours from the them
 
 test('layout defaults use the sidebar layout and the new theme colours', () => {
   const store = read('stores/themeConfig.ts');
-  const defaults = { layout: 'defaults', primary: '#c6613f', menuBar: '#f9f8f3', menuBarColor: '#3d3d3a', menuBarActiveColor: '#ffffff', topBar: '#fffefb', topBarColor: '#73726c', columnsMenuBar: '#f9f8f3', columnsMenuBarColor: '#3d3d3a' };
+  const defaults = { layout: 'defaults', primary: '#c6613f', menuBar: '#f9f8f3', menuBarColor: '#3d3d3a', menuBarActiveColor: '#e2dfd5', topBar: '#fffefb', topBarColor: '#73726c', columnsMenuBar: '#f9f8f3', columnsMenuBarColor: '#3d3d3a' };
   for (const [key, value] of Object.entries(defaults)) assert.match(store, new RegExp(`\\n\\s*${key}: '${value}',`), key);
   assert.match(store, /\n\s*isBreadcrumb: true,/);
   // 设置抽屉按这些默认值写内联变量；app.scss 的兜底值要指向同一组 token
   const tokens = sass.compile(path.resolve(themeDir, 'tokens.scss'), { style: 'expanded' }).css;
   const token = name => tokens.match(new RegExp(`--dv-${name}: ([^;]+);`))[1];
   const app = read('theme/app.scss');
-  const fallback = { topBar: 'surface', topBarColor: 'text-secondary', menuBar: 'side-top', menuBarColor: 'text-nav', menuBarActiveColor: 'raise', columnsMenuBar: 'side-top', columnsMenuBarColor: 'text-nav' };
+  // 菜单高亮背景色是选中项的灰底（Win11 侧栏：选中灰底 + 左侧竖线），不再是白色凸起块
+  const fallback = { topBar: 'surface', topBarColor: 'text-secondary', menuBar: 'side-bg', menuBarColor: 'text-nav', menuBarActiveColor: 'selected', columnsMenuBar: 'side-bg', columnsMenuBarColor: 'text-nav' };
   for (const [key, name] of Object.entries(fallback)) {
     assert.match(app, new RegExp(`--next-bg-${key}: var\\(--dv-${name}\\);`), key);
     assert.equal(token(name), defaults[key], key);

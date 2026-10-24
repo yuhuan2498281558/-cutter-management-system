@@ -80,26 +80,35 @@ test('the system name reads 盾构刀具管理系统 everywhere outside the logi
   assert.match(fs.readFileSync(path.resolve(srcDir, '..', 'index.html'), 'utf8'), /<title>盾构刀具管理系统<\/title>/);
 });
 
-test('the sidebar layout insets two panels by the page gutter and floats a glass top bar over the main panel', () => {
+test('the sidebar layout lays the sidebar and the main area flat against the window edges, split by a 1px divider', () => {
   const css = themeCss();
   const rule = selector => {
     const at = css.indexOf(`\n${selector} {`);
     assert.ok(at >= 0, selector);
     return css.slice(at, css.indexOf('}', at));
   };
-  const shell = rule('.layout-container.layout-shell');
-  assert.match(shell, /padding: var\(--dv-page-gutter\);/);
-  assert.match(shell, /gap: var\(--dv-page-gutter\);/);
-  const asidePanel = rule('.layout-container.layout-shell .layout-aside.layout-aside-panel');
-  for (const decl of ['border-radius: var(--dv-radius-lg);', 'background: var(--dv-side-bg);', 'box-shadow: var(--dv-shadow-side);', 'padding: 14px 12px 12px;']) assert.ok(asidePanel.includes(decl), decl);
-  const mainPanel = rule('.layout-container.layout-shell .layout-container-view');
-  for (const decl of ['border-radius: var(--dv-radius-lg);', 'background-color: var(--dv-surface);', 'box-shadow: var(--dv-shadow-1);', 'overflow: hidden;']) assert.ok(mainPanel.includes(decl), decl);
+  // 外壳不再有外边距、间隙和露出来的画布底色：侧栏、主内容区贴边满高
+  assert.equal(css.includes('\n.layout-container.layout-shell {'), false);
+  const shellRules = [...css.matchAll(/\n(\.layout-container\.layout-shell[^{]*)\{([^}]*)\}/g)];
+  assert.ok(shellRules.length >= 8);
+  for (const [, selector, body] of shellRules) assert.doesNotMatch(body, /page-gutter|radius-lg|shadow-side|shadow-1\b/, selector);
+  const aside = rule('.layout-container.layout-shell .layout-aside.layout-aside-panel');
+  // 分割线是不占宽度的内阴影：收起时 64px 里正好 48px 内容区，图标中线落在 32px
+  for (const decl of ['padding: 12px 8px 8px;', 'border-right: none;', 'box-shadow: inset -1px 0 0 var(--dv-divider);', 'background: var(--dv-side-bg);', 'z-index: auto;']) assert.ok(aside.includes(decl), decl);
+  assert.doesNotMatch(aside, /border-radius|gradient/);
+  const main = rule('.layout-container.layout-shell .layout-container-view');
+  for (const decl of ['background-color: var(--dv-surface);', 'overflow: hidden;']) assert.ok(main.includes(decl), decl);
+  assert.doesNotMatch(main, /border-radius|box-shadow/);
   assert.match(rule('.layout-container.layout-shell .layout-container-view > .layout-header'), /position: absolute;/);
   assert.match(rule('.layout-container.layout-shell .layout-container-view .layout-main.layout-main-under-topbar'), /padding-top: var\(--dv-topbar-height\) !important;/);
-  // 窄屏：侧栏是离边一个页面间距、280px 宽的浮动抽屉
+  // 窄屏：侧栏是从左边贴边滑出的 280px 满高抽屉，打开时右侧投影（收起时不加，免得投影漏进窗口）
   const drawer = rule('.layout-container.layout-shell .layout-aside-panel.layout-aside-mobile');
-  for (const decl of ['top: var(--dv-page-gutter);', 'bottom: var(--dv-page-gutter);', 'width: var(--dv-aside-mobile-width);']) assert.ok(drawer.includes(decl), decl);
+  for (const decl of ['top: 0;', 'bottom: 0;', 'left: calc(-1 * var(--dv-aside-mobile-width));', 'width: var(--dv-aside-mobile-width);']) assert.ok(drawer.includes(decl), decl);
+  assert.doesNotMatch(drawer, /box-shadow/);
+  const open = rule('.layout-container.layout-shell .layout-aside-panel.layout-aside-mobile.layout-aside-mobile-open');
+  for (const decl of ['left: 0;', 'box-shadow: var(--dv-shadow-drawer);']) assert.ok(open.includes(decl), decl);
   assert.match(css, /\.layout-aside-mobile-mode \{[^}]*background-color: var\(--dv-scrim\);/);
+  const mainPanel = main;
   // 抽屉里的用户菜单、搜索建议、退出确认框挂在 body 上，层级从 2000 起：抽屉和遮罩要比它们低，主面板隔离自己的 z-index
   const z = selector => Number(rule(selector).match(/z-index: (\d+);/)[1]);
   assert.ok(z('.layout-container.layout-shell .layout-aside-panel.layout-aside-mobile') < 2000);
@@ -111,11 +120,65 @@ test('the sidebar layout insets two panels by the page gutter and floats a glass
   assert.match(search, /<style lang="scss">\s*\/\/[^\n]*\n\.layout-search-dialog \{/);
   // 毛玻璃画在 ::before 上：加在顶栏本身会让顶栏里的菜单搜索弹窗遮罩只剩顶栏大小
   const header = read('layout/navBars/breadcrumb/index.vue');
-  const glass = header.slice(header.indexOf('&.is-glass {'));
+  const glass = header.slice(header.indexOf('&.is-glass {'), header.indexOf('</style>'));
   const before = glass.slice(glass.indexOf('&::before {'), glass.indexOf('}', glass.indexOf('&::before {')));
   assert.match(before, /backdrop-filter: var\(--dv-backdrop\);/);
   assert.match(before, /background: var\(--dv-topbar-bg\);/);
   assert.equal(glass.slice(0, glass.indexOf('&::before {')).includes('backdrop-filter'), false);
+  // 顶栏平铺：底边一条分割线，没有圆角
+  assert.match(glass, /border-bottom-color: var\(--dv-divider\);/);
+  assert.doesNotMatch(glass, /border-radius/);
+});
+
+test('the sidebar menu is Win11-style: 40px items, 14px text, a grey selected fill and a 3px accent bar', () => {
+  const css = themeCss();
+  const rule = selector => {
+    const at = css.indexOf(`\n${selector} {`);
+    assert.ok(at >= 0, selector);
+    return css.slice(at, css.indexOf('}', at));
+  };
+  const has = (selector, ...decls) => {
+    const block = rule(selector);
+    for (const decl of decls) assert.ok(block.includes(decl), `${selector} → ${decl}`);
+    return block;
+  };
+  has('.layout-aside .el-menu', '--el-menu-item-height: 40px;', '--el-menu-sub-item-height: 36px;', '--el-menu-item-font-size: 14px;', '--el-menu-icon-width: 16px;',
+    '--el-menu-base-level-padding: 12px;', '--el-menu-level-padding: 28px;', '--el-menu-active-color: var(--dv-text);', '--el-menu-hover-bg-color: var(--dv-hover) !important;');
+  has('.layout-aside .el-menu .el-menu--inline .el-menu-item,\n.layout-aside .el-menu .el-menu--inline .el-sub-menu__title', 'height: var(--el-menu-sub-item-height) !important;');
+  // 图标 16px、与文字间距 12px、跟文字同色；收起时没有子菜单的项的图标在提示框触发层里，也要命中
+  has('.layout-aside .el-menu .el-menu-item > i,\n.layout-aside .el-menu .el-menu-item > .el-menu-tooltip__trigger > i,\n.layout-aside .el-menu .el-sub-menu__title > i:not(.el-sub-menu__icon-arrow)',
+    'width: var(--el-menu-icon-width);', 'margin: 0 12px 0 0;', 'font-size: 16px !important;', 'color: inherit;');
+  // 选中：正文色 600 字重，选中灰底来自菜单高亮背景色，不再是凸起白块
+  const selected = '.layout-aside .el-menu .el-menu-item.is-active,\n.layout-aside .el-menu .el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title';
+  assert.doesNotMatch(has(selected, 'color: var(--dv-text);', 'font-weight: 600;'), /box-shadow/);
+  assert.match(css, /--next-bg-menuBarActiveColor: var\(--dv-selected\);/);
+  assert.match(css, /\n\.el-menu-hover-bg-color, \.el-menu-item\.is-active,\s*\.el-sub-menu\.is-active \.el-sub-menu__title \{\s*background-color: var\(--next-bg-menuBarActiveColor\) !important;/);
+  // 左侧竖线：3px × 16px、2px 圆角、垂直居中、贴左内边缘、主题色；父级只在收起（含当前页）时显示
+  has('.layout-aside .el-menu .el-menu-item.is-active::before,\n.layout-aside .el-menu .el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title::before',
+    'position: absolute;', 'top: 50%;', 'left: 0;', 'width: 3px;', 'height: 16px;', 'margin-top: -8px;', 'border-radius: 2px;', 'background-color: var(--el-color-primary);');
+  has('.el-menu--vertical.el-menu--popup-container .el-menu--popup .el-menu-item.is-active::before', 'width: 3px;', 'background-color: var(--el-color-primary);');
+});
+
+test('the collapsed sidebar centres every icon on the 64px column', () => {
+  const css = themeCss();
+  const rule = selector => {
+    const at = css.indexOf(`\n${selector} {`);
+    assert.ok(at >= 0, selector);
+    return css.slice(at, css.indexOf('}', at));
+  };
+  // Element Plus 收起时把没有子菜单的项的图标放进铺满整项、自带左右内边距、内容靠左的提示框触发层：
+  // 只把 li 居中不够（V2 的问题），触发层也要居中、去掉内边距
+  const centred = rule('.layout-aside .el-menu.el-menu--collapse > .el-menu-item,\n.layout-aside .el-menu.el-menu--collapse > .el-menu-item > .el-menu-tooltip__trigger,\n.layout-aside .el-menu.el-menu--collapse > .el-sub-menu > .el-sub-menu__title');
+  assert.match(centred, /justify-content: center;/);
+  assert.match(centred, /padding: 0 !important;/);
+  assert.match(rule('.layout-aside .el-menu.el-menu--collapse > .el-menu-item > i,\n.layout-aside .el-menu.el-menu--collapse > .el-menu-item > .el-menu-tooltip__trigger > i,\n.layout-aside .el-menu.el-menu--collapse > .el-sub-menu > .el-sub-menu__title > i:not(.el-sub-menu__icon-arrow)'), /margin-right: 0;/);
+  // 64px 侧栏左右各 8px 内边距，菜单、搜索按钮、用户区都在 48px 宽的内容区里居中，中线正好在 32px
+  assert.match(css, /\.layout-aside-pc-64 \{\s*width: 64px !important;/);
+  const aside = read('layout/component/aside.vue');
+  const collapse = aside.slice(aside.indexOf('&.is-collapse {'));
+  assert.match(collapse, /\.layout-aside-search \{\s*justify-content: center;\s*padding: 0;/);
+  assert.match(collapse, /:deep\(\.layout-aside-user\) \{\s*flex-direction: column;[^}]*padding: 8px 0 0;/);
+  assert.match(read('layout/component/asideUser.vue'), /\.layout-aside-user \{\s*display: flex;\s*align-items: center;/);
 });
 
 test('route pages sit in a centred, padded column except CRUD pages, the home screen and the assistant', () => {
@@ -128,7 +191,9 @@ test('route pages sit in a centred, padded column except CRUD pages, the home sc
   assert.match(parent, /return route\.name === 'home';/);
   // 智能助手按布局给出的可用高度铺满，不再写死顶栏和标签栏的高度
   assert.match(read('views/ai-assistant/index.vue'), /\.ai-assistant-container \{[^}]*height: var\(--dv-main-height\);/);
-  assert.match(css, /\.layout-container\.layout-shell \.layout-container-view \.layout-main \{[^}]*--dv-main-height: calc\(100vh - 2 \* var\(--dv-page-gutter\) - var\(--dv-topbar-height\) - var\(--dv-footer-height\)\);/);
+  // 侧边栏布局：外壳贴边，可用高度 = 窗口高 - 顶栏 - 页脚（宽窄屏一样，不再扣页面间距）
+  assert.match(css, /\.layout-container\.layout-shell \.layout-container-view \.layout-main \{[^}]*--dv-main-height: calc\(100vh - var\(--dv-topbar-height\) - var\(--dv-footer-height\)\);/);
+  assert.equal((css.match(/--dv-main-height: calc\(100vh - var\(--dv-topbar-height\)/g) || []).length, 1);
   assert.match(css, /\.layout-container \.layout-main \{\s*--dv-main-height: calc\(100vh - 85px - var\(--dv-footer-height\)\);/);
   assert.match(css, /\.layout-container \.layout-main\.layout-main-no-footer \{\s*--dv-footer-height: 0px;/);
   assert.match(read('layout/footer/index.vue'), /height: var\(--dv-footer-height\);/);

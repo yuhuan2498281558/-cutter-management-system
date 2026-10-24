@@ -2,7 +2,7 @@
 	<div class="h100" v-show="!isTagsViewCurrenFull">
 		<el-aside class="layout-aside" :class="[setCollapseStyle, { 'layout-aside-panel': isPanel, 'is-collapse': isPanelCollapse }]">
 			<Logo v-if="setShowLogo" />
-			<!-- 侧边栏布局：侧栏是一块圆角面板，依次是 Logo、菜单搜索、菜单、最近打开、用户 -->
+			<!-- 侧边栏布局：侧栏依次是 Logo、菜单搜索、菜单、最近打开、用户 -->
 			<button v-if="isPanel" type="button" class="layout-aside-search" @click="onSearchClick">
 				<el-icon :size="16"><ele-Search /></el-icon>
 				<span>搜索菜单</span>
@@ -73,15 +73,15 @@ const setCollapseStyle = computed(() => {
 			if (isCollapse) return [asideBrColor, 'layout-aside-pc-1'];
 			else return [asideBrColor, 'layout-aside-pc-220'];
 		} else {
-			// 其它布局给 64px；侧边栏布局展开时是 256px 的面板
+			// 其它布局给 64px；侧边栏布局展开时是 256px
 			if (isCollapse) return [asideBrColor, 'layout-aside-pc-64'];
 			else return [asideBrColor, layout === 'defaults' ? 'layout-aside-pc-256' : 'layout-aside-pc-220'];
 		}
 	}
 });
-// 侧边栏布局：侧栏画成圆角面板，带菜单搜索、最近打开和用户区（窄屏时变成浮动抽屉）
+// 侧边栏布局：侧栏带菜单搜索、最近打开和用户区（窄屏时变成抽屉）
 const isPanel = computed(() => themeConfig.value.layout === 'defaults');
-// 面板收起成 64px（窄屏时 isCollapse 表示抽屉打开，不算收起）
+// 侧栏收起成 64px（窄屏时 isCollapse 表示抽屉打开，不算收起）
 const isPanelCollapse = computed(() => isPanel.value && themeConfig.value.isCollapse && state.clientWidth > 1000);
 // 菜单搜索：打开与顶栏搜索图标相同的菜单搜索弹窗
 const onSearchClick = () => {
@@ -174,17 +174,18 @@ watch(
 </script>
 
 <style scoped lang="scss">
-// 侧边栏布局的侧栏面板（面板本身的底色、圆角、投影和宽度见 theme/app.scss 的 .layout-shell）
+// 侧边栏布局的侧栏（底色、分割线、左右 8px 内边距和宽度见 theme/app.scss 的 .layout-shell）
+// 图标列：搜索图标、菜单图标、最近打开的圆点都从侧栏左边 20px 起（8px 内边距 + 12px），Logo 方块和头像与图标列同一条中线
 .layout-aside-panel {
 	// 菜单搜索：轻微凹进去的按钮，点开菜单搜索弹窗
 	.layout-aside-search {
-		height: 34px;
+		height: var(--dv-control-height);
 		flex: none;
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		margin-bottom: 10px;
-		padding: 0 10px;
+		gap: 12px;
+		margin-bottom: 8px;
+		padding: 0 12px;
 		border: 0;
 		border-radius: var(--dv-radius);
 		background: var(--dv-side-inset);
@@ -204,15 +205,15 @@ watch(
 			text-align: left;
 		}
 	}
-	// 菜单滚动区左右各伸进面板内边距 4px，再用内边距收回：选中项的凸起描边和投影不被滚动区裁掉
+	// 菜单滚动区左右伸到侧栏边上，再用内边距收回 8px：滚动条贴着分割线，菜单项的键盘焦点框不被滚动区裁掉
 	> .el-scrollbar {
 		width: auto;
-		margin: 0 -4px;
+		margin: 0 -8px;
 		:deep(.el-scrollbar__view) {
-			padding: 1px 4px;
+			padding: 0 8px;
 		}
 	}
-	// 收起成 64px：只留图标
+	// 收起成 64px：只留图标，搜索按钮、头像、"更多"按钮都在 64px 的中线上
 	&.is-collapse {
 		.layout-aside-search {
 			justify-content: center;
@@ -224,7 +225,7 @@ watch(
 		:deep(.layout-aside-user) {
 			flex-direction: column;
 			gap: 6px;
-			padding: 10px 0 0;
+			padding: 8px 0 0;
 			.layout-aside-user-who {
 				display: none;
 			}

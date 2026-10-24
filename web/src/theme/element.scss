@@ -433,7 +433,7 @@
 .el-sub-menu .fa {
 	@include generalIcon;
 }
-// 选中项、收起状态下选中项所在的子菜单：暖灰底；悬停只用浅暖灰（见上面 --el-menu-hover-bg-color）
+// 选中项、收起状态下选中项所在的子菜单：选中灰底（菜单高亮背景色，默认 --dv-selected）；悬停浅灰（见上面 --el-menu-hover-bg-color）
 .el-menu-item.is-active,
 .el-sub-menu.is-active .el-sub-menu__title {
 	@extend .el-menu-hover-bg-color;
@@ -444,16 +444,33 @@
 .el-sub-menu.is-active.is-opened .el-sub-menu__title {
 	background-color: unset !important;
 }
-// 侧栏的竖向菜单（侧边栏、经典、分栏布局）：34px 圆角项，未选中次一级正文色、图标次要色，悬停浅填充；
-// 选中项是白色凸起块（正文色、550 字重、图标陶土色）；有子菜单的右侧 14px 箭头；子菜单项同样式、多缩进一级
+// 选中竖线：项的左内边缘一道 3px × 16px 的主题色圆角竖线，垂直居中
+@mixin dv-menu-indicator {
+	&::before {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 0;
+		width: 3px;
+		height: 16px;
+		margin-top: -8px;
+		border-radius: 2px;
+		background-color: var(--el-color-primary);
+	}
+}
+// 侧栏的竖向菜单（侧边栏、经典、分栏布局），Win11 设置页的样式：
+// 40px 圆角项（子菜单项 36px）、14px 字、16px 图标、图标与文字间距 12px，图标跟文字同色；悬停浅灰底；
+// 选中项选中灰底、正文色 600 字重，左侧一道主题色竖线；有子菜单的父级只在收起且含当前页时显示竖线，展开时竖线在子项上
 .layout-aside .el-menu {
-	--el-menu-item-height: 34px;
-	--el-menu-sub-item-height: 34px;
-	--el-menu-base-level-padding: 10px;
-	--el-menu-level-padding: 26px; // 图标 16px + 间距 10px：子菜单项的图标对齐上一级的文字
+	--el-menu-item-height: 40px;
+	--el-menu-sub-item-height: 36px;
+	--el-menu-item-font-size: 14px;
+	--el-menu-base-level-padding: 12px;
+	--el-menu-level-padding: 28px; // 图标 16px + 间距 12px：子菜单项缩进到上一级的文字
 	--el-menu-icon-width: 16px;
 	--el-menu-active-color: var(--dv-text);
-	--el-menu-hover-bg-color: var(--dv-fill) !important;
+	--el-menu-hover-text-color: var(--dv-text);
+	--el-menu-hover-bg-color: var(--dv-hover) !important;
 	width: 100%;
 	.el-menu-item,
 	.el-sub-menu__title {
@@ -465,18 +482,27 @@
 		&:hover {
 			color: var(--dv-text);
 		}
-		// 菜单图标（SvgIcon 的根元素）
-		> i:not(.el-sub-menu__icon-arrow) {
-			width: 16px;
-			margin-right: 10px;
-			font-size: 16px !important;
-			color: var(--dv-text-secondary);
-		}
 		> span {
 			min-width: 0;
 			overflow: hidden;
 			text-overflow: ellipsis;
 		}
+	}
+	.el-menu--inline .el-menu-item,
+	.el-menu--inline .el-sub-menu__title {
+		height: var(--el-menu-sub-item-height) !important;
+		line-height: var(--el-menu-sub-item-height) !important;
+	}
+	// 菜单图标（SvgIcon 的根元素）。收起时没有子菜单的项由 Element Plus 包一层提示框触发层（.el-menu-tooltip__trigger）
+	.el-menu-item > i,
+	.el-menu-item > .el-menu-tooltip__trigger > i,
+	.el-sub-menu__title > i:not(.el-sub-menu__icon-arrow) {
+		flex: none;
+		width: var(--el-menu-icon-width);
+		margin: 0 12px 0 0;
+		font-size: 16px !important;
+		text-align: center;
+		color: inherit;
 	}
 	.el-sub-menu__icon-arrow {
 		right: var(--el-menu-base-level-padding);
@@ -487,40 +513,46 @@
 	.el-menu-item.is-active,
 	.el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title {
 		color: var(--dv-text);
-		font-weight: 550;
-		box-shadow: var(--dv-shadow-raised);
-		> i:not(.el-sub-menu__icon-arrow) {
-			color: var(--dv-accent-strong);
-		}
+		font-weight: 600;
+		@include dv-menu-indicator;
 	}
 	.el-menu--inline {
 		background-color: transparent;
 	}
-	// 收起成图标列：图标居中
+	// 收起成 64px 的图标列：图标水平居中。没有子菜单的项要连提示框触发层一起居中，
+	// 触发层是铺满整项的绝对定位块，自带 Element Plus 的左右内边距、内容靠左
 	&.el-menu--collapse {
 		width: 100% !important;
 		> .el-menu-item,
+		> .el-menu-item > .el-menu-tooltip__trigger,
 		> .el-sub-menu > .el-sub-menu__title {
 			justify-content: center;
 			padding: 0 !important;
-			> i:not(.el-sub-menu__icon-arrow) {
-				margin-right: 0;
-			}
+		}
+		> .el-menu-item > i,
+		> .el-menu-item > .el-menu-tooltip__trigger > i,
+		> .el-sub-menu > .el-sub-menu__title > i:not(.el-sub-menu__icon-arrow) {
+			margin-right: 0;
 		}
 	}
 }
-// 经典、分栏布局的侧栏不是面板，菜单自己留出四周的间距
+// 经典、分栏布局的侧栏菜单自己留出四周的间距（侧边栏布局由侧栏的内边距留出）
 .layout-aside:not(.layout-aside-panel) .el-menu:not(.el-menu--inline) {
 	padding: 6px 8px;
 }
-// 收起时悬停弹出的子菜单：与侧栏菜单同样的 34px 圆角项
+// 收起时悬停弹出的子菜单：36px 圆角项，选中项与侧栏一样带竖线
 .el-menu--vertical.el-menu--popup-container .el-menu--popup {
 	padding: 6px;
 	.el-menu-item,
 	.el-sub-menu__title {
-		height: 34px !important;
-		line-height: 34px !important;
+		height: 36px !important;
+		line-height: 36px !important;
+		padding: 0 12px;
 		border-radius: var(--dv-radius);
+	}
+	.el-menu-item.is-active {
+		color: var(--dv-text);
+		@include dv-menu-indicator;
 	}
 }
 // 子级菜单背景颜色

@@ -17,19 +17,16 @@ $dv-bg: #eae7de; // 窗口底
 $dv-surface: #fffefb; // 主面板、表格、输入框、弹窗
 $dv-tile: #f6f4ee; // 平铺块（主面板里的卡片、表头）
 $dv-surface-muted: #efede6; // 次级填充
-$dv-selected: #e2dfd5; // 选中填充
-$dv-hover: #f2f0e9; // 行、按钮、下拉项悬停（不透明）
+$dv-selected: #e2dfd5; // 选中填充：侧栏选中的菜单项
+$dv-hover: #f2f0e9; // 侧栏菜单、行、按钮、下拉项悬停（不透明）
 $dv-hover-solid: $dv-hover; // 表格固定列是 sticky 的，悬停色必须不透明；悬停色本身已不透明，两者相同
-$dv-fill: rgba($dv-text, 0.06); // 分段控件底槽、侧栏菜单悬停等浅填充
+$dv-fill: rgba($dv-text, 0.06); // 分段控件底槽、默认标签等浅填充
 
-// 侧栏面板：上下两色的浅渐变，细描边，搜索框凹进去
-$dv-side-top: #f9f8f3;
-$dv-side-bot: #f2f0e8;
-$dv-side-bot-mix: mix($dv-side-bot, $dv-side-top, 55%); // 渐变下端：side-bot 与 side-top 按 55% 混合
-$dv-side-border: rgba($dv-text, 0.08);
+// 侧栏：贴左边的纯色底，与主内容区之间一条分割线；搜索框凹进去
+$dv-side: #f9f8f3;
 $dv-side-inset: #efede6;
 
-// 凸起块：侧栏选中菜单项、头像
+// 凸起块：头像
 $dv-shadow-tint: #463422; // 投影统一用暖棕色
 $dv-raise: #ffffff;
 $dv-raise-hl: rgba(#ffffff, 0.95); // 上沿高光
@@ -40,6 +37,7 @@ $dv-drop: rgba($dv-shadow-tint, 0.22);
 // 线
 $dv-border: #e9e6dd;
 $dv-border-strong: #ddd9ce;
+$dv-divider: $dv-border; // 侧栏与主内容区之间、顶栏底边、侧栏用户区上方的分割线
 
 // 主色（陶土色）与智能助手专用色
 $dv-primary: #c6613f; // 主按钮底
@@ -67,7 +65,7 @@ $dv-info-text: $dv-info;
 // 形状
 $dv-radius-sm: 9px; // 小按钮、分段项
 $dv-radius: 11px; // 按钮、输入框、图标按钮、菜单项
-$dv-radius-lg: 22px; // 侧栏面板、主面板
+$dv-radius-lg: 22px; // 大块面板（数据分析卡片圆角的备用值）
 $dv-radius-xl: 28px; // 抽屉、弹窗
 $dv-radius-card: 26px; // 平铺块
 $dv-radius-table: 24px; // 表格外框
@@ -79,21 +77,21 @@ $dv-radius-toast: 14px; // 消息提示
 $dv-radius-pill: 999px; // 圆形按钮
 $dv-control-height: 34px; // 按钮、输入框、选择器（默认尺寸）
 $dv-control-height-sm: 30px; // 小按钮
-$dv-page-gutter: 10px; // 侧栏、主面板离窗口边缘和彼此的距离
-$dv-content-pad: 32px; // 主面板内容的左右内边距
+$dv-page-gutter: 10px; // 抽屉离窗口边缘的距离、数据分析页的外边距
+$dv-content-pad: 32px; // 主内容区的左右内边距
 $dv-content-pad-top: 32px;
 $dv-content-pad-bottom: 80px;
 // 宽度 ≤640px 时
 $dv-content-pad-sm: 16px;
 $dv-content-pad-top-sm: 22px;
 $dv-content-pad-bottom-sm: 56px;
-$dv-content-max: 1320px; // 主面板内容的最大宽度
-$dv-aside-width: 256px; // 侧栏面板宽度（收起时沿用 64px）
-$dv-aside-mobile-width: 280px; // 窄屏时浮动侧栏的宽度
-$dv-topbar-height: 52px; // 主面板顶栏高度（含底边线）
+$dv-content-max: 1320px; // 主内容区内容的最大宽度
+$dv-aside-width: 256px; // 侧栏宽度（收起时沿用 64px）
+$dv-aside-mobile-width: 280px; // 窄屏时侧栏抽屉的宽度
+$dv-topbar-height: 52px; // 主内容区顶栏高度（含底边线）
 $dv-footer-height: 28px; // 主内容区底部的版权行
 
-// 主面板顶栏：半透明面板色 + 毛玻璃，内容从它下面滚过
+// 主内容区顶栏：半透明面板色 + 毛玻璃，内容从它下面滚过
 $dv-topbar-bg: rgba($dv-surface, 0.84);
 $dv-backdrop: saturate(1.6) blur(14px);
 // 窄屏侧栏抽屉的遮罩
@@ -102,10 +100,10 @@ $dv-scrim: rgba(#08090b, 0.4);
 $dv-logo-bg: linear-gradient(160deg, mix($dv-accent, #ffffff, 70%), $dv-accent 50%, $dv-accent-strong);
 
 // 阴影
-$dv-shadow-1: 0 1px 2px rgba($dv-shadow-tint, 0.05), 0 0 0 1px rgba($dv-text, 0.06); // 主面板、分段控件选中项
+$dv-shadow-1: 0 1px 2px rgba($dv-shadow-tint, 0.05), 0 0 0 1px rgba($dv-text, 0.06); // 分段控件选中项
 $dv-shadow-raised: inset 0 1px 0 $dv-raise-hl, 0 0 0 1px $dv-raise-border, 0 1px 2px rgba($dv-shadow-tint, 0.085); // 凸起块
-$dv-shadow-side: inset 0 1px 0 $dv-raise-hl, 0 0 0 1px $dv-side-border, 0 1px 2px rgba($dv-shadow-tint, 0.065), 0 10px 24px -22px $dv-drop; // 侧栏面板
 $dv-shadow-inset: inset 0 1px 1.5px rgba($dv-shadow-tint, 0.07); // 侧栏搜索框
+$dv-shadow-drawer: 8px 0 24px -8px rgba($dv-shadow-tint, 0.22); // 窄屏侧栏抽屉：投在右侧
 $dv-shadow-button: inset 0 1px 0 rgba(#ffffff, 0.22), 0 1px 2px $dv-raise-sh, 0 4px 10px -6px $dv-primary; // 主按钮
 $dv-shadow-button-plain: 0 1px 1px rgba(#0d0f12, 0.04); // 默认按钮
 $dv-shadow-overlay: 0 24px 48px -12px rgba($dv-shadow-tint, 0.26), 0 0 0 1px rgba($dv-text, 0.08); // 弹窗、抽屉、下拉、气泡
@@ -137,10 +135,7 @@ $dv-line-height: 1.54;
 	--dv-hover-solid: #{$dv-hover-solid};
 	--dv-fill: #{$dv-fill};
 	// 侧栏
-	--dv-side-top: #{$dv-side-top};
-	--dv-side-bot: #{$dv-side-bot};
-	--dv-side-bot-mix: #{$dv-side-bot-mix};
-	--dv-side-border: #{$dv-side-border};
+	--dv-side-bg: #{$dv-side};
 	--dv-side-inset: #{$dv-side-inset};
 	// 凸起块
 	--dv-raise: #{$dv-raise};
@@ -157,6 +152,7 @@ $dv-line-height: 1.54;
 	// 线
 	--dv-border: #{$dv-border};
 	--dv-border-strong: #{$dv-border-strong};
+	--dv-divider: #{$dv-divider};
 	// 主色与智能助手专用色
 	--dv-primary: #{$dv-primary};
 	--dv-primary-hover: #{$dv-primary-hover};
@@ -203,7 +199,6 @@ $dv-line-height: 1.54;
 	--dv-topbar-height: #{$dv-topbar-height};
 	--dv-footer-height: #{$dv-footer-height};
 	// 外壳
-	--dv-side-bg: linear-gradient(180deg, var(--dv-side-top), var(--dv-side-bot-mix));
 	--dv-topbar-bg: #{$dv-topbar-bg};
 	--dv-backdrop: #{$dv-backdrop};
 	--dv-scrim: #{$dv-scrim};
@@ -211,8 +206,8 @@ $dv-line-height: 1.54;
 	// 阴影
 	--dv-shadow-1: #{$dv-shadow-1};
 	--dv-shadow-raised: #{$dv-shadow-raised};
-	--dv-shadow-side: #{$dv-shadow-side};
 	--dv-shadow-inset: #{$dv-shadow-inset};
+	--dv-shadow-drawer: #{$dv-shadow-drawer};
 	--dv-shadow-button: #{$dv-shadow-button};
 	--dv-shadow-button-plain: #{$dv-shadow-button-plain};
 	--dv-shadow-overlay: #{$dv-shadow-overlay};
