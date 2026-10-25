@@ -48,8 +48,9 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				},
 				ring_no: {
 					title: '所属环号',
-					type: 'input',
-					search: { show: true },
+					// 'input' 不是 fast-crud 的字段类型，查询栏会渲染成空白，必须用 'text'
+					type: 'text',
+					search: { show: true, component: { clearable: true } },
 					column: { minWidth: 100 },
 					form: { rules: [{ required: true, message: '请输入所属环号' }] },
 				},
