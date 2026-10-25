@@ -94,7 +94,7 @@
           collapse-tags-tooltip
           :max-collapse-tags="2"
           :disabled="disabled"
-          placeholder="选择可查数据"
+          :placeholder="supportsFocusSources ? '选择可查数据' : '按数据类型筛选模板'"
           @change="handleModelDataTypesChange"
         >
           <el-option
@@ -175,7 +175,7 @@
 
     <div class="input-actions">
       <span class="input-tip">
-        {{ routeMode === 'rule' ? '规则路径：下拉选择后可直接生成问题' : '模型路径：选择要用的数据，或选一个分析模板生成问题；也可以直接输入' }} · Enter 发送，Shift + Enter 换行
+        {{ routeMode === 'rule' ? '规则路径：下拉选择后可直接生成问题' : supportsFocusSources ? '模型路径：选择要用的数据，或选一个分析模板生成问题；也可以直接输入' : '模型路径：按数据类型筛选问题模板；也可以直接输入' }} · Enter 发送，Shift + Enter 换行
       </span>
       <div class="button-group">
         <el-button
@@ -208,6 +208,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import type { InputInstance } from 'element-plus';
 import { FocusSource, ModelPromptTemplate, QuestionParamValues, QuickQuestionGroup, QuickQuestionItem, RouteMode } from '../types';
 import { FOCUS_SOURCES, TOOL_TYPE_OPTIONS, modelPromptTemplates, quickQuestionGroups } from '../constants';
+import { supportsFocusSources } from '../backendCapabilities';
 
 const props = defineProps<{
   // 正在生成回答：显示"停止生成"，发送按钮转圈

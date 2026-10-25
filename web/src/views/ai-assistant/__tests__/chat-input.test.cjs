@@ -17,7 +17,7 @@ const constants = (() => {
   return context.exports;
 })();
 
-function loadInput(overrides = {}) {
+function loadInput(overrides = {}, supportsFocusSources = true) {
   const props = vue.reactive({ generating: false, disabled: false, routeMode: 'rule', ...overrides });
   const emitted = [];
   const context = { exports: {}, defineProps: () => props, defineEmits: () => (...args) => {
@@ -27,12 +27,13 @@ function loadInput(overrides = {}) {
   context.require = name => {
     if (name === 'vue') return vue;
     if (name === '../constants') return constants;
+    if (name === '../backendCapabilities') return { supportsFocusSources };
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
     + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, selectedQuickParams, quickQuestionGroups, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickParamHint, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, FOCUS_SOURCES, TOOL_TYPE_OPTIONS, selectedSources, selectedTemplateTitle, selectedTemplate, selectedTemplateParams, templateParams, templateParamHint, visibleTemplates, handleTemplateChange, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
   vm.runInNewContext(transpile(source), context);
-  return { props, emitted, ...context.exports.input };
+  return { props, emitted, supportsFocusSources, ...context.exports.input };
 }
 
 // Element Plus stand-ins that expose only the state under test.
@@ -343,4 +344,5 @@ test('choosing a template or pressing 生成问题 always writes the chosen ques
 test('each path explains how to fill the input', async () => {
   assert.match(await renderInput(loadInput()), /<span class="input-tip">规则路径：下拉选择后可直接生成问题 · Enter 发送，Shift \+ Enter 换行 <\/span>/);
   assert.match(await renderInput(loadInput({ routeMode: 'agent' })), /<span class="input-tip">模型路径：选择要用的数据，或选一个分析模板生成问题；也可以直接输入 · Enter 发送，Shift \+ Enter 换行 <\/span>/);
+  assert.match(await renderInput(loadInput({ routeMode: 'agent' }, false)), /模型路径：按数据类型筛选问题模板；也可以直接输入/);
 });

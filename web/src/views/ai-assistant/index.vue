@@ -63,6 +63,7 @@ import { ContextMode, FocusSource, MemoryMetadata, Message, QuerySlot, RouteMode
 import ChatMessageList from './components/ChatMessageList.vue';
 import ChatInputArea from './components/ChatInputArea.vue';
 import MemorySlotBadge from './components/MemorySlotBadge.vue';
+import { supportsFocusSources } from './backendCapabilities';
 
 const api = useAiAssistantApi();
 
@@ -207,7 +208,7 @@ const runStream = async (query: string) => {
   const requestControls = {
     context_mode: contextMode.value,
     clear_slots: [...pendingClears.value],
-    ...(routeMode.value === 'agent' && focusSources.value.length ? { focus_sources: [...focusSources.value] } : {}),
+    ...(supportsFocusSources && routeMode.value === 'agent' && focusSources.value.length ? { focus_sources: [...focusSources.value] } : {}),
   };
   loading.value = true;
 

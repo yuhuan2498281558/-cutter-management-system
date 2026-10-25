@@ -9,7 +9,7 @@ const ts = require('typescript');
 const vue = require('vue');
 
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
-function setup() {
+function setup(supportsFocusSources = true) {
   const history = deferred(), reset = deferred(), streams = [], notices = [], frames = new Map();
   let mounted, unmounted, nextFrame = 0, clock = 0;
   const api = { history: () => history.promise, reset: () => reset.promise, chatStream: (data, callbacks, signal) => { streams.push({ data, callbacks, signal }); return Promise.resolve(); } };
@@ -18,6 +18,7 @@ function setup() {
     if (name === 'vue') return { ...vue, onMounted: callback => { mounted = callback; }, onUnmounted: callback => { unmounted = callback; } };
     if (name === 'element-plus') return { ElMessage: { success: value => notices.push(['success', value]), error: value => notices.push(['error', value]), info: value => notices.push(['info', value]) } };
     if (name === '/@/api/ai-assistant') return { useAiAssistantApi: () => api };
+    if (name === './backendCapabilities') return { supportsFocusSources };
     if (name.endsWith('.vue') || name === '@element-plus/icons-vue') return {};
     throw new Error(`Unexpected import: ${name}`);
   };
@@ -208,6 +209,15 @@ test('data types are sent as focus_sources only on the model path and only when 
   h.focusSources.value = [];
   h.sendQuery('不限定数据类型'); h.streams[2].callbacks.onDone();
   assert.equal('focus_sources' in h.streams[2].data, false);
+});
+
+test('legacy backend receives the generated question without unsupported focus_sources', () => {
+  const h = setup(false);
+  h.routeMode.value = 'agent';
+  h.focusSources.value = ['opening'];
+  h.sendQuery('统计开仓记录');
+  assert.equal(h.streams[0].data.query, '统计开仓记录');
+  assert.equal('focus_sources' in h.streams[0].data, false);
 });
 
 test('query traces are kept only on model-analysis answers', () => {
