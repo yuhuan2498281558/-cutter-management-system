@@ -149,15 +149,15 @@ onBeforeUnmount(() => { clearTimeout(resizeTimer); observer?.disconnect(); windo
 <style scoped>
 .overview-page { min-width: 0; padding-bottom: 12px; }
 .overview-chart { width: 100%; height: 340px; }
-.kpi-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px 20px; align-items: start; }
+.kpi-row { display: grid; grid-template-columns: repeat(3, minmax(min-content, 1fr)) auto; gap: 12px 20px; align-items: start; }
 .kpi { display: grid; gap: 4px; min-width: 0; }
-.kpi-value { font-size: 28px; font-weight: 600; line-height: 1.15; color: var(--dv-text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kpi-value { font-size: 28px; font-weight: 600; line-height: 1.15; color: var(--dv-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .kpi-value small { margin-left: 3px; font-size: var(--el-font-size-small); font-weight: 400; color: var(--dv-text-secondary); }
 .kpi-sub { font-size: var(--el-font-size-extra-small); color: var(--dv-text-secondary); }
 .kpi-minor { padding-left: 20px; border-left: 1px solid var(--el-border-color); }
 .kpi-minor .kpi-value { font-size: var(--el-font-size-extra-large); }
 @media (max-width: 760px) {
-  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-row { grid-template-columns: repeat(2, minmax(min-content, 1fr)); }
   .kpi-minor { padding-left: 0; border-left: 0; }
 }
 </style>
