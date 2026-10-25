@@ -43,6 +43,11 @@ test('the ring percentage is the used share of the input budget, with warning at
   assert.equal(loadMeter(turn(9442, { exceeded: true })).level.value, 'danger');
 });
 
+test('token counts read as 541, 1k, 1.2k and 24k', () => {
+  const { formatTokens } = loadMeter(null);
+  assert.deepEqual([541, 1000, 1200, 24000, null].map(formatTokens), ['541', '1k', '1.2k', '24k', '—']);
+});
+
 test('rule answers and missing data show a grey ring with a plain explanation', () => {
   const rule = loadMeter({ ...turn(5000), kind: 'rule', used: null, parts: null });
   assert.equal(rule.level.value, 'idle');

@@ -76,7 +76,7 @@ const panelOpen = ref(false);
 
 const formatTokens = (value: number | null | undefined) => {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(Math.round(value));
+  return value >= 1000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(Math.round(value));
 };
 
 const usedPercent = computed(() => {
