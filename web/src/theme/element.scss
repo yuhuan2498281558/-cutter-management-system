@@ -774,13 +774,13 @@
 	}
 }
 
-/* Card 卡片：无阴影，标题和内容之间不画分隔线。暖白是平铺块底色、透明边线、26px 大圆角；灰白蓝是白底、1px 灰边线、8px 圆角
+/* Card 卡片：无阴影，标题和内容之间不画分隔线。暖白是平铺块底色、无边线、26px 大圆角；灰白蓝是白底、1px 灰边线、8px 圆角
 ------------------------------- */
 .el-card {
 	--el-card-bg-color: var(--dv-card-bg);
 	--el-card-border-color: var(--dv-card-border);
 	--el-card-border-radius: var(--dv-radius-card);
-	border: 1px solid var(--dv-card-border);
+	border: var(--dv-card-border-width) solid var(--dv-card-border);
 	&,
 	&.is-always-shadow,
 	&.is-hover-shadow:hover,

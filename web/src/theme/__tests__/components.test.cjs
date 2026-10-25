@@ -73,8 +73,8 @@ test('tables: framed with a large radius, tile header, 48px rows and an accent b
 });
 
 test('cards are flat tiles; dialogs, drawers and popovers use the large radii and the overlay shadow', () => {
-  // 卡片边线跟着配色：暖白透明（平铺块），灰白蓝 1px 灰线；两套都不加阴影
-  has('.el-card', '--el-card-bg-color: var(--dv-card-bg);', '--el-card-border-radius: var(--dv-radius-card);', 'border: 1px solid var(--dv-card-border);');
+  // 卡片边线跟着配色：暖白不画（宽 0，和 V2 一样不占位置），灰白蓝 1px 灰线；两套都不加阴影
+  has('.el-card', '--el-card-bg-color: var(--dv-card-bg);', '--el-card-border-radius: var(--dv-radius-card);', 'border: var(--dv-card-border-width) solid var(--dv-card-border);');
   has('.el-card__header', 'padding: 20px 22px 0;', 'border-bottom: none;');
   has('.el-card__body', 'padding: 20px 22px;');
   has('.el-dialog', '--el-dialog-border-radius: var(--dv-radius-xl);', '--el-dialog-box-shadow: var(--dv-shadow-overlay);');

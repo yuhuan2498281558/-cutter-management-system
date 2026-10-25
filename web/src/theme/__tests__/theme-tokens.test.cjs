@@ -88,7 +88,7 @@ test('tokens.scss defines every design variable with the agreed value', () => {
     '--dv-shadow-button-plain': '0 1px 1px rgba(13, 15, 18, 0.04)',
     '--dv-shadow-overlay': '0 24px 48px -12px rgba(70, 52, 34, 0.26), 0 0 0 1px rgba(20, 20, 19, 0.08)',
     // 数据分析页等页面的公共卡片引用这四个变量（见 views/shield/analysis/index.vue 的 .analysis-card）
-    '--dv-card-bg': 'var(--dv-tile)', '--dv-card-border': 'transparent', '--dv-shadow-card': 'none',
+    '--dv-card-bg': 'var(--dv-tile)', '--dv-card-border': 'transparent', '--dv-card-border-width': '0px', '--dv-shadow-card': 'none',
     '--dv-font-sans': '"Geist", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif',
     '--dv-font-serif': '"Source Serif 4", "Noto Serif SC", "Songti SC", "STSong", Georgia, serif',
     '--dv-font-mono': '"Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
@@ -116,7 +116,7 @@ test('the grey-white-blue scheme overrides the tokens with the Win11 light value
     // 背景一律白，灰只用在悬停、选中、表头/浅底块
     '--dv-bg': '#ffffff', '--dv-surface': '#ffffff', '--dv-side-bg': '#ffffff', '--dv-card-bg': 'var(--dv-surface)',
     '--dv-hover': '#f0f0f0', '--dv-hover-solid': '#f0f0f0', '--dv-selected': '#ebebeb', '--dv-tile': '#f7f7f7', '--dv-surface-muted': '#f7f7f7',
-    '--dv-divider': '#e5e5e5', '--dv-border': '#e5e5e5', '--dv-border-strong': '#d1d1d1', '--dv-card-border': 'var(--dv-border)',
+    '--dv-divider': '#e5e5e5', '--dv-border': '#e5e5e5', '--dv-border-strong': '#d1d1d1', '--dv-card-border': 'var(--dv-border)', '--dv-card-border-width': '1px',
     '--dv-text': '#1b1b1b', '--dv-text-nav': '#1b1b1b', '--dv-text-secondary': '#5d5d5d', '--dv-text-muted': '#8a8a8a',
     // 主题蓝；悬停加深一档、最浅一档用于选中行和焦点光晕（Element Plus 的深浅色算法）；链接文字 #005fb8
     '--dv-primary': '#0067c0', '--dv-primary-hover': '#005dad', '--dv-accent': '#0067c0', '--dv-accent-strong': '#005fb8', '--dv-accent-soft': '#e6f0f9',

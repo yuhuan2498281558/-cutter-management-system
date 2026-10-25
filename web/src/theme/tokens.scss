@@ -213,9 +213,11 @@ $dv-line-height: 1.54;
 	--dv-shadow-button-plain: #{$dv-shadow-button-plain};
 	--dv-shadow-overlay: #{$dv-shadow-overlay};
 	--dv-shadow-logo: #{$dv-shadow-logo};
-	// 卡片：数据分析页等页面的公共卡片引用这四个变量，主面板里的卡片画成平铺块
+	// 卡片：数据分析页等页面的公共卡片引用 bg、border、shadow 三个变量，主内容区里的卡片画成平铺块
+	// el-card 的边线宽度单独一个变量：暖白不画边线（0，不占位置），灰白蓝 1px
 	--dv-card-bg: var(--dv-tile);
 	--dv-card-border: transparent;
+	--dv-card-border-width: 0px;
 	--dv-shadow-card: none;
 	// 字体
 	--dv-font-sans: #{inspect($dv-font-sans)};
@@ -304,6 +306,7 @@ $dv-blue-info: #5b6b7d; // 中性灰蓝，不和主题蓝撞色
 	// 卡片：白底 + 1px 边线，不加阴影
 	--dv-card-bg: var(--dv-surface);
 	--dv-card-border: var(--dv-border);
+	--dv-card-border-width: 1px;
 	// 字体：标题不用衬线，与正文同一套无衬线
 	--dv-font-title: var(--dv-font-sans);
 }

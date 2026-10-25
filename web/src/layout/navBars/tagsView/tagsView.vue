@@ -56,7 +56,7 @@ import pinia from '/@/stores/index';
 import { useTagsViewRoutes } from '/@/stores/tagsViewRoutes';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import { useKeepALiveNames } from '/@/stores/keepAliveNames';
-import { Session } from '/@/utils/storage';
+import { Session, Local } from '/@/utils/storage';
 import { isObjectValueEqual } from '/@/utils/arrayOperation';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
@@ -133,6 +133,8 @@ const getTagsViewRoutes = async () => {
 const initTagsView = async () => {
 	if (Session.get('tagsViewList') && getThemeConfig.value.isCacheTagsView) {
 		state.tagsViewList = await Session.get('tagsViewList');
+		// 地址栏直接打开、不在缓存列表里的当前页也要加进来（已在列表里的不会重复加）
+		await addTagsView(route.path, <RouteToFrom>route);
 	} else {
 		await state.tagsViewRoutesList.map((v: RouteItem) => {
 			if (v.meta?.isAffix && !v.meta.isHide) {
@@ -557,6 +559,9 @@ const closeFromOpenedPages = (v: RouteItem) => {
 };
 // 最后访问时间存在会话缓存里（和标签列表一样），刷新页面后顺序不乱
 let lastVisits: Record<string, number> = Session.get('tagsViewLastVisits') || {};
+// 用户自己选的是不是侧边栏布局：窗口窄于 1000px 时 layout 会被临时改成侧边栏布局，
+// 原来选的布局记在 oldLayout（见 layout/index.vue），按它判断，免得拖窄窗口就把经典等布局的标签关掉
+const isSidebarLayoutChosen = () => (Local.get('oldLayout') || getThemeConfig.value.layout) === 'defaults';
 watch(
 	() => [state.tagsViewList, state.routeActive, state.routePath, getThemeConfig.value.isShareTagsView, getThemeConfig.value.layout],
 	() => {
@@ -571,8 +576,9 @@ watch(
 		}
 		openedPages.list = state.tagsViewList.map((v: RouteItem) => ({ route: v, isActive: isActive(v), lastVisit: visits[getOpenedPageKey(v)] }));
 		// 侧边栏布局没有标签栏横条，页面只能在"最近打开"里关：挤出最近 5 个的页面要真正关掉（同时释放 keep-alive 缓存），
-		// 只是不显示的话，它们再也关不掉，缓存会一直涨。当前页总排在第一个，不会被关
-		if (getThemeConfig.value.layout === 'defaults') {
+		// 只是不显示的话，它们再也关不掉，缓存会一直涨。当前页总排在第一个，不会被关。
+		// 其他布局只是窄屏时临时变成侧边栏布局，标签栏横条回到宽屏就能关，不在这里关
+		if (getThemeConfig.value.layout === 'defaults' && isSidebarLayoutChosen()) {
 			overflowOpenedPages(openedPages.list).forEach((page) => closeFromOpenedPages(page.route));
 		}
 	},

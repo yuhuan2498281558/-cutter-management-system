@@ -62,9 +62,11 @@ test('the sidebar recent list mirrors the tags view, which still owns the open p
   assert.match(tagsView, /let lastVisits: Record<string, number> = Session\.get\('tagsViewLastVisits'\) \|\| \{\};/);
   assert.match(tagsView, /if \(state\.tagsViewList\.length\) \{\s*lastVisits = visits;\s*Session\.set\('tagsViewLastVisits', lastVisits\);/);
   // 侧边栏布局（没有标签栏横条）里，挤出最近 5 个的页面走标签栏的关闭逻辑真正关掉，释放 keep-alive 缓存；
-  // 切换布局也要重新检查，所以 layout 在监听的来源里
+  // 切换布局也要重新检查，所以 layout 在监听的来源里。只在用户自己选的是侧边栏布局时关（窄屏临时变的不关），
+  // 具体行为见 recent-pages.test.cjs
   assert.match(tagsView, /getThemeConfig\.value\.isShareTagsView, getThemeConfig\.value\.layout\]/);
-  assert.match(tagsView, /if \(getThemeConfig\.value\.layout === 'defaults'\) \{\s*overflowOpenedPages\(openedPages\.list\)\.forEach\(\(page\) => closeFromOpenedPages\(page\.route\)\);/);
+  assert.match(tagsView, /const isSidebarLayoutChosen = \(\) => \(Local\.get\('oldLayout'\) \|\| getThemeConfig\.value\.layout\) === 'defaults';/);
+  assert.match(tagsView, /if \(getThemeConfig\.value\.layout === 'defaults' && isSidebarLayoutChosen\(\)\) \{\s*overflowOpenedPages\(openedPages\.list\)\.forEach\(\(page\) => closeFromOpenedPages\(page\.route\)\);/);
   const close = tagsView.slice(tagsView.indexOf('const closeCurrentTagsView'), tagsView.indexOf('// 4、关闭其它'));
   assert.match(close, /storesKeepALiveNames\.delCachedView\(v\);/);
   assert.match(tagsView, /openedPages\.close = closeFromOpenedPages;/);
