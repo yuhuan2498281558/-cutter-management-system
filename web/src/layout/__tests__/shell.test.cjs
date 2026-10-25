@@ -161,7 +161,9 @@ test('the sidebar layout lays the sidebar and the main area flat against the win
   assert.match(mainPanel, /isolation: isolate;/);
   // 顶栏带 z-index：菜单搜索弹窗挂到 body，免得被顶栏的层级压在页面元素下面
   const search = read('layout/navBars/breadcrumb/search.vue');
-  assert.match(search, /<el-dialog [^>]*append-to-body modal-class="layout-search-dialog"/);
+  assert.match(search, /<el-dialog\s[^>]*append-to-body\s+modal-class="layout-search-dialog"/);
+  // main.ts 默认弹窗点遮罩、按 Esc 都不关；搜索没有关闭按钮，必须显式打开这两种关闭方式
+  assert.match(search, /<el-dialog\s[^>]*:close-on-click-modal="true"\s+:close-on-press-escape="true"/);
   assert.match(search, /<style lang="scss">\s*\/\/[^\n]*\n\.layout-search-dialog \{/);
   // 毛玻璃画在 ::before 上：加在顶栏本身会让顶栏里的菜单搜索弹窗遮罩只剩顶栏大小
   const header = read('layout/navBars/breadcrumb/index.vue');
