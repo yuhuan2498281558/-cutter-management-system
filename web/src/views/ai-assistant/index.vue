@@ -17,16 +17,6 @@
       </template>
 
       <div class="chat-content">
-        <!-- 记忆槽位状态栏 -->
-        <MemorySlotBadge
-          :memory-info="memoryInfo"
-          :context-mode="contextMode"
-          :pending-clears="pendingClears"
-          :disabled="loading || resetting"
-          @update:context-mode="setContextMode"
-          @toggle-clear="toggleClearSlot"
-        />
-
         <!-- 消息历史与流式展示列表 -->
         <ChatMessageList
           ref="chatListRef"
@@ -45,6 +35,7 @@
           v-model:route-mode="routeMode"
           :generating="loading"
           :disabled="loading || resetting"
+          :context-info="contextInfo"
           @send="sendQuery"
           @sources-change="focusSources = $event"
           @abort="handleAbort"
@@ -59,10 +50,9 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound, RefreshRight } from '@element-plus/icons-vue';
 import { useAiAssistantApi } from '/@/api/ai-assistant';
-import { ContextMode, FocusSource, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
+import { ContextInfo, ContextMode, FocusSource, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
 import ChatMessageList from './components/ChatMessageList.vue';
 import ChatInputArea from './components/ChatInputArea.vue';
-import MemorySlotBadge from './components/MemorySlotBadge.vue';
 import { supportsFocusSources } from './backendCapabilities';
 
 const api = useAiAssistantApi();
@@ -77,6 +67,8 @@ const routeMode = ref<RouteMode>('rule');
 // 模型路径选中的数据类型，只在模型路径发送
 const focusSources = ref<FocusSource[]>([]);
 const memoryInfo = ref<MemoryMetadata>();
+// 上下文用量：历史接口给下一问的起步值，每轮回答给本轮的值
+const contextInfo = ref<ContextInfo | null>(null);
 const contextMode = ref<ContextMode>('auto');
 const pendingClears = ref<QuerySlot[]>([]);
 const chatListRef = ref<InstanceType<typeof ChatMessageList>>();
@@ -87,20 +79,6 @@ let operationVersion = 0;
 let messageSequence = 0;
 let disposed = false;
 const nextMessageId = () => `message-${++messageSequence}`;
-
-const setContextMode = (mode: ContextMode) => {
-  if (loading.value || resetting.value || disposed) return;
-  contextMode.value = mode;
-  if (mode === 'new') pendingClears.value = [];
-};
-
-const toggleClearSlot = (slot: QuerySlot) => {
-  if (loading.value || resetting.value || disposed) return;
-  pendingClears.value = pendingClears.value.includes(slot)
-    ? pendingClears.value.filter((item) => item !== slot)
-    : [...pendingClears.value, slot];
-  contextMode.value = 'continue';
-};
 
 // 单次规则回答由后端整段返回；限制展示速率可保留流式观感，
 // 但首批字符立即落屏，避免旧实现固定等待造成首问卡顿。
@@ -169,6 +147,7 @@ const loadHistory = async (older = false) => {
       }
     }
     if (disposed || version !== operationVersion) return;
+    if (!older && data.context !== undefined) contextInfo.value = data.context ?? null;
     if (!older && data.memory) {
       memoryInfo.value = {
         backend: data.memory.backend,
@@ -326,6 +305,9 @@ const runStream = async (query: string) => {
       onMeta: (info) => {
         if (isCurrent() && info.route) answerRoute = info.route;
       },
+      onContext: (info) => {
+        if (isCurrent()) contextInfo.value = info as ContextInfo;
+      },
       onQueryTraces: (traces) => {
         // 只有模型分析（meta route=llm）的回答显示"本次查询"，规则直答不显示
         const message = currentMessage();
@@ -376,6 +358,7 @@ const handleReset = async () => {
     if (disposed || version !== operationVersion) return;
     messages.value = [];
     memoryInfo.value = undefined;
+    contextInfo.value = null;
     contextMode.value = 'auto';
     pendingClears.value = [];
     hasMoreHistory.value = false;

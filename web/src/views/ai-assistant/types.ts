@@ -85,6 +85,37 @@ export interface MemoryMetadata {
   contextMode?: Exclude<ContextMode, 'auto'>;
 }
 
+// 后端发来的上下文用量（估算值）：turn 是本轮最大一次模型调用，baseline 是下一问起步，rule 是直连查库
+export interface ContextInfo {
+  kind: 'turn' | 'baseline' | 'rule';
+  estimated: boolean;
+  window: number;
+  input_budget: number;
+  output_reserve: number;
+  safety_margin: number;
+  used: number | null;
+  exceeded: boolean;
+  parts: { system: number; tools: number; memory: number; question: number; results: number; other: number } | null;
+  results_raw: number | null;
+  compacted_results: number;
+  summarized_results: number;
+  model_calls: number;
+  // 长列表分页：该次调用里被切成一页的列表数、本轮模型自己要后面几页的次数（后端未提供时缺省）
+  paged_lists?: number;
+  page_requests?: number;
+  thresholds: { compaction_min_tokens: number; evidence_soft_tokens: number };
+  memory: {
+    backend: string;
+    recent_turns: number;
+    recent_budget: number;
+    recent_tokens: number;
+    included_turns: number;
+    summary_tokens: number;
+    summary_trigger_tokens: number | null;
+    pending_tokens: number | null;
+  };
+}
+
 export type RouteMode = 'rule' | 'agent';
 export type ContextMode = 'auto' | 'new' | 'continue';
 export type QuerySlot = 'ring_range' | 'tool_type' | 'cutter_position_no';

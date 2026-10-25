@@ -74,6 +74,8 @@ export interface ChatStreamCallbacks {
 	onMeta?: (info: { route?: string }) => void;
 	// done 事件里的数据查询记录，在 onDone 之前回调；没有记录时不回调
 	onQueryTraces?: (traces: QueryTrace[]) => void;
+	// 本轮上下文用量（估算），在 done 或 error 之前回调
+	onContext?: (info: Record<string, any>) => void;
 }
 
 // 只保留类别名和查询范围，工具名和参数原文不交给页面
@@ -170,6 +172,8 @@ export function useAiAssistantApi() {
 						});
 					} else if (evt.type === 'meta') {
 						callbacks.onMeta?.({ route: typeof evt.route === 'string' ? evt.route : undefined });
+					} else if (evt.type === 'context') {
+						if (evt.context && typeof evt.context === 'object') callbacks.onContext?.(evt.context);
 					} else if (evt.type === 'done') {
 						finished = true;
 						const traces = toQueryTraces(evt.tool_calls);

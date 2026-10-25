@@ -28,10 +28,11 @@ function loadInput(overrides = {}, supportsFocusSources = true) {
     if (name === 'vue') return vue;
     if (name === '../constants') return constants;
     if (name === '../backendCapabilities') return { supportsFocusSources };
+    if (name === './ContextMeter.vue') return {};
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
-    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, selectedQuickParams, quickQuestionGroups, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickParamHint, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, FOCUS_SOURCES, TOOL_TYPE_OPTIONS, selectedSources, selectedTemplateTitle, selectedTemplate, selectedTemplateParams, templateParams, templateParamHint, visibleTemplates, handleTemplateChange, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey };';
+    + '\nexports.input = { MAX_QUERY_LENGTH, inputText, inputRef, quickParams, selectedQuickParams, quickQuestionGroups, activeQuickGroup, activeQuickItemLabel, selectedQuickGroup, selectedQuickItem, quickParamHint, buildQuickLabel, handleQuickGroupChange, applyQuickQuestion, FOCUS_SOURCES, TOOL_TYPE_OPTIONS, selectedSources, selectedTemplateTitle, selectedTemplate, selectedTemplateParams, templateParams, templateParamHint, visibleTemplates, handleTemplateChange, composeModelQuestion, handleModelDataTypesChange, handleSwitchRoute, handleSend, handleEnterKey, useTemplateSlot, paletteOpen, activeParamHint, switchToSlotMode, switchToFreeInput, pickQuickItem, pickModelTemplate, activeSpec, activeParamValues, activeTemplateParts, syncActiveSlotQuestion, selectQuickGroup, toggleModelSource, formatTemplateSources, togglePalette, containerRef, slotInputRef, meterInfo };';
   vm.runInNewContext(transpile(source), context);
   return { props, emitted, supportsFocusSources, ...context.exports.input };
 }
@@ -50,6 +51,7 @@ async function renderInput(h) {
   for (const name of ['ElSelect', 'ElInputNumber']) app.component(name, stub('div'));
   app.component('ElOption', { inheritAttrs: false, props: ['label'], setup: props => () => vue.h('span', props.label) });
   app.component('ElButton', stub('button'));
+  app.component('ContextMeter', { props: ['info'], setup: props => () => vue.h('span', { class: 'context-meter-stub', 'data-kind': props.info?.kind ?? 'none' }) });
   app.component('ElInput', {
     inheritAttrs: false,
     props: { type: String, maxlength: Number, showWordLimit: Boolean, placeholder: String, disabled: Boolean },
@@ -61,7 +63,8 @@ async function renderInput(h) {
   return (await renderToString(app)).replace(/<!--[[\]]-->/g, '');
 }
 
-const buttonAttrs = (html, text) => html.match(new RegExp(`<button([^>]*)>\\s*${text}\\s*</button>`))?.[1];
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const buttonAttrs = (html, text) => html.match(new RegExp(`<button([^>]*)>\\s*${escapeRegExp(text)}\\s*</button>`))?.[1];
 const isDisabled = attrs => /data-disabled="true"|\sdisabled(?=[\s>]|$)/.test(attrs);
 
 function pick(h, groupTitle, label) {
@@ -115,19 +118,18 @@ test('each question keeps its own number and questions without parameters are wr
   assert.equal(h.inputText.value, '统计当前项目全部刀具的换刀情况，列出现场观测记录数、更换数、更换率和主要磨损类型');
 });
 
-test('tracing a tool needs a tool number before the question can be generated', async () => {
+test('tracing a tool needs a tool number before the question can be sent', async () => {
   const h = loadInput();
-  h.inputText.value = '已有草稿';
   pick(h, '服役与选型', '追溯刀具');
   for (const id of ['', '   ']) {
     h.quickParams.value['追溯刀具'].id = id;
     assert.equal(h.quickParamHint.value, '请先填写刀具编号');
     h.applyQuickQuestion();
-    assert.equal(h.inputText.value, '已有草稿');
+    assert.equal(h.inputText.value, '');
   }
   const html = await renderInput(h);
-  assert.ok(isDisabled(buttonAttrs(html, '生成问题')));
-  assert.match(html, /<input data-placeholder="刀具编号" data-disabled="false">/);
+  assert.ok(isDisabled(buttonAttrs(html, '查询')));
+  assert.match(html, /<input[^>]*type="text" placeholder="刀具编号"/);
   assert.match(html, /<span class="quick-hint">请先填写刀具编号<\/span>/);
   h.quickParams.value['追溯刀具'].id = ' GD-0123 ';
   assert.equal(h.quickParamHint.value, '');
@@ -165,7 +167,7 @@ test('choosing a template adds its data types and writes its question with the c
   h.handleTemplateChange('型号选型参考');
   assert.deepEqual(Array.from(h.selectedSources.value), ['tool_change', 'manufacturer', 'cost']);
   assert.equal(h.inputText.value, '列出全部刀具各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。');
-  assert.match(await renderInput(h), /<div class="tool-select" data-disabled="false" data-loading="false"><span>全部刀具<\/span><span>滚刀<\/span><span>刮刀<\/span><\/div>/);
+  assert.match(await renderInput(h), /<select class="slot-select">(<option value="(全部刀具|滚刀|刮刀)"( selected)?>(全部刀具|滚刀|刮刀)<\/option>){3}<\/select>/);
   h.templateParams.value['型号选型参考'].tool = '滚刀';
   h.composeModelQuestion();
   assert.equal(h.inputText.value, '列出滚刀各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。');
@@ -175,15 +177,14 @@ test('choosing a template adds its data types and writes its question with the c
   assert.equal(h.inputText.value, '以30环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段的高频刀位；只做逐段对比，不下趋势结论。');
 });
 
-test('model templates need their parameters before 生成问题 works', async () => {
+test('model templates need their parameters before the question can be sent', async () => {
   const h = loadInput({ routeMode: 'agent' });
-  h.inputText.value = '已有草稿';
   h.handleTemplateChange('追溯一把刀');
   assert.equal(h.templateParamHint.value, '请先填写刀具编号');
-  assert.equal(h.inputText.value, '已有草稿');
+  assert.equal(h.inputText.value, '');
   let html = await renderInput(h);
-  assert.ok(isDisabled(buttonAttrs(html, '生成问题')));
-  assert.match(html, /<input data-placeholder="刀具编号" data-disabled="false">/);
+  assert.ok(isDisabled(buttonAttrs(html, '发送')));
+  assert.match(html, /<input[^>]*type="text" placeholder="刀具编号"/);
   assert.match(html, /<span class="quick-hint">请先填写刀具编号<\/span>/);
   h.templateParams.value['追溯一把刀'].id = 'GD-0123';
   h.composeModelQuestion();
@@ -192,7 +193,7 @@ test('model templates need their parameters before 生成问题 works', async ()
   h.templateParams.value['开仓复盘'].n = null;
   assert.equal(h.templateParamHint.value, '请先填写数字');
   html = await renderInput(h);
-  assert.ok(isDisabled(buttonAttrs(html, '生成问题')));
+  assert.ok(isDisabled(buttonAttrs(html, '发送')));
   assert.equal(/null|\{n\}/.test(html), false);
 });
 
@@ -207,17 +208,17 @@ test('switching back to the rule path keeps the input and sending trims then cle
   assert.equal(h.inputText.value, '');
 });
 
-test('a cleared number shows N in the label, disables 生成问题 with a reason and never writes null into the input', async () => {
-  for (const cleared of [null, Number.NaN]) {
+test('a cleared number shows N in the label, disables sending with a reason and never writes null into the input', async () => {
+  // 原生数字框清空后 v-model.number 给的是空字符串
+  for (const cleared of [null, '']) {
     const h = loadInput();
-    h.inputText.value = '已有草稿';
     h.quickParams.value['最近{n}环换刀'].n = cleared;
     assert.equal(h.buildQuickLabel(h.selectedQuickItem.value), '最近N环换刀');
     assert.equal(h.quickParamHint.value, '请先填写数字');
     h.applyQuickQuestion();
-    assert.equal(h.inputText.value, '已有草稿');
+    assert.equal(h.inputText.value, '');
     const html = await renderInput(h);
-    assert.ok(isDisabled(buttonAttrs(html, '生成问题')), `生成问题 must be disabled for ${cleared}`);
+    assert.ok(isDisabled(buttonAttrs(html, '查询')), `查询 must be disabled for ${cleared}`);
     assert.match(html, /<span class="quick-hint">请先填写数字<\/span>/);
     assert.equal(/null|NaN|\{n\}/.test(html), false);
     pick(h, '换刀与磨损', '全项目换刀');
@@ -225,24 +226,28 @@ test('a cleared number shows N in the label, disables 生成问题 with a reason
     pick(h, '换刀与磨损', '最近{n}环换刀');
     h.quickParams.value['最近{n}环换刀'].n = 120;
     const filled = await renderInput(h);
-    assert.equal(isDisabled(buttonAttrs(filled, '生成问题')), false);
+    assert.equal(isDisabled(buttonAttrs(filled, '查询')), false);
     assert.equal(filled.includes('请先填写数字'), false);
   }
 });
 
-test('dropdown labels show the current numbers instead of {n}', async () => {
+test('the question picker shows the current numbers instead of {n}', async () => {
   const h = loadInput();
-  const html = await renderInput(h);
-  assert.match(html, /<span>最近100环换刀<\/span>/);
+  let html = await renderInput(h);
+  assert.match(html, /常用查询：换刀与磨损 · 最近100环换刀/);
   assert.equal(html.includes('{n}'), false);
   pick(h, '趋势区间', '按{n}环分段');
   h.quickParams.value['按{n}环分段'].n = 30;
-  assert.match(await renderInput(h), /<span>按30环分段<\/span><span>最近100环变化<\/span>/);
+  h.paletteOpen.value = true;
+  html = await renderInput(h);
+  assert.match(html, /<span class="palette-item-title">按30环分段<\/span>/);
+  assert.match(html, /<span class="palette-item-title">最近100环变化<\/span>/);
 });
 
-test('the input shows its length against the backend limit of 10000 characters', async () => {
-  const html = await renderInput(loadInput());
-  assert.match(html, /<textarea data-maxlength="10000" data-word-limit="true"><\/textarea>/);
+test('the free input keeps the backend limit of 10000 characters without showing a counter', async () => {
+  const h = loadInput();
+  h.switchToFreeInput();
+  assert.match(await renderInput(h), /<textarea data-maxlength="10000" data-word-limit="false"><\/textarea>/);
 });
 
 test('clicking the path that is already selected leaves the input alone', () => {
@@ -260,24 +265,24 @@ test('clicking the path that is already selected leaves the input alone', () => 
 });
 
 test('reset disables every control without a stop button; only generation shows stop and a spinner', async () => {
-  for (const routeMode of ['rule', 'agent']) {
+  for (const [routeMode, send] of [['rule', '查询'], ['agent', '发送']]) {
     const resetting = loadInput({ routeMode, generating: false, disabled: true });
     const html = await renderInput(resetting);
     assert.equal(html.includes('停止生成'), false);
     assert.equal(/data-disabled="false"/.test(html), false, `${routeMode}: every control is disabled during reset`);
-    for (const text of ['规则路径', '模型路径', '发送']) assert.ok(isDisabled(buttonAttrs(html, text)), text);
-    assert.match(buttonAttrs(html, '发送'), /data-loading="false"/);
+    for (const text of ['直连查库 (秒回)', '模型分析 (API)', send]) assert.ok(isDisabled(buttonAttrs(html, text)), text);
+    assert.match(buttonAttrs(html, send), /data-loading="false"/);
     resetting.inputText.value = '重置中的问题';
     resetting.handleSend();
     assert.equal(resetting.emitted.some(([event]) => event === 'send'), false);
   }
   const generating = await renderInput(loadInput({ generating: true, disabled: true }));
   assert.ok(buttonAttrs(generating, '停止生成'));
-  assert.match(buttonAttrs(generating, '发送'), /data-loading="true"/);
+  assert.match(buttonAttrs(generating, '查询'), /data-loading="true"/);
   const idle = await renderInput(loadInput());
   assert.equal(idle.includes('停止生成'), false);
-  assert.equal(isDisabled(buttonAttrs(idle, '发送')), false);
-  assert.match(buttonAttrs(idle, '发送'), /data-loading="false"/);
+  assert.equal(isDisabled(buttonAttrs(idle, '查询')), false);
+  assert.match(buttonAttrs(idle, '查询'), /data-loading="false"/);
 });
 
 test('the page passes generation and reset state to the input area separately', () => {
@@ -341,8 +346,49 @@ test('choosing a template or pressing 生成问题 always writes the chosen ques
   assert.equal(rule.inputText.value, '统计最近100环的换刀情况，列出现场观测记录数、更换数、更换率、主要磨损类型和高频刀位');
 });
 
-test('each path explains how to fill the input', async () => {
-  assert.match(await renderInput(loadInput()), /<span class="input-tip">规则路径：下拉选择后可直接生成问题 · Enter 发送，Shift \+ Enter 换行 <\/span>/);
-  assert.match(await renderInput(loadInput({ routeMode: 'agent' })), /<span class="input-tip">模型路径：选择要用的数据，或选一个分析模板生成问题；也可以直接输入 · Enter 发送，Shift \+ Enter 换行 <\/span>/);
-  assert.match(await renderInput(loadInput({ routeMode: 'agent' }, false)), /模型路径：按数据类型筛选问题模板；也可以直接输入/);
+test('the model path names its data-source list by what the backend supports', async () => {
+  const agent = loadInput({ routeMode: 'agent' });
+  agent.paletteOpen.value = true;
+  assert.match(await renderInput(agent), /<div class="palette-section-title">限定可查数据<\/div>/);
+  const oldBackend = loadInput({ routeMode: 'agent' }, false);
+  oldBackend.paletteOpen.value = true;
+  assert.match(await renderInput(oldBackend), /<div class="palette-section-title">按数据类型筛选模板<\/div>/);
+});
+
+test("switching paths swaps an auto-filled question for the new path's question in both directions", () => {
+  const h = loadInput();
+  h.applyQuickQuestion();
+  h.handleSwitchRoute('agent');
+  assert.equal(h.inputText.value, OPENING_REVIEW);
+  assert.equal(h.useTemplateSlot.value, true);
+  h.handleSwitchRoute('rule');
+  assert.equal(h.inputText.value, '统计最近100环的换刀情况，列出现场观测记录数、更换数、更换率、主要磨损类型和高频刀位');
+  pick(h, '服役与选型', '追溯刀具');
+  h.handleSwitchRoute('agent');
+  h.handleSwitchRoute('rule');
+  assert.equal(h.inputText.value, '', "a question still missing its parameter does not leave the other path's text behind");
+});
+
+test('picking a quick question without parameters sends it at once; one with parameters waits for them', () => {
+  const h = loadInput();
+  const direct = constants.quickQuestionGroups.flatMap(group => group.items).find(item => !item.numKey && !item.textKey);
+  h.pickQuickItem(direct);
+  assert.equal(h.emitted.at(-1)[0], 'send');
+  assert.equal(h.inputText.value, '');
+  const withNumber = constants.quickQuestionGroups[0].items.find(item => item.numKey);
+  h.pickQuickItem(withNumber);
+  assert.equal(h.emitted.filter(([event]) => event === 'send').length, 1);
+  assert.equal(h.paletteOpen.value, false);
+});
+
+test('editing the auto-filled text switches to free editing and keeps the draft', async () => {
+  const h = loadInput();
+  h.applyQuickQuestion();
+  await vue.nextTick();
+  assert.equal(h.useTemplateSlot.value, true);
+  h.inputText.value += '，只看滚刀';
+  await vue.nextTick();
+  assert.equal(h.useTemplateSlot.value, false);
+  h.handleSend();
+  assert.match(h.emitted.at(-1)[1], /只看滚刀$/);
 });
