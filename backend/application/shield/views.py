@@ -1997,6 +1997,15 @@ class StratumBasicInfoViewSet(CustomModelViewSet, ImportSerializerMixin, ExportS
     filter_fields = ['project', 'ring_no']
     search_fields = ['ring_no', 'stratum_info']
 
+    def filter_queryset(self, queryset):
+        """页面按环号范围查询：ring_no 是字符串，用数值注解 ring_int 比较。"""
+        queryset = super().filter_queryset(queryset)
+        for param, lookup in (('ring_start', 'ring_int__gte'), ('ring_end', 'ring_int__lte')):
+            value = (self.request.query_params.get(param) or '').strip()
+            if value.isdigit():
+                queryset = queryset.filter(**{lookup: int(value)})
+        return queryset
+
     # 导入字段配置
     import_field_dict = {
         'project': {
