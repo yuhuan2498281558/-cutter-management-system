@@ -121,6 +121,9 @@ const isTableSeparator = (line: string) => {
   return cells.length > 1 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
 };
 
+// 正在输入的分隔行（如 "|"、"| --- | -"）：表头之后出现它，就可以先把表格画出来
+const isSeparatorPrefix = (line: string) => /^[|:\-\s]+$/.test(line.trim());
+
 const parseTableRow = (line: string) => {
   const row = line.trim().replace(/^\||\|$/g, '');
   const cells: string[] = [];
@@ -175,7 +178,7 @@ const tableColumnStyle = (headers: string[], index: number, rows: string[][] = [
   return { width: `${tableColumnWidth(headers[index], columnCells(rows, index))}px` };
 };
 
-const startsBlock = (lines: string[], index: number) => {
+const startsBlock = (lines: string[], index: number, streaming = false) => {
   const line = lines[index]?.trim() || '';
   const next = lines[index + 1]?.trim() || '';
   return (
@@ -185,11 +188,19 @@ const startsBlock = (lines: string[], index: number) => {
     || /^[-*+]\s+/.test(line)
     || /^\d+[.)]\s+/.test(line)
     || (line.includes('|') && isTableSeparator(next))
+    // 流式输出时表头可能还没等到分隔行，不能并进上一段
+    || (streaming && (line.startsWith('|') || (line.includes('|') && index + 1 === lines.length - 1 && isSeparatorPrefix(next))))
   );
 };
 
+// 正在输入的一行只收到前几格：缺的格子留空，多出的格子等整行收完再判断
+const fitRow = (cells: string[], columns: number) => (
+  Array.from({ length: columns }, (_cell, index) => cells[index] ?? '')
+);
+
 const parseMarkdown = (content: string, streaming = false, truncated = false): MarkdownBlock[] => {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const last = lines.length - 1;
   const blocks: MarkdownBlock[] = [];
   let index = 0;
 
@@ -213,17 +224,25 @@ const parseMarkdown = (content: string, streaming = false, truncated = false): M
       continue;
     }
 
-    if (line.includes('|') && isTableSeparator(lines[index + 1] || '') && (!streaming || index + 1 < lines.length - 1)) {
+    // 分隔行还在输入时就画出表头，之后每格随收随显，不等整行
+    const separatorTyping = streaming && index + 1 === last && isSeparatorPrefix(lines[last]);
+    if (line.includes('|') && (separatorTyping || isTableSeparator(lines[index + 1] || '') && (!streaming || index + 1 < last))) {
       const tableStart = index;
       const headers = parseTableRow(line);
       const rows: string[][] = [];
-      let malformed = parseTableRow(lines[index + 1]).length !== headers.length;
+      const piped = line.startsWith('|');
+      let malformed = !separatorTyping && parseTableRow(lines[index + 1]).length !== headers.length;
       index += 2;
       while (index < lines.length) {
-        // 最后一行仍可能继续收到单元格或分隔符。等换行/结束再提交该行，
-        // 避免每次追加字符都在 table/raw 之间切换并销毁整张表。
-        if (streaming && index === lines.length - 1) {
-          index += 1;
+        if (streaming && index === last) {
+          // 正在输入的一行：有了单元格就先显示，格数够不够等这行收完再判断，
+          // 避免每次追加字符都在 table/raw 之间切换并销毁整张表。
+          // 带竖线的表格里，不以 | 开头的行是表格后面的正文，交给下面按段落显示。
+          const typing = lines[index].trim();
+          if (typing.includes('|')) {
+            rows.push(fitRow(parseTableRow(typing), headers.length));
+            index += 1;
+          } else if (!piped) index += 1;
           break;
         }
         if (!lines[index].trim().includes('|')) break;
@@ -252,6 +271,9 @@ const parseMarkdown = (content: string, streaming = false, truncated = false): M
       } else blocks.push({ type: 'table', headers, rows });
       continue;
     }
+
+    // 以 | 开头、后面还没有分隔行的行多半是正在输入的表头，先不显示，免得原文闪一下
+    if (streaming && line.startsWith('|') && (index === last || (index + 1 === last && !lines[last].trim()))) break;
 
     const unordered = line.match(/^[-*+]\s+(.+)$/);
     const ordered = line.match(/^\d+[.)]\s+(.+)$/);
@@ -290,7 +312,7 @@ const parseMarkdown = (content: string, streaming = false, truncated = false): M
 
     const paragraph = [line];
     index += 1;
-    while (index < lines.length && !startsBlock(lines, index)) {
+    while (index < lines.length && !startsBlock(lines, index, streaming)) {
       paragraph.push(lines[index].trim());
       index += 1;
     }
@@ -302,9 +324,11 @@ const parseMarkdown = (content: string, streaming = false, truncated = false): M
 
 const markdownBlocks = computed(() => parseMarkdown(props.content, props.streaming, props.truncated));
 
+// 流式输出里出现 | 开头的行，就按 Markdown 显示，正在输入的表头不会先以纯文本出现
 const hasMarkdown = computed(() => (
   markdownBlocks.value.some((block) => block.type !== 'paragraph')
   || /\*\*[^*]+\*\*|`[^`]+`/.test(props.content)
+  || (Boolean(props.streaming) && /^\s*\|/m.test(props.content))
 ));
 
 const normalizeTitle = (title: string) => title.replace(/[：:]\s*$/, '').trim();

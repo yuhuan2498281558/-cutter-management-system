@@ -102,7 +102,8 @@ for (const [label, content] of [
 test('a partial streaming table has no permanent format error and recovers when the row completes', () => {
   const props = vue.reactive({ content: '| 厂家 | 更换次数 |\n| --- | --- |\n| A厂家', streaming: true });
   const h = loadComponent('AnalysisMessage.vue', props, 'markdownBlocks');
-  assert.equal(h.markdownBlocks.value[0].type, 'table'); assert.equal(h.markdownBlocks.value[0].rows.length, 0);
+  assert.equal(h.markdownBlocks.value[0].type, 'table');
+  assert.deepEqual(Array.from(h.markdownBlocks.value[0].rows[0]), ['A厂家', ''], 'the row being typed shows what has arrived');
   props.content += ' | 0 |\n';
   assert.equal(h.markdownBlocks.value[0].type, 'table');
   assert.deepEqual(Array.from(h.markdownBlocks.value[0].rows[0]), ['A厂家', '0']);
@@ -195,13 +196,15 @@ for (const [label, content] of [
   });
 }
 
-test('stopping mid-row keeps the same table rows that were visible while streaming', () => {
+test('stopping mid-row keeps the complete rows that were visible while streaming and moves only the cut-off row to source', () => {
   const props = vue.reactive({ content: cutTable, streaming: true, truncated: false });
   const h = loadComponent('AnalysisMessage.vue', props, 'markdownBlocks');
   const visible = h.markdownBlocks.value[0].rows.map(row => Array.from(row));
+  assert.deepEqual(visible.at(-1), ['S1L', '3', '']);
   props.streaming = false; props.truncated = true;
   assert.equal(h.markdownBlocks.value[0].type, 'table');
-  assert.deepEqual(h.markdownBlocks.value[0].rows.map(row => Array.from(row)), visible);
+  assert.deepEqual(h.markdownBlocks.value[0].rows.map(row => Array.from(row)), visible.slice(0, -1));
+  assert.equal(h.markdownBlocks.value[1].text, '| S1L | 3');
 });
 
 for (const [label, content] of [
