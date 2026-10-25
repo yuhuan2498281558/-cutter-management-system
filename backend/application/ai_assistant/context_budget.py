@@ -6,13 +6,14 @@ provider tokenizer exceeding its actual window.
 早前证据超出软上限时会换成带标记的摘要，不会静默丢弃；移出的内容可重新查询取回。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import aclosing, closing
+from contextvars import ContextVar
 from copy import deepcopy
 import json
 
 from langchain_core.messages import (
-    AIMessage, HumanMessage, ToolMessage, convert_to_messages, convert_to_openai_messages,
+    AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, convert_to_messages, convert_to_openai_messages,
 )
 from langchain_core.prompt_values import PromptValue
 from langchain_core.runnables import Runnable
@@ -70,7 +71,73 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def estimate_request_tokens(messages, request_options=None, tool_protocol_tokens=1024):
+context_usage = ContextVar("ai_context_usage", default=None)
+_PARTS_KEY = "_context_parts"
+
+
+def mark_context_message(message, **parts):
+    message.response_metadata[_PARTS_KEY] = parts
+    return message
+
+
+def _paged_lists(content):
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict) and data.get("format") == COLUMNAR_FORMAT:
+            data = data.get("data")
+        paging = data.get("_paging") if isinstance(data, dict) else None
+        return len(paging) if isinstance(paging, dict) else 0
+    except (ValueError, TypeError, RecursionError):
+        return 0
+
+
+@dataclass
+class ContextUsage:
+    model_calls: int = 0
+    page_requests: int = 0
+    policy: ContextBudgetPolicy | None = None
+    peak: dict | None = None
+    exceeded: bool = False
+    inputs: dict = field(default_factory=dict)
+
+    def record_response(self, message):
+        self.page_requests += sum(
+            isinstance(call["args"].get("page"), (int, float)) and call["args"]["page"] > 1
+            for call in getattr(message, "tool_calls", [])
+        )
+
+    def record(self, messages, policy, options, count, raw, compacted, summarized):
+        self.model_calls += 1
+        exceeded = count > policy.input_budget
+        # 圆环显示本轮峰值；超限时固定显示导致失败的那一次。
+        if self.exceeded or not exceeded and self.peak and count <= self.peak["used"]:
+            return
+        parts = dict.fromkeys(("system", "tools", "memory", "question", "results", "other"), 0)
+        estimate_request_tokens(messages, options, policy.tool_protocol_tokens, parts)
+        self.policy, self.exceeded = policy, exceeded
+        self.peak = {"used": count, "parts": parts, "results_raw": raw,
+                     "compacted_results": compacted, "summarized_results": summarized,
+                     "paged_lists": sum(_paged_lists(message.content) for message in messages
+                                        if isinstance(message, ToolMessage))}
+
+    def info(self, kind, policy, memory):
+        policy = self.policy or policy
+        return {
+            "kind": kind, "estimated": True, "window": policy.context_tokens,
+            "input_budget": policy.input_budget, "output_reserve": policy.output_tokens,
+            "safety_margin": policy.safety_margin_tokens,
+            **(self.peak or {"used": None, "parts": None, "results_raw": None,
+                            "compacted_results": 0, "summarized_results": 0}),
+            "paged_lists": self.peak["paged_lists"] if kind == "turn" and self.peak else 0,
+            "page_requests": self.page_requests if kind == "turn" else 0,
+            "exceeded": self.exceeded, "model_calls": self.model_calls,
+            "thresholds": {"compaction_min_tokens": policy.compaction_min_tokens,
+                           "evidence_soft_tokens": policy.evidence_soft_tokens},
+            "memory": memory,
+        }
+
+
+def estimate_request_tokens(messages, request_options=None, tool_protocol_tokens=1024, parts=None):
     """Estimate text components once, without tokenizing transport escaping.
 
     This is still a heuristic, not a provider tokenizer. Schemas are counted
@@ -83,6 +150,8 @@ def estimate_request_tokens(messages, request_options=None, tool_protocol_tokens
     # This is an explicit engineering reserve, not a fitted token multiplier.
     if options.get("tools") or options.get("functions"):
         count += tool_protocol_tokens
+    if parts is not None:
+        parts["tools"] = count - (8 * len(messages) + 16) + estimate_tokens(_json(options))
     for message in messages:
         if message.additional_kwargs.get("audio"):
             raise ValueError("上下文预算目前仅支持文本消息。")
@@ -122,14 +191,35 @@ def estimate_request_tokens(messages, request_options=None, tool_protocol_tokens
             for block in content:
                 count += estimate_tokens(block["text"])
                 count += estimate_tokens(_json({key: val for key, val in block.items() if key != "text"}))
+        if parts is not None:
+            text_tokens = estimate_tokens(content) if isinstance(content, str) else sum(
+                estimate_tokens(block["text"]) for block in content
+            )
+            marked = message.response_metadata.get(_PARTS_KEY)
+            usage = context_usage.get()
+            if marked is None and isinstance(message, HumanMessage) and isinstance(message.content, str) and usage:
+                marked = usage.inputs.get(message.content)
+            if marked is not None:
+                for name, text in marked.items():
+                    tokens = min(text_tokens, estimate_tokens(text))
+                    parts[name] += tokens
+                    text_tokens -= tokens
+            elif isinstance(message, (SystemMessage, ToolMessage)):
+                parts["system" if isinstance(message, SystemMessage) else "results"] += text_tokens
         calls = [call.get("function", {}) for call in payload.get("tool_calls", [])]
         if "function_call" in payload:
             calls.append(payload["function_call"])
         for call in calls:
             arguments = call.pop("arguments", "")
-            count += estimate_tokens(arguments if isinstance(arguments, str) else _json(arguments))
+            tokens = estimate_tokens(arguments if isinstance(arguments, str) else _json(arguments))
+            count += tokens
+            if parts is not None:
+                parts["results"] += tokens
         count += estimate_tokens(_json(payload))
-    return count + estimate_tokens(_json(options))
+    count += estimate_tokens(_json(options))
+    if parts is not None:
+        parts["other"] = count - sum(parts.values())
+    return count
 
 
 _SUMMARY_PREFIX = "【已移出的早前结果】"
@@ -208,14 +298,19 @@ def prepare_messages(value, policy, request_options=None, source_labels=None):
     else:
         messages = convert_to_messages(value)
     prepared = []
+    usage = context_usage.get()
+    raw = compacted = 0
     for message in messages:
         # Copy all fields, including call IDs/status. The executor's raw tool
         # observations and error-recovery inputs must remain unchanged.
         copied = message.model_copy(deep=True)
+        if usage and isinstance(copied, ToolMessage):
+            raw += estimate_tokens(copied.content if isinstance(copied.content, str) else _json(copied.content))
         if isinstance(copied, ToolMessage) and copied.status != "error":
             copied.content = compact_tool_content(
                 copied.content, estimate_tokens, policy.compaction_min_tokens,
             )
+            compacted += copied.content != message.content
         # The current tools and assistant are text-only. Do not pretend that
         # image/audio token costs can be estimated from an encoded URL/string.
         if not isinstance(copied.content, str):
@@ -224,9 +319,17 @@ def prepare_messages(value, policy, request_options=None, source_labels=None):
             ) for block in copied.content):
                 raise ValueError("上下文预算目前仅支持文本消息。")
         prepared.append(copied)
+    earlier = [message.content for message in prepared if isinstance(message, ToolMessage)] if usage else []
     count = _summarize_earlier_results(prepared, policy, request_options, source_labels)
+    if usage:
+        summarized = sum(before != message.content for before, message in zip(
+            earlier, (message for message in prepared if isinstance(message, ToolMessage)),
+        ))
+        usage.record(prepared, policy, request_options, count, raw, compacted, summarized)
     if count > policy.input_budget:
         raise ContextBudgetExceeded(count, policy.input_budget)
+    for message in prepared:
+        message.response_metadata.pop(_PARTS_KEY, None)
     return prepared
 
 
@@ -292,20 +395,39 @@ class GuardedChatModel(Runnable):
 
     def invoke(self, input, config=None, **kwargs):
         prepared, options = self._prepare_call(input, kwargs)
-        return _check_completion(self.model.invoke(prepared, config=config, **options))
+        response = _check_completion(self.model.invoke(prepared, config=config, **options))
+        if usage := context_usage.get():
+            usage.record_response(response)
+        return response
 
     async def ainvoke(self, input, config=None, **kwargs):
         prepared, options = self._prepare_call(input, kwargs)
-        return _check_completion(await self.model.ainvoke(prepared, config=config, **options))
+        response = _check_completion(await self.model.ainvoke(prepared, config=config, **options))
+        if usage := context_usage.get():
+            usage.record_response(response)
+        return response
 
     def stream(self, input, config=None, **kwargs):
         prepared, options = self._prepare_call(input, kwargs)
+        usage, response = context_usage.get(), None
         with closing(self.model.stream(prepared, config=config, **options)) as chunks:
             for chunk in chunks:
+                # 参数分片合并后计数，不重复统计同一次工具调用。
+                if usage and isinstance(chunk, AIMessageChunk) and chunk.tool_call_chunks:
+                    calls = AIMessageChunk(content="", tool_call_chunks=chunk.tool_call_chunks)
+                    response = calls if response is None else response + calls
                 yield _check_completion(chunk)
+        if usage:
+            usage.record_response(response)
 
     async def astream(self, input, config=None, **kwargs):
         prepared, options = self._prepare_call(input, kwargs)
+        usage, response = context_usage.get(), None
         async with aclosing(self.model.astream(prepared, config=config, **options)) as chunks:
             async for chunk in chunks:
+                if usage and isinstance(chunk, AIMessageChunk) and chunk.tool_call_chunks:
+                    calls = AIMessageChunk(content="", tool_call_chunks=chunk.tool_call_chunks)
+                    response = calls if response is None else response + calls
                 yield _check_completion(chunk)
+        if usage:
+            usage.record_response(response)

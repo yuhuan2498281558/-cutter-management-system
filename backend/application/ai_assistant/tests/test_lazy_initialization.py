@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from django.test import SimpleTestCase
 
 from application.ai_assistant import llm_service
+from application.ai_assistant.context_budget import ContextBudgetPolicy
 from application.ai_assistant.llm_service import ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
@@ -59,7 +60,7 @@ class LazyInitializationTests(SimpleTestCase):
 
         self.assertEqual(
             [event["type"] for event in events],
-            ["meta", "chunk", "memory", "done"],
+            ["meta", "chunk", "memory", "context", "done"],
         )
         self.assertEqual(events[0]["route_stage"], "rule")
         self.assertEqual(events[1]["content"], "规则答案")
@@ -82,6 +83,27 @@ class LazyInitializationTests(SimpleTestCase):
         self.assertFalse(assistant.agent_runtime_ready)
         get_config.assert_called_once_with(None)
         create_model.assert_called_once_with(None)
+
+    def test_history_baseline_keeps_llm_and_agent_cold(self):
+        with (
+            patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
+            patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
+            patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="ollama")),
+            patch("application.ai_assistant.llm_service.get_context_policy", return_value=ContextBudgetPolicy(32768)),
+        ):
+            assistant = ToolAssistant()
+            assistant._load_memory = Mock(return_value=MemorySnapshot(scope_key="user:1", backend="legacy"))
+            assistant.memory.history_page = Mock(return_value={
+                "messages": [], "has_more": False, "next_before_sequence": None,
+            })
+            history = assistant.get_history("1")
+
+        self.assertEqual(history["context"]["kind"], "baseline")
+        self.assertGreater(history["context"]["used"], 0)
+        self.assertFalse(assistant.llm_runtime_ready)
+        self.assertFalse(assistant.agent_runtime_ready)
+        create_model.assert_not_called()
+        create_agent.assert_not_called()
 
     def test_agent_runtime_and_group_executor_are_cached(self):
         all_executor = object()

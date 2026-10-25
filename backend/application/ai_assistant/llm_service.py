@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from .llm_provider import create_chat_model, get_llm_config, get_context_policy, LLMProviderError
 from .tools import (
@@ -30,7 +31,9 @@ from .tools import (
 )
 from .prompts import SYSTEM_PROMPT, ANSWER_POLICY
 from .agent_views import AGENT_PAGE_SIZE, agent_view
-from .context_budget import GuardedChatModel
+from .context_budget import (
+    ContextBudgetExceeded, ContextUsage, GuardedChatModel, context_usage, mark_context_message, prepare_messages,
+)
 from .tools_inspections import query_tool_inspections
 from .tools_repairs import query_old_tool_repairs
 from .tools_lifecycle import trace_tool_lifecycle
@@ -1045,7 +1048,8 @@ class ToolAssistant:
                 SYSTEM_PROMPT
                 + "\n\n【当前模式】以下是工具查询到的原始结果，请据此直接回答用户问题。"
             )),
-            HumanMessage(content=f"用户问题：\n{user_query}\n\n{payload}"),
+            mark_context_message(HumanMessage(content=f"用户问题：\n{user_query}\n\n{payload}"),
+                                 question=user_query, results=payload),
         ]
         try:
             result = self.llm.invoke(
@@ -1153,7 +1157,7 @@ class ToolAssistant:
         for item in self.memory.context_messages(snapshot):
             message_class = HumanMessage if item.role == "human" else AIMessage
             messages.append(message_class(content=item.content))
-        return messages
+        return [mark_context_message(message, memory=message.content) for message in messages]
 
     def _extract_explicit_memory_slots(self, query: str) -> dict:
         # 被否定的实体不是本轮设置值；允许“取消滚刀限制，改查刮刀”设置新刀型。
@@ -2375,7 +2379,9 @@ class ToolAssistant:
             f"结构化分析结果：\n{structured_answer}\n\n"
             "请保留查询范围、核心事实、明细表格和数据限制。"
         )
-        return [SystemMessage(content=system), HumanMessage(content=human)]
+        return [SystemMessage(content=system), mark_context_message(
+            HumanMessage(content=human), question=user_query, results=structured_answer,
+        )]
 
     def _polish_direct_answer(self, user_query: str, structured_answer: str):
         """返回 (答案, token用量)。
@@ -2858,6 +2864,43 @@ class ToolAssistant:
             **({"context_mode": context["resolved_context_mode"]} if context and "resolved_context_mode" in context else {}),
         }
 
+    def _context_info(self, usage, memory, kind=None):
+        try:
+            policy = usage.policy or (self._llm.policy if isinstance(self._llm, GuardedChatModel)
+                                      else get_context_policy())
+        except LLMProviderError:
+            return None
+        return usage.info(kind or ("turn" if usage.model_calls else "rule"), policy, memory)
+
+    def _baseline_context(self, snapshot):
+        usage = ContextUsage()
+        token = context_usage.set(usage)
+        try:
+            if isinstance(self._llm, GuardedChatModel):
+                policy, output_parameter = self._llm.policy, self._llm.output_parameter
+            else:
+                config = get_llm_config(self._model_name)
+                if config.provider != "ollama" and not config.api_key:
+                    return None
+                policy = get_context_policy(config.provider)
+                output_parameter = "num_predict" if config.provider == "ollama" else "max_tokens"
+            options = {"tools": [convert_to_openai_tool(tool) for tool in TOOLS]}
+            if output_parameter != "num_predict":
+                options[output_parameter] = policy.output_tokens
+            messages = [SystemMessage(content=SYSTEM_PROMPT), *self._memory_messages(snapshot)]
+            try:
+                prepare_messages(messages, policy, options)
+            except ContextBudgetExceeded:
+                pass
+            usage.model_calls, usage.exceeded = 0, False
+            return self._context_info(usage, self.memory.context_info(
+                snapshot, include_recent=snapshot.backend != "ablate",
+            ), "baseline")
+        except (LLMProviderError, ValueError):
+            return None
+        finally:
+            context_usage.reset(token)
+
     @staticmethod
     def _tool_argument_error(observation) -> bool:
         if hasattr(observation, 'content'):
@@ -3013,6 +3056,7 @@ class ToolAssistant:
 
         def _finish(payload: dict, route_stage: str, retry_count: int = 0) -> dict:
             payload.update({
+                "context": self._context_info(usage, memory_info),
                 "route_stage": route_stage,
                 "rule_branch": payload.get("rule_branch"),
                 "tool_group": tool_group,
@@ -3027,6 +3071,11 @@ class ToolAssistant:
             _trace_stop()
             return payload
 
+        usage = ContextUsage(inputs={enriched_input: {"system": ctx_msg or "", "question": merged_query}})
+        memory_info = self.memory.context_info(memory_snapshot, include_recent=(
+            memory_snapshot.backend != "ablate" and working_context.get("resolved_context_mode") != "new"
+        ))
+        token = context_usage.set(usage)
         try:
             logger.info("AI query user_id=%s query_chars=%s", user_id, len(user_query))
             needs_tools = self._model_needs_tools(merged_query, working_context)
@@ -3098,6 +3147,7 @@ class ToolAssistant:
                     "【系统提示】你上一次回答没有调用任何工具，直接编造了数据，这是错误的。"
                     "请立即调用对应工具查询真实数据，不得编造任何数字或结论。"
                 )
+                usage.inputs[retry_input] = usage.inputs[enriched_input]
                 retry_count = 1
                 result = self._invoke_with_retry(
                     {"input": retry_input, "chat_history": history_messages},
@@ -3126,6 +3176,8 @@ class ToolAssistant:
             return _finish({
                 "success": False, "error": self._friendly_error(error_msg), "type": "error",
             }, "error")
+        finally:
+            context_usage.reset(token)
 
     async def chat_stream(self, user_query: str, context: dict = None):
         """
@@ -3135,6 +3187,9 @@ class ToolAssistant:
         user_id = str(context.get("user_id", "anonymous")) if context else "anonymous"
         original_query = user_query
         _trace_start()
+        usage = ContextUsage()
+        token = context_usage.set(usage)
+        memory_info = None
         try:
             memory_snapshot = await sync_to_async(self._load_memory)(user_id)
             working_context = await sync_to_async(self._prepare_query_context)(user_query, memory_snapshot, context)
@@ -3148,6 +3203,10 @@ class ToolAssistant:
             ctx_msg = self._build_context_message(working_context)
             enriched_input = f"{ctx_msg}\n\n{user_query}" if ctx_msg else user_query
             history_messages = self._memory_messages(memory_snapshot, working_context)
+            usage.inputs[enriched_input] = {"system": ctx_msg or "", "question": user_query}
+            memory_info = await sync_to_async(self.memory.context_info)(memory_snapshot, include_recent=(
+                memory_snapshot.backend != "ablate" and working_context.get("resolved_context_mode") != "new"
+            ))
             full_answer = []
             model_selects_tools = self._route_mode_for_context(working_context) == "agent"
             direct = await sync_to_async(self._direct_route)(user_query, working_context) if not model_selects_tools else None
@@ -3248,19 +3307,25 @@ class ToolAssistant:
                 expected_generation=memory_snapshot.generation,
             )
             yield {"type": "memory", **self._memory_diagnostics(stored_snapshot, working_context)}
+            yield {"type": "context", "context": self._context_info(usage, memory_info)}
             yield {"type": "done", "tool_calls": _trace_calls(include_results=_flag_enabled("AI_TRACE_TOOL_RESULTS"))}
 
         except Exception as e:
             logger.error(f"[{user_id}] 流式查询失败：{e}")
+            if usage.exceeded:
+                yield {"type": "context", "context": self._context_info(usage, memory_info)}
             yield {"type": "error", "content": self._friendly_error(str(e))}
         finally:
+            context_usage.reset(token)
             _trace_stop()
 
     def get_history(self, user_id: str, *, before_sequence=None, limit=50) -> dict:
         """返回用户记忆中的对话消息与诊断信息，用于前端刷新后回填。只读，不触发模型调用。"""
         snapshot = self._load_memory(str(user_id))
+        context = self._baseline_context(snapshot)
         if snapshot.backend == 'ablate':
-            return {"messages": [], "memory": self._memory_diagnostics(snapshot), "has_more": False, "next_before_sequence": None}
+            return {"messages": [], "memory": self._memory_diagnostics(snapshot), "context": context,
+                    "has_more": False, "next_before_sequence": None}
         page = self.memory.history_page(
             self.memory.scope_key(user_id),
             owner_id=int(user_id) if str(user_id).isdigit() else None,
@@ -3276,6 +3341,7 @@ class ToolAssistant:
                 for item in page['messages']
             ],
             "memory": self._memory_diagnostics(snapshot),
+            "context": context,
             "has_more": page['has_more'],
             "next_before_sequence": page['next_before_sequence'],
         }

@@ -323,6 +323,20 @@ class MemoryService:
             turns.pop(0)
         return [item for turn in turns for item in turn]
 
+    def context_info(self, snapshot: MemorySnapshot, include_recent: bool = True) -> dict:
+        recent = self.context_messages(snapshot) if include_recent else []
+        django = snapshot.backend == "django"
+        return {
+            "backend": self.backend if snapshot.backend == "ablate" else snapshot.backend,
+            "recent_turns": _int_setting("AI_MEMORY_RECENT_TURNS", 3),
+            "recent_budget": _int_setting("AI_MEMORY_CONTEXT_TOKEN_BUDGET", 1200),
+            "recent_tokens": sum(self._message_tokens(item) for item in recent),
+            "included_turns": len(recent) // 2,
+            "summary_tokens": estimate_tokens(snapshot.summary),
+            "summary_trigger_tokens": _int_setting("AI_MEMORY_SUMMARY_TRIGGER_TOKENS", 1800) if django else None,
+            "pending_tokens": sum(item.token_count for item in self.summary_source(snapshot)) if django else None,
+        }
+
     @staticmethod
     def _complete_turns(messages):
         turns = []
