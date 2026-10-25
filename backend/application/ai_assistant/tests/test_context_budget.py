@@ -55,6 +55,16 @@ class ToolModel(FakeMessagesListChatModel):
 
 
 class ContextBudgetTests(SimpleTestCase):
+    def test_results_above_old_soft_limit_are_not_summarized(self):
+        raw = "完整原文" * 6000
+        messages = [AIMessage(content="", tool_calls=[{"name": "query", "args": {}, "id": "old"}]),
+                    ToolMessage(content=raw, tool_call_id="old"),
+                    AIMessage(content="", tool_calls=[{"name": "query", "args": {}, "id": "new"}]),
+                    ToolMessage(content="{}", tool_call_id="new")]
+        prepared = prepare_messages(messages, ContextBudgetPolicy())
+        self.assertGreater(estimate_request_tokens(prepared), 24000)
+        self.assertEqual(prepared[1].content, raw)
+
     def test_local_metadata_and_duplicate_calls_do_not_consume_budget(self):
         call = {"name": "query", "args": {"filter": "中文范围"}, "id": "one"}
         plain = AIMessage(content="", tool_calls=[call])
@@ -175,7 +185,7 @@ class ContextBudgetTests(SimpleTestCase):
     def test_output_overrides_cannot_exceed_reserve(self):
         model = RecordingModel()
         guard = GuardedChatModel(model, ContextBudgetPolicy())
-        for value in (0, -1, None, True, 2049):
+        for value in (0, -1, None, True, guard.policy.output_tokens + 1):
             for name in ("max_tokens", "max_completion_tokens", "num_predict"):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     guard.bind(**{name: value}).invoke("hello")
@@ -287,6 +297,21 @@ class ContextBudgetTests(SimpleTestCase):
 
 
 class ContextPolicyTests(SimpleTestCase):
+    def test_api_defaults_and_future_compaction_ratios(self):
+        with patch("application.ai_assistant.llm_provider._config_value", side_effect=lambda name, default="": default):
+            policy = get_context_policy("deepseek")
+            self.assertEqual((policy.context_tokens, policy.output_tokens, policy.safety_margin_tokens), (256000, 8192, 4096))
+            self.assertEqual(policy.input_budget, 243712)
+            self.assertEqual(policy.trigger_tokens, 204800)
+            self.assertEqual(policy.retain_ratio, 0.16)
+        with patch.dict(os.environ, {"AI_CONTEXT_TRIGGER_RATIO": "0.75", "AI_CONTEXT_RETAIN_RATIO": "0.2"}):
+            policy = get_context_policy("deepseek")
+            self.assertEqual((policy.trigger_ratio, policy.retain_ratio), (0.75, 0.2))
+        for value in ("0", "1", "invalid"):
+            with patch.dict(os.environ, {"AI_CONTEXT_TRIGGER_RATIO": value}):
+                with self.assertRaises(LLMProviderError):
+                    get_context_policy("deepseek")
+
     def test_invalid_policy_rejected(self):
         for kwargs in ({"context_tokens": 100}, {"output_tokens": 0}, {"safety_margin_tokens": -1}, {"compaction_min_tokens": True}):
             with self.assertRaises(ValueError):

@@ -82,7 +82,7 @@ class LegacyMemoryTests(SimpleTestCase):
             self.assertEqual(result.message_count, 0)
             self.assertGreater(result.generation, old.generation)
 
-    def test_bounded_load_and_cursor_pages_preserve_exact_count(self):
+    def test_full_load_and_cursor_pages_preserve_exact_count(self):
         for index in range(10):
             self.service.append_turn("experiment:pages", f"q{index}", f"a{index}")
             self.service.append_turn("experiment:unrelated", "other", "other answer")
@@ -98,10 +98,10 @@ class LegacyMemoryTests(SimpleTestCase):
         finally:
             event.remove(engine, "before_cursor_execute", capture)
         self.assertEqual(snapshot.message_count, 20)
-        self.assertEqual(len(snapshot.messages), 6)
+        self.assertEqual(len(snapshot.messages), 20)
         content_selects = [sql for sql in statements if "message_store.message" in sql]
         self.assertTrue(content_selects)
-        self.assertTrue(all("LIMIT" in sql for sql in content_selects))
+        self.assertTrue(all("LIMIT" not in sql for sql in content_selects))
         page = self.service.history_page("experiment:pages", limit=7)
         sequences = [item.sequence for item in page["messages"]]
         while page["has_more"]:

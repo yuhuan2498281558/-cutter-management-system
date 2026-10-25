@@ -56,7 +56,7 @@ class MemoryPathTests(SimpleTestCase):
             self.assertEqual(slots['tool_type'], 'DISC')
         self.assertEqual(self.assistant._resolve_memory_slots('同样范围的换刀频率呢', snapshot)['tool_type'], 'SCRAPER')
 
-    def test_memory_messages_use_summary_and_bounded_recent_history(self):
+    def test_memory_messages_keep_full_history_and_slots_only_in_current_input(self):
         snapshot = MemorySnapshot(
             scope_key="user:1",
             summary="已确认关注换刀范围",
@@ -70,9 +70,8 @@ class MemoryPathTests(SimpleTestCase):
             summary_through_sequence=2,
         )
         messages = self.assistant._memory_messages(snapshot, {"memory_slots": snapshot.slots})
-        self.assertIn("当前工作状态", messages[0].content)
-        self.assertIn("历史摘要", messages[1].content)
-        self.assertEqual([item.content for item in messages[-2:]], ["新问题", "新回答"])
+        self.assertEqual([item.content for item in messages], ["旧问题", "旧回答", "新问题", "新回答"])
+        self.assertIn("当前工作状态", self.assistant._build_context_message({"memory_slots": snapshot.slots}))
 
     def test_ablation_drops_persisted_slots(self):
         snapshot = MemorySnapshot(scope_key="user:1", backend="ablate", slots={"ring_range": [1, 2]})
@@ -171,7 +170,8 @@ class MemoryPathTests(SimpleTestCase):
             StoredMessage(1, "human", "统计滚刀换刀情况", 5), StoredMessage(2, "ai", "旧答案", 5),
         ])
         new = self.assistant._prepare_query_context("统计全部刀具换刀情况", snapshot)
-        self.assertEqual(self.assistant._memory_messages(snapshot, new), [])
+        self.assertEqual([item.content for item in self.assistant._memory_messages(snapshot, new)],
+                         ["统计滚刀换刀情况", "旧答案"])
         self.assertEqual(self.assistant._memory_diagnostics(snapshot, new)["active_slots"], {})
         continued = self.assistant._prepare_query_context("同样范围统计换刀情况", snapshot)
         self.assertTrue(self.assistant._memory_messages(snapshot, continued))

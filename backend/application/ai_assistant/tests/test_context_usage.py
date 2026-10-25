@@ -63,7 +63,7 @@ class PagingModel(MultiRoundModel):
 
 def make_agent():
     model = MultiRoundModel()
-    policy = ContextBudgetPolicy(context_tokens=32768, evidence_soft_tokens=1800)
+    policy = ContextBudgetPolicy(context_tokens=32768)
     guard = GuardedChatModel(model, policy)
     payloads = iter([trend_payload(), '{"summary":"小结果"}'])
 
@@ -107,7 +107,7 @@ class ContextUsageTests(SimpleTestCase):
         self.assertTrue(all(type(value) is int and value >= 0 for value in info["parts"].values()))
         self.assertEqual(sum(info["parts"].values()), info["used"])
 
-    def test_agent_peak_is_not_last_call_and_compaction_stats_follow_peak(self):
+    def test_agent_peak_keeps_all_results_and_compaction_stats(self):
         model, guard, executor, options = make_agent()
         assistant = self.make_assistant(guard)
         assistant._model_needs_tools = Mock(return_value=True)
@@ -119,10 +119,10 @@ class ContextUsageTests(SimpleTestCase):
                   for messages in model.seen]
         self.assertEqual(info["model_calls"], 3)
         self.assertEqual(info["used"], max(counts))
-        self.assertGreater(info["used"], counts[-1])
+        self.assertEqual(info["used"], counts[-1])
         self.assertEqual(info["kind"], "turn")
         self.assert_parts(info)
-        self.assertEqual(info["results_raw"], estimate_tokens(trend_payload()))
+        self.assertEqual(info["results_raw"], estimate_tokens(trend_payload()) + estimate_tokens('{"summary":"小结果"}'))
         self.assertGreater(info["results_raw"], info["parts"]["results"])
         self.assertEqual(info["compacted_results"], 1)
         self.assertEqual(info["summarized_results"], 0)
@@ -131,7 +131,7 @@ class ContextUsageTests(SimpleTestCase):
     async def test_paged_tool_lists_and_model_page_requests(self):
         for streaming in (False, True):
             model = PagingModel()
-            guard = GuardedChatModel(model, ContextBudgetPolicy(context_tokens=32768, evidence_soft_tokens=1800))
+            guard = GuardedChatModel(model, ContextBudgetPolicy(context_tokens=32768))
             payload = json.loads(trend_payload())
             payload["data"] = payload["data"][:51]
             for index, row in enumerate(payload["data"]):
@@ -163,17 +163,17 @@ class ContextUsageTests(SimpleTestCase):
             self.assertGreaterEqual(info["paged_lists"], 1)
             self.assertEqual(info["page_requests"], 1)
             self.assertEqual(info["model_calls"], 3)
-            self.assertEqual(info["paged_lists"], 1)
+            self.assertEqual(info["paged_lists"], 2)
             self.assertTrue(any(json.loads(message.content).get("format") == COLUMNAR_FORMAT
                                 for message in model.seen[1] if isinstance(message, ToolMessage)))
-            self.assertLess(estimate_request_tokens(model.seen[-1], {
+            self.assertEqual(estimate_request_tokens(model.seen[-1], {
                 "tools": [convert_to_openai_tool(tool)], "max_tokens": guard.policy.output_tokens,
             }), info["used"])
             self.assert_parts(info)
 
-    def test_summary_count_and_internal_markers_do_not_change_estimates_or_reach_model(self):
+    def test_internal_markers_do_not_change_estimates_or_reach_model(self):
         model = RecordingModel()
-        guard = GuardedChatModel(model, ContextBudgetPolicy(context_tokens=32768, evidence_soft_tokens=1))
+        guard = GuardedChatModel(model, ContextBudgetPolicy(context_tokens=32768))
         memory = mark_context_message(HumanMessage(content="旧问题"), memory="旧问题")
         messages = [SystemMessage(content="规则"), memory,
                     AIMessage(content="", tool_calls=[{"id": "old", "name": "query", "args": {"n": 2}}]),
@@ -189,8 +189,8 @@ class ContextUsageTests(SimpleTestCase):
             guard.invoke(messages)
         finally:
             context_usage.reset(token)
-        self.assertEqual(usage.peak["summarized_results"], 1)
-        self.assertEqual(usage.peak["parts"]["memory"], estimate_tokens("旧问题"))
+        self.assertEqual(usage.peak["summarized_results"], 0)
+        self.assertEqual(usage.peak["parts"]["memory"], estimate_request_tokens([memory]) - estimate_request_tokens([]))
         self.assertTrue(all("_context_parts" not in message.response_metadata for message in model.calls[0][0]))
         self.assertIn("_context_parts", memory.response_metadata)
         self.assert_parts(usage.peak)
@@ -252,8 +252,8 @@ class ContextUsageTests(SimpleTestCase):
             self.assertEqual(info["parts"]["results"], 0)
             self.assert_parts(info)
             memory = info["memory"]
-            self.assertEqual(memory["included_turns"], 3)
-            self.assertEqual(memory["recent_tokens"], 72)
+            self.assertEqual(memory["included_turns"], 4)
+            self.assertEqual(memory["recent_tokens"], 96)
             self.assertEqual(memory["summary_tokens"], estimate_tokens(snapshot.summary))
             self.assertEqual(memory["summary_trigger_tokens"], 1800 if backend == "django" else None)
             self.assertEqual(memory["pending_tokens"], 24 if backend == "django" else None)

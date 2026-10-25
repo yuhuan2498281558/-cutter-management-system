@@ -78,18 +78,17 @@ def get_context_policy(provider: str | None = None):
 
     provider = provider or _config_value("AI_LLM_PROVIDER", "deepseek").strip().lower()
     ollama = provider == "ollama"
-    # 在线模型：系统提示词和 21 个工具说明固定约 12k token，16k 窗口查一两次就超；
-    # deepseek-chat 实际窗口远大于 64k，这里按 64k 管控，输出留 4k 给分段的复杂回答。
-    window = _config_value("OLLAMA_NUM_CTX", "4096") if ollama else "65536"
-    output = _config_value("OLLAMA_NUM_PREDICT", "1024") if ollama else "4096"
+    window = _config_value("OLLAMA_NUM_CTX", "4096") if ollama else "256000"
+    output = _config_value("OLLAMA_NUM_PREDICT", "1024") if ollama else "8192"
     try:
         policy = ContextBudgetPolicy(
             context_tokens=int(_config_value("AI_CONTEXT_WINDOW_TOKENS", window)),
             output_tokens=int(_config_value("AI_CONTEXT_OUTPUT_TOKENS", output)),
-            safety_margin_tokens=int(_config_value("AI_CONTEXT_SAFETY_MARGIN_TOKENS", "512" if ollama else "1024")),
+            safety_margin_tokens=int(_config_value("AI_CONTEXT_SAFETY_MARGIN_TOKENS", "512" if ollama else "4096")),
             compaction_min_tokens=int(_config_value("AI_CONTEXT_COMPACTION_MIN_TOKENS", "1000")),
             tool_protocol_tokens=int(_config_value("AI_CONTEXT_TOOL_PROTOCOL_TOKENS", "1024")),
-            evidence_soft_tokens=int(_config_value("AI_CONTEXT_EVIDENCE_SOFT_TOKENS", "24000")),
+            trigger_ratio=float(_config_value("AI_CONTEXT_TRIGGER_RATIO", "0.8")),
+            retain_ratio=float(_config_value("AI_CONTEXT_RETAIN_RATIO", "0.16")),
         )
         if ollama and policy.context_tokens > int(window):
             raise ValueError("AI context budget cannot exceed OLLAMA_NUM_CTX")
@@ -120,7 +119,8 @@ def create_chat_model(model_name: str | None = None):
             num_ctx=int(_config_value("OLLAMA_NUM_CTX", "4096")),
             num_predict=policy.output_tokens,
         )
-        return GuardedChatModel(model, policy, output_parameter="num_predict")
+        return GuardedChatModel(model, policy, output_parameter="num_predict",
+                                provider=config.provider, model_name=config.model)
 
     if config.provider in {"openai", "openai-compatible", "api", "deepseek"}:
         try:
@@ -146,6 +146,13 @@ def create_chat_model(model_name: str | None = None):
                         payload["max_tokens"] = payload.pop("max_completion_tokens")
                     return payload
 
+                def _convert_chunk_to_generation_chunk(self, chunk, *args, **kwargs):
+                    result = super()._convert_chunk_to_generation_chunk(chunk, *args, **kwargs)
+                    if result is not None and chunk.get("usage"):
+                        # DeepSeek 的缓存字段不在 LangChain 通用 usage 映射中。
+                        result.message.response_metadata["token_usage"] = chunk["usage"]
+                    return result
+
             model_class = CompatibleChatOpenAI
 
         model = model_class(
@@ -155,7 +162,8 @@ def create_chat_model(model_name: str | None = None):
             temperature=config.temperature,
             timeout=config.timeout,
             max_tokens=policy.output_tokens,
+            stream_usage=True,
         )
-        return GuardedChatModel(model, policy)
+        return GuardedChatModel(model, policy, provider=config.provider, model_name=config.model)
 
     raise LLMProviderError(f"Unsupported AI_LLM_PROVIDER: {config.provider}")

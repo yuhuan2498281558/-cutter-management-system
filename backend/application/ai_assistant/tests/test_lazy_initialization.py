@@ -86,6 +86,7 @@ class LazyInitializationTests(SimpleTestCase):
 
     def test_history_baseline_keeps_llm_and_agent_cold(self):
         with (
+            patch("application.ai_assistant.context_budget.prepare_messages", side_effect=AssertionError("history must be read-only")),
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
             patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
             patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="ollama")),

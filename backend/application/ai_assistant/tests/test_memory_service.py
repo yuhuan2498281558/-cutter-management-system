@@ -4,6 +4,7 @@ import tempfile
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
+from langchain_core.messages import HumanMessage, AIMessage
 
 from application.ai_assistant.memory_service import (
     MemoryService, MemorySnapshot, StoredMessage, estimate_tokens,
@@ -17,6 +18,18 @@ class MemoryServiceTests(TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         self.service = MemoryService(backend="django")
+
+    def test_django_keeps_all_qa_without_event_storage(self):
+        with patch.object(self.service, "_get_legacy_engine", side_effect=AssertionError("no legacy events in django")):
+            for index in range(5):
+                snapshot = self.service.append_turn("experiment:qa-only", f"问题{index}", f"回答{index}",
+                    context_messages=[HumanMessage(content="enriched"), AIMessage(content="answer")])
+        history, stats, anchor = self.service.protocol_history(snapshot)
+        self.assertEqual(len(history), 10)
+        self.assertEqual(stats["legacy_qa_turns"], 5)
+        self.assertEqual(stats["tool_results"], 0)
+        self.assertIsNone(anchor)
+        self.assertEqual(snapshot.context_events, [])
 
     def test_scope_key_and_atomic_turn_order(self):
         self.assertEqual(self.service.scope_key(12), "user:12")
@@ -34,13 +47,12 @@ class MemoryServiceTests(TestCase):
             ["human", "ai", "human", "ai"],
         )
 
-    def test_token_budget_keeps_recent_messages(self):
+    def test_old_memory_budget_does_not_truncate_messages(self):
         snapshot = self.service.append_turn("experiment:budget", "旧问题" * 200, "旧回答" * 200)
         snapshot = self.service.append_turn("experiment:budget", "新问题", "新回答")
         messages = self.service.context_messages(snapshot, recent_turns=3, budget=20)
-        self.assertLessEqual(sum(item.token_count for item in messages), 20)
-        self.assertTrue(messages)
-        self.assertEqual([item.content for item in messages], ["新问题", "新回答"])
+        self.assertGreater(sum(item.token_count for item in messages), 20)
+        self.assertEqual([item.content for item in messages], ["旧问题" * 200, "旧回答" * 200, "新问题", "新回答"])
 
     def test_django_metadata_round_trip_keeps_content_and_public_history_unchanged(self):
         metadata = {"query_intent": {"intent": "change_trend", "interval": 100}}
@@ -107,11 +119,11 @@ class MemoryServiceTests(TestCase):
                                            expected_generation=result.generation)
         self.assertEqual(current.message_count, 2)
 
-    def test_bounded_context_and_history_pages(self):
+    def test_full_context_and_history_pages(self):
         for index in range(10):
             snapshot = self.service.append_turn("experiment:pages", f"q{index}", f"a{index}")
         self.assertEqual(snapshot.message_count, 20)
-        self.assertEqual(len(snapshot.messages), 6)
+        self.assertEqual(len(snapshot.messages), 20)
         page = self.service.history_page(snapshot.scope_key, limit=7)
         self.assertEqual([item.sequence for item in page["messages"]], list(range(14, 21)))
         self.assertEqual(page["message_count"], 20)
@@ -217,9 +229,9 @@ class MemoryBudgetTests(SimpleTestCase):
             for index, (role, content) in enumerate(contents, start=1)
         ])
 
-    def test_context_never_leaves_answer_when_question_exceeds_budget(self):
+    def test_context_keeps_whole_turn_when_question_exceeds_old_budget(self):
         snapshot = self.snapshot([("human", "问" * 100), ("ai", "短答")])
-        self.assertEqual(self.service.context_messages(snapshot, budget=20), [])
+        self.assertEqual(self.service.context_messages(snapshot, budget=20), snapshot.messages)
 
     def test_legacy_records_without_new_metadata_remain_readable(self):
         rows = [{"id": index, "message": json.dumps({"type": role, "data": {
@@ -249,13 +261,13 @@ class MemoryBudgetTests(SimpleTestCase):
         messages = self.service.context_messages(snapshot, budget=100)
         self.assertEqual([item.content for item in messages], ["完整问题", "完整回答"])
         snapshot.summary_through_sequence = 3
-        self.assertEqual(self.service.context_messages(snapshot, budget=100), [])
+        self.assertEqual(self.service.context_messages(snapshot, budget=100), messages)
 
-    def test_context_zero_token_metadata_still_honors_budget(self):
+    def test_context_zero_token_metadata_does_not_drop_messages(self):
         snapshot = MemorySnapshot(scope_key="experiment:no-token", messages=[
             StoredMessage(1, "human", "问" * 100), StoredMessage(2, "ai", "回答"),
         ])
-        self.assertEqual(self.service.context_messages(snapshot, budget=20), [])
+        self.assertEqual(self.service.context_messages(snapshot, budget=20), snapshot.messages)
 
     def test_summary_caps_200_messages_even_for_in_memory_snapshot(self):
         snapshot = self.snapshot([("human", "q"), ("ai", "a")] * 110)

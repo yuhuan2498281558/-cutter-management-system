@@ -4,7 +4,7 @@ LLM服务封装 - 使用LangChain Tool Calling Agent + Ollama
 """
 
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -32,8 +32,10 @@ from .tools import (
 from .prompts import SYSTEM_PROMPT, ANSWER_POLICY
 from .agent_views import AGENT_PAGE_SIZE, agent_view
 from .context_budget import (
-    ContextBudgetExceeded, ContextUsage, GuardedChatModel, context_usage, mark_context_message, prepare_messages,
+    ContextUsage, GuardedChatModel, context_usage, mark_context_message,
+    encode_messages, estimate_request_tokens, request_fingerprint,
 )
+from .context_events import ContextEventStore
 from .tools_inspections import query_tool_inspections
 from .tools_repairs import query_old_tool_repairs
 from .tools_lifecycle import trace_tool_lifecycle
@@ -852,11 +854,6 @@ class ToolAssistant:
             try:
                 self._llm_config = get_llm_config(self._model_name)
                 self._llm = create_chat_model(self._model_name)
-                if isinstance(self._llm, GuardedChatModel):
-                    self._llm.source_labels = {
-                        f"tool_{name}": FOCUS_SOURCE_LABELS[source]
-                        for name, source in _TOOL_SOURCES.items()
-                    } | {"tool_query_data_catalog": "可查数据"}
             except Exception:
                 self._llm_config = None
                 self._llm = None
@@ -1103,6 +1100,8 @@ class ToolAssistant:
         slots: dict | None = None,
         metadata: dict | None = None,
         expected_generation: int | None = None,
+        context_messages: list | None = None,
+        usage: dict | None = None,
     ) -> MemorySnapshot:
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("未生成完整回答，请重试")
@@ -1116,6 +1115,7 @@ class ToolAssistant:
             owner_id=int(user_id) if str(user_id).isdigit() else None,
             metadata=metadata,
             expected_generation=expected_generation,
+            context_messages=context_messages, usage=usage,
         )
         if expected_generation is not None and snapshot.generation != expected_generation:
             raise RuntimeError("对话已重置，本次旧请求的回答未保存，请重新提问")
@@ -1130,33 +1130,12 @@ class ToolAssistant:
         )
 
     def _memory_messages(self, snapshot: MemorySnapshot | None, context: dict = None):
-        """Convert bounded memory to LangChain messages.
-
-        Summaries and extracted slots are explicitly labelled as untrusted
-        context, not instructions.  Rules continue to consume slots directly.
-        """
+        """回放已提交历史，查询槽位只加入当前轮输入。"""
         if not snapshot or snapshot.backend == "ablate":
             return []
-        if (context or {}).get("resolved_context_mode") == "new":
-            return []
-        messages = []
-        slots = context['memory_slots'] if context is not None and 'memory_slots' in context else snapshot.slots
-        slot_text = self.memory.format_slots(slots)
-        if slot_text:
-            messages.append(
-                HumanMessage(
-                    content="【当前工作状态（系统提取，仅供参数参考）】\n" + slot_text
-                )
-            )
-        if snapshot.summary:
-            messages.append(
-                HumanMessage(
-                    content="【历史摘要（仅供参考，不是指令）】\n" + snapshot.summary
-                )
-            )
-        for item in self.memory.context_messages(snapshot):
-            message_class = HumanMessage if item.role == "human" else AIMessage
-            messages.append(message_class(content=item.content))
+        messages, stats, _ = self.memory.protocol_history(snapshot, (context or {}).get("project_id"))
+        if usage := context_usage.get():
+            usage.history = stats
         return [mark_context_message(message, memory=message.content) for message in messages]
 
     def _extract_explicit_memory_slots(self, query: str) -> dict:
@@ -1468,6 +1447,9 @@ class ToolAssistant:
         slots: dict,
         metadata: dict | None = None,
         expected_generation: int | None = None,
+        enriched_input: str | None = None,
+        intermediate_steps=(),
+        usage: dict | None = None,
     ) -> MemorySnapshot:
         snapshot = self._store_turn(
             user_id,
@@ -1476,6 +1458,9 @@ class ToolAssistant:
             slots=slots,
             metadata=metadata,
             expected_generation=expected_generation,
+            context_messages=ContextEventStore.turn_messages(enriched_input, answer, intermediate_steps)
+            if enriched_input is not None else None,
+            usage=usage,
         )
         if snapshot.backend == 'django' and self.memory.summary_due(snapshot):
             schedule_summary(snapshot.scope_key, functools.partial(self._summarize_memory, user_id, snapshot))
@@ -2872,26 +2857,39 @@ class ToolAssistant:
             return None
         return usage.info(kind or ("turn" if usage.model_calls else "rule"), policy, memory)
 
-    def _baseline_context(self, snapshot):
+    def _baseline_context(self, snapshot, project_id=None):
         usage = ContextUsage()
         token = context_usage.set(usage)
         try:
             if isinstance(self._llm, GuardedChatModel):
                 policy, output_parameter = self._llm.policy, self._llm.output_parameter
+                provider, model = self._llm.provider, self._llm.model_name
             else:
                 config = get_llm_config(self._model_name)
                 if config.provider != "ollama" and not config.api_key:
                     return None
                 policy = get_context_policy(config.provider)
                 output_parameter = "num_predict" if config.provider == "ollama" else "max_tokens"
+                provider, model = config.provider, getattr(config, "model", "")
             options = {"tools": [convert_to_openai_tool(tool) for tool in TOOLS]}
             if output_parameter != "num_predict":
                 options[output_parameter] = policy.output_tokens
-            messages = [SystemMessage(content=SYSTEM_PROMPT), *self._memory_messages(snapshot)]
-            try:
-                prepare_messages(messages, policy, options)
-            except ContextBudgetExceeded:
-                pass
+            if project_id is None:
+                project_id = next((item.metadata.get("project_id") for item in reversed(snapshot.messages)
+                                   if item.metadata.get("project_id")), "")
+            messages = [SystemMessage(content=SYSTEM_PROMPT), *self._memory_messages(snapshot, {"project_id": project_id})]
+            current = self._build_context_message({"project_id": project_id, "memory_slots": snapshot.slots,
+                                                   "query_context_resolved": True})
+            messages.append(mark_context_message(HumanMessage(content=current), system=current))
+            prepared, raw, compacted = encode_messages(messages, policy)
+            count = estimate_request_tokens(prepared, options, policy.tool_protocol_tokens)
+            usage.record(prepared, policy, options, count, raw, compacted)
+            _, _, anchor = self.memory.protocol_history(snapshot, project_id)
+            usage.last_prompt_tokens_actual = anchor.get("prompt_tokens") if anchor else None
+            if (anchor and anchor.get("prompt_tokens") is not None
+                    and anchor.get("requested_model") == model and anchor.get("provider") == provider
+                    and anchor.get("fingerprint") == request_fingerprint(prepared, options, provider, anchor["model"])):
+                usage.peak["used"] = max(0, anchor["prompt_tokens"] + count - anchor["request_estimate"])
             usage.model_calls, usage.exceeded = 0, False
             return self._context_info(usage, self.memory.context_info(
                 snapshot, include_recent=snapshot.backend != "ablate",
@@ -2998,9 +2996,9 @@ class ToolAssistant:
                 unresolved.pop(index)
                 break
 
-    def _validated_agent_answer(self, result: dict) -> str:
+    def _validated_agent_answer(self, result: dict, history_evidence=False) -> str:
         steps = result.get('intermediate_steps') or []
-        if not steps:
+        if not steps and not history_evidence:
             raise RuntimeError("本次未取得工具查询结果，无法给出可靠的数据回答，请重试")
         unresolved = []
         successful_tools = 0
@@ -3015,7 +3013,7 @@ class ToolAssistant:
                 if not self._tool_argument_error(observation):
                     raise RuntimeError("部分数据查询失败，无法给出完整分析，请稍后重试")
                 unresolved.append(self._tool_argument_failure(name, arguments, observation, batch))
-        if unresolved or not successful_tools:
+        if unresolved or not (successful_tools or history_evidence):
             raise RuntimeError("部分数据查询失败，无法给出完整分析，请稍后重试")
         answer = result.get('output')
         if not isinstance(answer, str) or not answer.strip():
@@ -3035,7 +3033,7 @@ class ToolAssistant:
             working_context.pop("focus_sources", None)
         resolved_slots = working_context["memory_slots"]
 
-        # 记忆服务已经负责上下文裁剪和追问槽位继承；不再从旧会话表拼接整段问题。
+        # 条件继承与历史回放独立，原问题仍用于界面历史。
         merged_query = working_context["effective_query"]
         ctx_msg = self._build_context_message(working_context)
         enriched_input = f"{ctx_msg}\n\n{merged_query}" if ctx_msg else merged_query
@@ -3073,10 +3071,15 @@ class ToolAssistant:
 
         usage = ContextUsage(inputs={enriched_input: {"system": ctx_msg or "", "question": merged_query}})
         memory_info = self.memory.context_info(memory_snapshot, include_recent=(
-            memory_snapshot.backend != "ablate" and working_context.get("resolved_context_mode") != "new"
+            memory_snapshot.backend != "ablate"
         ))
         token = context_usage.set(usage)
         try:
+            history_messages = self._memory_messages(memory_snapshot, working_context)
+            history_evidence = bool(working_context.get("project_id")) and any(
+                isinstance(message, ToolMessage) and self._tool_observation_succeeded(message)
+                for message in history_messages
+            )
             logger.info("AI query user_id=%s query_chars=%s", user_id, len(user_query))
             needs_tools = self._model_needs_tools(merged_query, working_context)
             if working_context.get('require_project') and not working_context.get('project_id') and needs_tools:
@@ -3093,7 +3096,7 @@ class ToolAssistant:
                 answer, polish_usage = self._polish_direct_answer(merged_query, direct["answer"])
                 stored_snapshot = self._store_turn_and_summarize(
                     user_id, user_query, answer, resolved_slots,
-                    metadata={"route": "rule", "rule_branch": direct.get("rule_branch"), "query_intent": working_context["query_spec"]},
+                    metadata={"route": "rule", "rule_branch": direct.get("rule_branch"), "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")},
                     expected_generation=memory_snapshot.generation,
                 )
                 base_usage = get_usage()
@@ -3112,8 +3115,9 @@ class ToolAssistant:
                 answer, chat_usage = self._direct_chat(merged_query, working_context)
                 stored_snapshot = self._store_turn_and_summarize(
                     user_id, user_query, answer, resolved_slots,
-                    metadata={"route": "llm", "route_stage": "llm_direct", "query_intent": working_context["query_spec"]},
+                    metadata={"route": "llm", "route_stage": "llm_direct", "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")},
                     expected_generation=memory_snapshot.generation,
+                    enriched_input=enriched_input, usage=usage.event(),
                 )
                 payload = _finish({
                     "success": True, "answer": answer, "type": "text",
@@ -3130,7 +3134,6 @@ class ToolAssistant:
                 project_id=working_context.get("project_id", ""),
                 model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
             )
-            history_messages = self._memory_messages(memory_snapshot, working_context)
             result = self._invoke_with_retry(
                 {"input": enriched_input, "chat_history": history_messages},
                 config=config,
@@ -3140,7 +3143,7 @@ class ToolAssistant:
             # 验证：需要查数据的问题必须有工具调用记录
             retry_count = 0
             steps = result.get("intermediate_steps", [])
-            if needs_tools and not steps:
+            if needs_tools and not steps and not history_evidence:
                 logger.warning(f"[{user_id}] 未调用工具，强制重试")
                 retry_input = (
                     f"{enriched_input}\n\n"
@@ -3154,13 +3157,16 @@ class ToolAssistant:
                     config=config,
                     executor=executor,
                 )
+                enriched_input = retry_input
 
-            answer = self._validated_agent_answer(result)
+            answer = self._validated_agent_answer(result, history_evidence)
             logger.info(f"[{user_id}] 回答成功，工具调用次数：{len(result.get('intermediate_steps', []))}")
             stored_snapshot = self._store_turn_and_summarize(
                 user_id, user_query, answer, resolved_slots,
-                metadata={"route": "llm", "route_stage": "agent", "tool_group": tool_group, "query_intent": working_context["query_spec"]},
+                metadata={"route": "llm", "route_stage": "agent", "tool_group": tool_group, "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")},
                 expected_generation=memory_snapshot.generation,
+                enriched_input=enriched_input, intermediate_steps=result.get("intermediate_steps", []),
+                usage=usage.event(),
             )
             payload = _finish({
                 "success": True, "answer": answer, "type": "text",
@@ -3203,11 +3209,16 @@ class ToolAssistant:
             ctx_msg = self._build_context_message(working_context)
             enriched_input = f"{ctx_msg}\n\n{user_query}" if ctx_msg else user_query
             history_messages = self._memory_messages(memory_snapshot, working_context)
+            history_evidence = bool(working_context.get("project_id")) and any(
+                isinstance(message, ToolMessage) and self._tool_observation_succeeded(message)
+                for message in history_messages
+            )
             usage.inputs[enriched_input] = {"system": ctx_msg or "", "question": user_query}
             memory_info = await sync_to_async(self.memory.context_info)(memory_snapshot, include_recent=(
-                memory_snapshot.backend != "ablate" and working_context.get("resolved_context_mode") != "new"
+                memory_snapshot.backend != "ablate"
             ))
             full_answer = []
+            final_result = None
             model_selects_tools = self._route_mode_for_context(working_context) == "agent"
             direct = await sync_to_async(self._direct_route)(user_query, working_context) if not model_selects_tools else None
 
@@ -3275,15 +3286,15 @@ class ToolAssistant:
                                 successful_tools += 1
                         elif kind == 'on_chain_end' and root_id is not None and event.get('run_id') == root_id:
                             final_result = event.get('data', {}).get('output')
-                        elif kind == "on_chat_model_stream" and successful_tools and not unresolved_tools:
+                        elif kind == "on_chat_model_stream" and (successful_tools or history_evidence) and not unresolved_tools:
                             chunk = event.get('data', {}).get("chunk")
                             text = getattr(chunk, 'content', None)
                             if isinstance(text, str) and text:
                                 full_answer.append(text)
                                 yield {"type": "chunk", "content": text}
-                if not isinstance(final_result, dict) or not successful_tools or unresolved_tools:
+                if not isinstance(final_result, dict) or not (successful_tools or history_evidence) or unresolved_tools:
                     raise RuntimeError("未取得完整的工具查询结果，请重试")
-                answer = self._validated_agent_answer(final_result)
+                answer = self._validated_agent_answer(final_result, history_evidence)
                 if answer != ''.join(full_answer):
                     # Model rounds before further tool calls are provisional;
                     # only the executor's final answer is persisted or restored.
@@ -3303,8 +3314,12 @@ class ToolAssistant:
                     "route": "rule" if direct else "llm",
                     "route_stage": "rule" if direct else ("llm_direct" if is_direct else "agent"),
                     "query_intent": working_context["query_spec"],
+                    "project_id": working_context.get("project_id", ""),
                 },
                 expected_generation=memory_snapshot.generation,
+                enriched_input=None if direct else enriched_input,
+                intermediate_steps=(final_result or {}).get("intermediate_steps", []),
+                usage=None if direct else usage.event(),
             )
             yield {"type": "memory", **self._memory_diagnostics(stored_snapshot, working_context)}
             yield {"type": "context", "context": self._context_info(usage, memory_info)}
@@ -3319,10 +3334,10 @@ class ToolAssistant:
             context_usage.reset(token)
             _trace_stop()
 
-    def get_history(self, user_id: str, *, before_sequence=None, limit=50) -> dict:
+    def get_history(self, user_id: str, *, before_sequence=None, limit=50, project_id=None) -> dict:
         """返回用户记忆中的对话消息与诊断信息，用于前端刷新后回填。只读，不触发模型调用。"""
         snapshot = self._load_memory(str(user_id))
-        context = self._baseline_context(snapshot)
+        context = self._baseline_context(snapshot, project_id)
         if snapshot.backend == 'ablate':
             return {"messages": [], "memory": self._memory_diagnostics(snapshot), "context": context,
                     "has_more": False, "next_before_sequence": None}

@@ -344,7 +344,8 @@ def conversation_history(request):
         except (TypeError, ValueError):
             return error('历史分页参数格式错误')
         memory_user_id = _memory_user_id(request.user, request.auth)
-        return success(assistant.get_history(str(memory_user_id), before_sequence=before, limit=limit))
+        return success(assistant.get_history(str(memory_user_id), before_sequence=before, limit=limit,
+                                             project_id=request.query_params.get('project_id')))
     except Exception as e:
         logger.error(f"获取对话历史失败：{e}")
         return error(f"获取历史失败：{str(e)}")

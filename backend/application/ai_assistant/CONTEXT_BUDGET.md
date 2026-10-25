@@ -1,4 +1,4 @@
-# 模型调用预算与可逆工具压缩
+# 全文上下文、事件与模型用量（阶段 A）
 
 `llm_provider.create_chat_model()` 返回 `GuardedChatModel`。所有通过该工厂创建的模型在每次同步、异步及流式调用前检查预算，覆盖 Agent 后续工具轮次、直聊、可选润色和摘要。规则直答仍不初始化模型。
 
@@ -10,23 +10,127 @@
 4. 输入限额 = 配置窗口 − 输出上限 − 安全余量。压缩后仍超限则抛出明确错误，要求缩小范围或拆分问题；不静默删除证据或更改查询范围。
 5. 将输出上限实际传给供应商。供应商明确返回 `finish_reason=length` 或 `done_reason=length` 时视为未完成；直聊/Agent 不保存该轮，也不发送成功 `done`。可选润色失败仍沿用原有的完整规则回答回退。
 
-原 `intermediate_steps`、工具事件、参数校验及纠错关联均保留原文。压缩不合并均值、不重算分母、不改变 TopK，不将未知值补为零；错误、异常 JSON、重复键及存在数值精度风险的输入保持原文。统计约束也写入共用 `ANSWER_POLICY`。不增加跨请求缓存或证据引用存储。
+原 `intermediate_steps`、工具事件、参数校验及纠错关联均保留原文。列式编码不合并均值、不重算分母、不改变 TopK，不将未知值补为零；错误、异常 JSON、重复键及存在数值精度风险的输入保持原文。统计约束继续使用共用 `ANSWER_POLICY`。阶段 A 不裁剪、不摘要早前工具结果，不创建检查点、不做超限恢复或手动压缩；80% 触发线只计算和输出，阶段 B 才执行压缩。
+
+## 事件存储与提交
+
+`ContextEventStore` 在 `LANGCHAIN_HISTORY_DB_URL` 指向的 legacy SQLite 中，通过 SQLAlchemy Core 的 `CREATE TABLE IF NOT EXISTS` 创建 `ai_context_events`，不涉及 Django migration。字段为：`schema_version INTEGER`、`event_id VARCHAR(32) PRIMARY KEY`、`scope_key VARCHAR(255)`、`generation INTEGER`、`turn_id VARCHAR(32)`、`seq INTEGER`、`kind VARCHAR(32)`、`project_id VARCHAR(255)`、`payload TEXT`、`created_at VARCHAR(40)`。版本当前为 1，时间采用 UTC ISO 8601；`(scope_key, generation, turn_id, seq)` 唯一，seq 从 0 按轮内顺序递增。
+
+- `message`：LangChain 协议消息，保存实际 `enriched_input`，共享的 assistant message_log 只保存一次，完整保留 tool_calls 的 ID、名称与参数原文，逐个保存列式编码前的 ToolMessage 字符串和 UTF-8 SHA-256，最后保存最终回答。工具正文不经过 JSON 解析再序列化。
+- `usage`：每次模型调用的 provider 用量，以及最后一次调用的 prompt 锚点、provider、请求模型名、实际模型名、system/schema 指纹、对应请求估算和整轮合计。未知用量为 null。
+- `turn_commit`：关联 `message_store` 的 human/ai 两行 ID。`prune`、`checkpoint` 仅预留名称，本阶段不写。
+
+事件只在成功回答后追加。事件、turn_commit、问答两行和槽位共同使用既有 SQLite 事务和 generation 检查；任一写入失败整轮回滚。失败、中断、输入超限、输出截断都不进入下轮历史。reset 在同一事务删除该 scope 的问答与事件、清空槽位并提升 generation，迟到回答不能恢复旧会话。规则直答仍只保存问答和槽位，不写事件；历史分页继续读取原 human/ai 格式，默认每页 50 条。
+
+## 重建顺序与项目边界
+
+请求顺序为固定 system 与工具 schema → 按问答行顺序重建的全部已提交历史 → 当前轮上下文、槽位和问题组成的 enriched_input → 本轮 scratchpad。历史轮次为 enriched_input → assistant tool_calls → 各 ToolMessage（可重复多个调用批次）→ 最终回答。当前工作状态只出现在当前轮输入，旧 enriched_input 不重新生成；无损列式编码对相同正文确定性执行，API 历史前缀在后续轮次保持一致。
+
+回放前检查调用 ID 唯一、结果配对及正文哈希。不完整轮次记录 warning 并整体退回该轮原问答。没有事件的旧行也只提供问答，不补造证据。不同项目轮次只带原问答，并在用户消息前加“（以下为项目 X 的对话，结果不能作为当前项目的证据）”；不带该轮工具结果。没有项目元数据的旧问答按原文保留，不能获得工具证据资格。
+
+auto/new/continue 只影响查询条件的继承，均保留完整历史；清空对话仍使用 reset，ablate 仍关闭记忆读写。`AI_MEMORY_RECENT_TURNS` 和 `AI_MEMORY_CONTEXT_TOKEN_BUDGET` 不再截断模型上下文。已清除或本轮未启用的条件由当前输入明确覆盖，不能从历史恢复。提示词及同步/流式校验允许直接使用同项目历史工具结果解释、比较和追问；新范围、新条件或最新状态仍要求重查，已有统计契约不变。
+
+`AI_MEMORY_BACKEND=django` 本阶段不读写协议事件，只重建全部完整问答，同样取消 3 轮/1200 token 和 new 清空历史限制。既有 Django 摘要维护保留，但摘要不替代或重复注入原文；双写仍只镜像问答和槽位，不迁移事件。
+
+## 真实计量与 ContextInfo v2
+
+API 客户端开启 `stream_usage=True`。同步和流式每次模型调用只记录一次；流式先合并全部分片，包括最后单独的 usage chunk。DeepSeek 的 `prompt_cache_hit_tokens` 单独保留，既不与 prompt_tokens 相加，也不从上下文占用扣除。
+
+turn 的 `used` 取本轮调用峰值：每次调用优先实际 prompt_tokens，缺失时用该次估算；`measurement` 指出峰值来源，`last_prompt_tokens_actual` 单独报告最后一次调用。`provider_usage` 累加本轮已取得的 prompt/completion/cache_hit 用量，没有 usage 为 null。`parts` 始终是估算分项，实际计量时不要求其合计等于 used；memory 包括整个历史协议。`history` 提供 turns、tool_results、legacy_qa_turns、other_project_turns 和 tokens。旧字段保留，`memory.recent_turns/recent_budget` 为 null；`thresholds.evidence_soft_tokens` 已删除。
+
+history 接口 baseline 为下一问起步预测：`最后一次实际 prompt_tokens + 当前待发请求估算 − 锚点请求估算`，将最后回答及新增输入相对原请求的增量计入。接口尚无下一问文本，按空问题及可知项目/槽位预测；完整问题发送后再计入 turn。可传 `project_id` 指定当前项目，未传时以最近已保存项目预测。schema、system、provider 或请求模型变化，或没有有效锚点时，退回完整估算；baseline 的 measurement 始终为 estimated，provider_usage 为 null。
+
+baseline 只使用配置和纯消息编码/估算，不初始化模型客户端、不调用有副作用的 prepare、不请求供应商。供应商别名仍按最近返回的实际模型名记录；同一别名在供应商侧重新映射，只有下一次响应才能得知。直接聊天和不同工具组的 system/schema 与默认全工具 baseline 不同时也会完整估算。
+
+`compaction` 在阶段 A 固定为 `{"state":"none","checkpoints":0,"pruned_results":0,"last_at":null,"last_before":null,"last_after":null}`。参考本机 dsh-compaction 的工具配对边界与 dsh-compaction-basic 的窗口比例计算；没有引入其压缩、裁剪或检查点执行逻辑。
 
 ## 配置
 
 环境变量优先，其次是 Django settings；配置在模型首次初始化时固定。调整后须按现有流程重新加载后端模型实例。
 
-- `AI_CONTEXT_WINDOW_TOKENS`：应用预算窗口。OpenAI/DeepSeek/兼容 API 默认 `16384`；Ollama 默认取 `OLLAMA_NUM_CTX`（缺省 `4096`），不得超过该值。
-- `AI_CONTEXT_OUTPUT_TOKENS`：预留并实际限制输出。API 默认 `2048`；Ollama 默认取 `OLLAMA_NUM_PREDICT`（缺省 `1024`）。显式配置优先。
-- `AI_CONTEXT_SAFETY_MARGIN_TOKENS`：API 默认 `1024`，Ollama 默认 `512`。
+- `AI_CONTEXT_WINDOW_TOKENS`：应用预算窗口。OpenAI/DeepSeek/兼容 API 默认 `256000`；Ollama 默认取 `OLLAMA_NUM_CTX`（缺省 `4096`），不得超过该值。
+- `AI_CONTEXT_OUTPUT_TOKENS`：预留并实际限制输出。API 默认 `8192`；Ollama 默认取 `OLLAMA_NUM_PREDICT`（缺省 `1024`）。显式配置优先。
+- `AI_CONTEXT_SAFETY_MARGIN_TOKENS`：API 默认 `4096`，Ollama 默认 `512`。
+- `AI_CONTEXT_TRIGGER_RATIO`：默认 `0.8`，触发线 `window × trigger_ratio = 204800`，仅供阶段 B 使用。
+- `AI_CONTEXT_RETAIN_RATIO`：默认 `0.16`，仅供阶段 B 使用；必须满足 `0 < retain_ratio < trigger_ratio < 1`。
 - `AI_CONTEXT_COMPACTION_MIN_TOKENS`：默认 `1000`，低于阈值的工具正文不改写。
 - `AI_CONTEXT_TOOL_PROTOCOL_TOKENS`：默认 `1024`，有非空tools/functions的请求额外计入一次协议预留，包括tool_choice=none；工具schema仍完整计数。用于供应商工具模板开销，与安全余量分开。
 
-五项必须为正整数，窗口必须大于输出与安全余量之和。配置不合法时模型初始化报错；纯规则路径仍可使用。API 默认输入预算为 `13312`。窗口是应用的运行限制，不代表自动探测到的供应商能力；部署时需核对具体模型的输入/输出限制。Ollama 默认 4096 的输入空间不足以容纳当前完整系统提示和 14 工具，应依据本机模型与资源配置更大的 `OLLAMA_NUM_CTX`，不能靠裁掉工具掩盖。
+五项 token 参数必须为正整数，窗口必须大于输出与安全余量之和。配置不合法时模型初始化报错；纯规则路径仍可使用。API 默认硬输入预算为 `243712`。删除原 24000 软上限、`AI_CONTEXT_EVIDENCE_SOFT_TOKENS` 和早前结果摘要逻辑。窗口是应用的运行限制，不代表自动探测到的供应商能力。Ollama 默认 4096 的输入空间不足以容纳当前完整系统提示和 21 工具，应依据本机模型与资源配置更大的 `OLLAMA_NUM_CTX`。
 
-计数沿用汉字 1.5、其他字符 0.25 的启发式，但按消息正文、工具参数、schema和其他选项分别计算，正文及参数不再经过整包JSON二次转义。忽略本地消息ID、usage、artifact等字段，已解析调用与additional_kwargs重复调用只计一份；未知消息类型保守回退。历史记忆估算不变，工具schema即使在tool_choice=none下也保留计数。它不是供应商tokenizer或计费值；安全余量不能保证绝不触及供应商限制。目前只支持文本内容，图片/音频请求明确拒绝。
+预检计数沿用汉字 1.5、其他字符 0.25 的启发式，按消息正文、工具参数、schema 和其他选项分别计算，正文及参数不经过整包 JSON 二次转义。忽略本地消息 ID、usage、artifact 等字段，原文 tool_calls 优先于解析后重序列化的参数，重复调用只计一份；未知消息类型保守回退。工具 schema 即使在 tool_choice=none 下也保留计数。预检估算不是供应商 tokenizer 或计费值；安全余量不能保证绝不触及供应商限制。目前只支持文本内容，图片/音频请求明确拒绝。
 
 OpenAI 使用本机 SDK 的 `max_completion_tokens` 约定；DeepSeek、`api` 和 `openai-compatible` 在最终 Chat Completions payload 中保留 `max_tokens`。Ollama 在构造时设置 `num_predict`，不传无效的顶层调用参数。调用者可降低 API 输出 cap；Ollama 通过配置修改。禁止动态 `model`、`num_ctx`、`extra_body`、嵌套 `options/model_kwargs` 覆盖预算。升级 LangChain/provider SDK 后须回归最终请求 payload 测试。
+
+## 阶段 A 验证与实际输出示例（2026-10-26）
+
+完整助手套件 416 项通过（原 406 项，移除 7 项软摘要测试，新增 17 项相关测试），使用隔离 SQLite、确定性假模型和真实 AgentExecutor。覆盖五轮协议原文回放、无关键词 auto 历史、槽位清除、跨项目、失败/中断/超限不提交、事务回滚、reset、旧行与 Django 问答兼容、usage 尾分片、缓存不重复计算、锚点失效以及 history 懒初始化。旧行为断言按全文历史修改，其余校验保留。
+
+下面是隔离测试实际返回的完整 ContextInfo v2；provider usage 来自确定性假模型，不是真实 DeepSeek 请求。本例两个模型调用，每次 prompt=15000、completion=24、cache_hit=12000。baseline 的估算为 5831，最后请求估算为 5649，因此预测为 15000 + 5831 − 5649 = 15182。
+
+turn：
+
+```json
+{
+  "kind": "turn",
+  "window": 256000,
+  "input_budget": 243712,
+  "output_reserve": 8192,
+  "safety_margin": 4096,
+  "used": 15000,
+  "parts": {"system":4326,"tools":1082,"memory":0,"question":11,"results":56,"other":174},
+  "results_raw": 36,
+  "compacted_results": 0,
+  "summarized_results": 0,
+  "paged_lists": 0,
+  "schema_version": 2,
+  "measurement": "actual",
+  "estimated": false,
+  "last_prompt_tokens_actual": 15000,
+  "trigger_tokens": 204800,
+  "hard_input_limit": 243712,
+  "provider_usage": {"prompt_tokens":30000,"completion_tokens":48,"cache_hit_tokens":24000},
+  "history": {"turns":0,"tool_results":0,"legacy_qa_turns":0,"other_project_turns":0,"tokens":0},
+  "compaction": {"state":"none","checkpoints":0,"pruned_results":0,"last_at":null,"last_before":null,"last_after":null},
+  "page_requests": 0,
+  "exceeded": false,
+  "model_calls": 2,
+  "thresholds": {"compaction_min_tokens":1000},
+  "memory": {"backend":"legacy","recent_turns":null,"recent_budget":null,"recent_tokens":0,"included_turns":0,"summary_tokens":0,"summary_trigger_tokens":null,"pending_tokens":null}
+}
+```
+
+baseline：
+
+```json
+{
+  "kind": "baseline",
+  "window": 256000,
+  "input_budget": 243712,
+  "output_reserve": 8192,
+  "safety_margin": 4096,
+  "used": 15182,
+  "parts": {"system":4309,"tools":1082,"memory":391,"question":0,"results":0,"other":49},
+  "results_raw": 36,
+  "compacted_results": 0,
+  "summarized_results": 0,
+  "paged_lists": 0,
+  "schema_version": 2,
+  "measurement": "estimated",
+  "estimated": true,
+  "last_prompt_tokens_actual": 15000,
+  "trigger_tokens": 204800,
+  "hard_input_limit": 243712,
+  "provider_usage": null,
+  "history": {"turns":1,"tool_results":2,"legacy_qa_turns":0,"other_project_turns":0,"tokens":391},
+  "compaction": {"state":"none","checkpoints":0,"pruned_results":0,"last_at":null,"last_before":null,"last_after":null},
+  "page_requests": 0,
+  "exceeded": false,
+  "model_calls": 0,
+  "thresholds": {"compaction_min_tokens":1000},
+  "memory": {"backend":"legacy","recent_turns":null,"recent_budget":null,"recent_tokens":32,"included_turns":1,"summary_tokens":0,"summary_trigger_tokens":null,"pending_tokens":null}
+}
+```
 
 ## 验证与边界（2026-10-12）
 
