@@ -85,7 +85,8 @@ export interface MemoryMetadata {
   contextMode?: Exclude<ContextMode, 'auto'>;
 }
 
-// 后端发来的上下文用量（估算值）：turn 是本轮最大一次模型调用，baseline 是下一问起步，rule 是直连查库
+// 后端发来的上下文用量：turn 是本轮最大一次模型调用，baseline 是下一问起步，rule 是直连查库。
+// schema_version 2 起 used 可能是接口实测值（measurement），分项 parts 始终是估算。
 export interface ContextInfo {
   kind: 'turn' | 'baseline' | 'rule';
   estimated: boolean;
@@ -103,16 +104,33 @@ export interface ContextInfo {
   // 长列表分页：该次调用里被切成一页的列表数、本轮模型自己要后面几页的次数（后端未提供时缺省）
   paged_lists?: number;
   page_requests?: number;
-  thresholds: { compaction_min_tokens: number; evidence_soft_tokens: number };
+  thresholds: { compaction_min_tokens: number; evidence_soft_tokens?: number };
   memory: {
     backend: string;
-    recent_turns: number;
-    recent_budget: number;
+    recent_turns: number | null;
+    recent_budget: number | null;
     recent_tokens: number;
     included_turns: number;
     summary_tokens: number;
     summary_trigger_tokens: number | null;
     pending_tokens: number | null;
+  };
+  schema_version?: number;
+  measurement?: 'actual' | 'estimated';
+  last_prompt_tokens_actual?: number | null;
+  trigger_tokens?: number;
+  hard_input_limit?: number;
+  provider_usage?: { prompt_tokens: number | null; completion_tokens: number | null; cache_hit_tokens: number | null } | null;
+  history?: { turns: number; tool_results: number; legacy_qa_turns: number; other_project_turns: number; tokens: number };
+  // auto 为 true 表示后端会在触发线自动压缩（B 阶段起提供）
+  compaction?: {
+    state: string;
+    auto?: boolean;
+    checkpoints: number;
+    pruned_results: number;
+    last_at: string | null;
+    last_before: number | null;
+    last_after: number | null;
   };
 }
 

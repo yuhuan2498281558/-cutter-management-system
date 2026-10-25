@@ -23,19 +23,20 @@
 
     <div class="context-panel">
       <div class="panel-head">
-        <span class="panel-title">上下文<small>（估算）</small></span>
+        <span class="panel-title">上下文<small>（{{ measured ? '实测' : '估算' }}）</small></span>
         <span v-if="usedPercent !== null" :class="['panel-percent', `level-${level}`]">{{ usedPercent }}%</span>
       </div>
 
       <template v-if="info && info.used !== null && info.parts">
         <div class="panel-total">
           <span>{{ info.kind === 'baseline' ? '下一问起步' : info.exceeded ? '上一问超出上限' : '本轮最大一次调用' }}</span>
-          <span class="mono">{{ formatTokens(info.used) }} / {{ formatTokens(info.input_budget) }}</span>
+          <span class="mono">{{ formatTokens(info.used) }} / {{ formatTokens(info.window) }}</span>
         </div>
         <div class="usage-bar" aria-hidden="true">
           <span v-for="row in barRows" :key="row.key" :class="`seg seg-${row.key}`" :style="{ width: `${row.share}%` }" />
+          <i v-if="triggerShare !== null" class="trigger-mark" :style="{ left: `${triggerShare}%` }" />
         </div>
-        <ul class="usage-rows">
+        <ul class="usage-rows" :title="measured ? '总数是接口实测值，分项按估算比例分摊' : ''">
           <li v-for="row in rows" :key="row.key">
             <span :class="`dot seg-${row.key}`" />
             <span class="row-label">{{ row.label }}</span>
@@ -43,22 +44,19 @@
             <span class="row-value mono">{{ formatTokens(row.value) }}</span>
           </li>
         </ul>
+        <p v-if="billingLine" class="panel-billing mono">{{ billingLine }}</p>
       </template>
       <p v-else-if="info?.kind === 'rule'" class="panel-empty">直连查库不调用模型，不占模型上下文。</p>
       <p v-else class="panel-empty">还没有用量数据，发一次模型分析后显示。</p>
 
       <div v-if="info" class="panel-rules">
-        <div class="rules-title">查询结果怎么进上下文</div>
+        <div class="rules-title">上下文怎么管理</div>
         <ul>
-          <li>汇总在全量数据上先算好，原样交给模型</li>
-          <li>长列表只给第 1 页并标明总数，模型需要时自己翻页或按相同条件重查原始数据{{ pagingNote }}</li>
+          <li>整段对话原文带入，包括之前同一项目的查询结果{{ historyNote }}</li>
+          <li>长列表只给第 1 页并标明总数，模型需要时自己翻页或按相同条件重查{{ pagingNote }}</li>
           <li>单个结果超过 {{ formatTokens(info.thresholds.compaction_min_tokens) }} 改成表格式编码，数据不删{{ compactNote }}</li>
-          <li v-if="softLimitReachable">早前结果合计超过 {{ formatTokens(info.thresholds.evidence_soft_tokens) }} 时换成摘要，写明怎么取回{{ summarizedNote }}</li>
-          <li>处理后仍超过 {{ formatTokens(info.input_budget) }}：本问不生成回答，请缩小环号范围或拆分问题</li>
-        </ul>
-        <div class="rules-title">对话记忆</div>
-        <ul>
-          <li>{{ memoryNote }}</li>
+          <li v-if="autoCompaction">用到 {{ formatTokens(trigger) }}（窗口的 {{ triggerPercent }}%）时，先精简早前的大查询结果，仍不够再把早前对话整理成摘要，最近的原文保留</li>
+          <li v-else>超过 {{ formatTokens(hardLimit) }} 本问不生成回答，请开新对话或缩小环号范围</li>
         </ul>
       </div>
     </div>
@@ -79,20 +77,31 @@ const formatTokens = (value: number | null | undefined) => {
   return value >= 1000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(Math.round(value));
 };
 
+const measured = computed(() => props.info?.measurement === 'actual');
+const hardLimit = computed(() => props.info?.hard_input_limit ?? props.info?.input_budget ?? 0);
+// 旧后端没有触发线：按输入上限算比例，70% / 90% 提醒
+const trigger = computed(() => props.info?.trigger_tokens ?? null);
+const autoCompaction = computed(() => props.info?.compaction?.auto === true);
+const triggerPercent = computed(() => (props.info && trigger.value ? Math.round((trigger.value / props.info.window) * 100) : null));
+
 const usedPercent = computed(() => {
   const info = props.info;
-  if (!info || info.used === null || !info.input_budget) return null;
-  return Math.round((info.used / info.input_budget) * 100);
+  if (!info || info.used === null) return null;
+  const total = trigger.value ? info.window : info.input_budget;
+  return total ? Math.round((info.used / total) * 100) : null;
 });
 
-// 70% 以下正常，70–90% 接近上限，90% 以上或超限为危险；直连查库和无数据为灰色
+// 正常 → 接近触发线（75%）→ 到达触发线或超限；直连查库和无数据为灰色
 const level = computed(() => {
-  if (props.info?.exceeded) return 'danger';
-  const percent = usedPercent.value;
-  if (percent === null) return 'idle';
-  if (percent >= 90) return 'danger';
-  if (percent >= 70) return 'warning';
-  return 'normal';
+  const info = props.info;
+  if (info?.exceeded) return 'danger';
+  if (!info || info.used === null || usedPercent.value === null) return 'idle';
+  if (trigger.value) {
+    if (info.used >= trigger.value) return 'danger';
+    return info.used >= trigger.value * 0.75 ? 'warning' : 'normal';
+  }
+  if (usedPercent.value >= 90) return 'danger';
+  return usedPercent.value >= 70 ? 'warning' : 'normal';
 });
 
 const dash = computed(() => (CIRCUMFERENCE * Math.min(100, usedPercent.value ?? 0)) / 100);
@@ -101,46 +110,66 @@ const tooltipLines = computed(() => {
   const info = props.info;
   if (!info) return ['上下文用量：还没有数据'];
   if (info.kind === 'rule' || info.used === null) return ['直连查库不调用模型，不占模型上下文'];
-  const head = info.kind === 'baseline' ? '下一问起步（估算）' : info.exceeded ? '上一问超出上限（估算）' : '本轮模型上下文（估算）';
-  const lines = [head, `已用 ${formatTokens(info.used)} / ${formatTokens(info.input_budget)} · ${usedPercent.value}%`];
-  if (level.value === 'warning') lines.push('接近上限，大范围查询可能超出');
-  if (level.value === 'danger') lines.push('建议缩小环号范围或拆分问题');
+  const source = measured.value ? '实测' : '估算';
+  const head = info.kind === 'baseline' ? `下一问起步（${source}）` : info.exceeded ? `上一问超出上限（${source}）` : `本轮模型上下文（${source}）`;
+  const lines = [head, `已用 ${formatTokens(info.used)} / ${formatTokens(trigger.value ? info.window : info.input_budget)} · ${usedPercent.value}%`];
+  if (level.value === 'warning') lines.push(autoCompaction.value ? `接近 ${formatTokens(trigger.value)}，到了会自动整理早前对话` : '接近上限，大范围查询可能超出');
+  if (level.value === 'danger') lines.push(autoCompaction.value && !info.exceeded ? '下一问会先整理早前对话' : '建议开新对话或缩小环号范围');
   return lines;
 });
 
 const PART_LABELS = {
   system: '系统提示',
   tools: '工具说明',
-  memory: '对话记忆',
+  memory: '对话历史',
   question: '本次问题',
-  results: '查询结果',
+  results: '本轮查询结果',
   other: '其他开销',
 } as const;
 
 const rows = computed(() => {
   const info = props.info;
   if (!info?.parts || info.used === null) return [];
-  const memory = info.memory;
+  const history = info.history;
   const notes: Partial<Record<keyof typeof PART_LABELS, string>> = {
-    memory: memory.summary_tokens ? `最近 ${memory.included_turns} 轮 + 摘要` : `最近 ${memory.included_turns} 轮`,
+    memory: history ? `${history.turns} 轮 · ${history.tool_results} 个查询结果` : `${info.memory.included_turns} 轮`,
     results: info.results_raw && info.results_raw > info.parts.results ? `原 ${formatTokens(info.results_raw)}` : '',
   };
+  // 实测时总数以接口为准，分项按估算比例分摊，各行相加仍等于已用
+  const estimated = Object.values(info.parts).reduce((sum, value) => sum + value, 0);
+  const scale = measured.value && estimated > 0 ? info.used / estimated : 1;
   const parts = (Object.keys(PART_LABELS) as (keyof typeof PART_LABELS)[])
-    .map((key) => ({ key, label: PART_LABELS[key], value: info.parts![key], note: notes[key] || '' }))
+    .map((key) => ({ key, label: PART_LABELS[key], value: Math.round(info.parts![key] * scale), note: notes[key] || '' }))
     .filter((row) => row.value > 0);
-  const remaining = Math.max(0, info.input_budget - info.used);
   return [
     ...parts,
-    { key: 'free', label: '剩余', value: remaining, note: '' },
+    { key: 'free', label: '剩余', value: Math.max(0, hardLimit.value - info.used), note: '' },
     { key: 'reserve', label: '预留回答 + 余量', value: info.output_reserve + info.safety_margin, note: '' },
   ];
 });
 
-// 进度条按整个窗口画：已用各项、剩余、预留
+// 进度条按整个窗口画：已用各项、剩余、预留；触发线另画一道竖线
 const barRows = computed(() => {
   const window = props.info?.window || 0;
   if (!window) return [];
   return rows.value.map((row) => ({ ...row, share: (row.value / window) * 100 }));
+});
+const triggerShare = computed(() => (props.info?.window && trigger.value ? (trigger.value / props.info.window) * 100 : null));
+
+const billingLine = computed(() => {
+  const usage = props.info?.kind === 'turn' ? props.info.provider_usage : null;
+  if (!usage || usage.prompt_tokens === null) return '';
+  const cache = usage.cache_hit_tokens ? `（缓存命中 ${formatTokens(usage.cache_hit_tokens)}）` : '';
+  return `本轮接口计费：输入 ${formatTokens(usage.prompt_tokens)}${cache} · 输出 ${formatTokens(usage.completion_tokens)}`;
+});
+
+const historyNote = computed(() => {
+  const history = props.info?.history;
+  if (!history) return '';
+  const parts = [];
+  if (history.other_project_turns) parts.push(`${history.other_project_turns} 轮属于其他项目`);
+  if (history.legacy_qa_turns) parts.push(`${history.legacy_qa_turns} 轮是改版前的记录`);
+  return parts.length ? `（${parts.join('、')}，只带问答文字）` : '';
 });
 
 const pagingNote = computed(() => {
@@ -152,17 +181,6 @@ const pagingNote = computed(() => {
   return parts.length ? `（本轮${parts.join('，')}）` : '';
 });
 const compactNote = computed(() => (props.info?.compacted_results ? `（本轮 ${props.info.compacted_results} 条）` : ''));
-const summarizedNote = computed(() => (props.info?.summarized_results ? `（本轮 ${props.info.summarized_results} 条）` : ''));
-// 软上限高于输入上限时，换摘要之前就已超限，这条规则实际不会发生，不显示
-const softLimitReachable = computed(() => Boolean(props.info && props.info.thresholds.evidence_soft_tokens < props.info.input_budget));
-
-const memoryNote = computed(() => {
-  const memory = props.info?.memory;
-  if (!memory) return '';
-  const recent = `只带最近 ${memory.recent_turns} 轮原文（不超过 ${formatTokens(memory.recent_budget)}）`;
-  if (memory.summary_trigger_tokens === null || memory.pending_tokens === null) return `${recent}，更早的对话不带入`;
-  return `${recent}；更早的对话累计 ${formatTokens(memory.pending_tokens)} / ${formatTokens(memory.summary_trigger_tokens)}，到了自动整理成摘要`;
-});
 </script>
 
 <style scoped lang="scss">
@@ -262,6 +280,7 @@ const memoryNote = computed(() => {
   }
 
   .usage-bar {
+    position: relative;
     display: flex;
     height: 6px;
     border-radius: 3px;
@@ -272,6 +291,20 @@ const memoryNote = computed(() => {
     .seg {
       height: 100%;
     }
+
+    .trigger-mark {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 2px;
+      margin-left: -1px;
+      background: var(--dv-warning);
+    }
+  }
+
+  .panel-billing {
+    margin: -4px 0 10px;
+    color: var(--dv-text-secondary);
   }
 
   .usage-rows {
