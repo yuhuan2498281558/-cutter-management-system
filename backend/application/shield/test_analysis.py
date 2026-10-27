@@ -631,10 +631,24 @@ class AnalysisContractTests(TestCase):
         user = Users.objects.create(username='analysis-brand-reader', dept=dept, is_superuser=False)
         user.role.add(role)
         menu = Menu.objects.create(name='厂家分析', web_path='/shield/analysis')
-        for action, data_range in (('brand_cost', 4), ('brand_price_trend', 3)):
-            button = MenuButton.objects.create(menu=menu, name=action, value=f'Old{action}', api=f'/api/shield/analysis/{action}/', method=0)
-            grant = RoleMenuButtonPermission.objects.create(role=role, menu_button=button, data_range=data_range)
-            grant.dept.add(dept)
+        cost = MenuButton.objects.create(menu=menu, name='brand_cost', value='OldBrandCost', api='/api/shield/analysis/brand_cost/', method=0)
+        trend = MenuButton.objects.create(menu=menu, name='brand_price_trend', value='OldPriceTrend', api='/api/shield/analysis/brand_price_trend/', method=0)
+        # 同一角色在对照表接口上两条授权（自定部门 + 仅本人），合并后只看本人；趋势接口上的"全部"不带过去
+        RoleMenuButtonPermission.objects.create(role=role, menu_button=cost, data_range=4).dept.add(dept)
+        RoleMenuButtonPermission.objects.create(role=role, menu_button=cost, data_range=0)
+        RoleMenuButtonPermission.objects.create(role=role, menu_button=trend, data_range=3)
+        # 大小写不同的旧按钮：数据权限过滤找不到它，旧接口上本来就取不到数据，不复制
+        shouting = Role.objects.create(name='大写路径', key='analysis-brand-upper')
+        upper = MenuButton.objects.create(menu=menu, name='upper', value='OldUpper', api='/API/SHIELD/ANALYSIS/BRAND_COST/', method=0)
+        RoleMenuButtonPermission.objects.create(role=shouting, menu_button=upper, data_range=3)
+        # 管理员已在另一个菜单给过新接口"仅本人"的角色不动
+        configured = Role.objects.create(name='已配置', key='analysis-brand-configured')
+        RoleMenuButtonPermission.objects.create(role=configured, menu_button=cost, data_range=3)
+        other_menu = Menu.objects.create(name='另一个菜单', web_path='/shield/other')
+        existing = MenuButton.objects.create(menu=other_menu, name='brand_comparison', value='ShieldAnalysisBrandComparison', api='/api/shield/analysis/brand_comparison/', method=0)
+        RoleMenuButtonPermission.objects.create(role=configured, menu_button=existing, data_range=0)
+        # 默认权限值和第一个备用值都被占用
+        MenuButton.objects.create(menu=other_menu, name='占用', value='ShieldAnalysisBrandComparison2', api='/api/other/', method=0)
         path = '/api/shield/analysis/brand_comparison/'
         view = AnalysisViewSet.as_view({'get': 'brand_comparison'})
 
@@ -647,11 +661,13 @@ class AnalysisContractTests(TestCase):
         migration.grant_brand_comparison(django_apps, None)
         migration.grant_brand_comparison(django_apps, None)
         self.assertEqual(code(), 2000)
-        [copy] = RoleMenuButtonPermission.objects.filter(menu_button__api=path)
-        # 取对照表接口 brand_cost 的授权：自定数据范围和部门原样带过去，只授给原来有权限的角色
-        self.assertEqual((copy.role_id, copy.data_range, list(copy.dept.values_list('id', flat=True))), (role.id, 4, [dept.id]))
-        self.assertEqual(MenuButton.objects.filter(api=path).count(), 1)
-        self.assertFalse(RoleMenuButtonPermission.objects.filter(role=other).exists())
+        [button] = MenuButton.objects.filter(menu=menu, api=path)
+        self.assertEqual(button.value, 'ShieldAnalysisBrandComparison3')
+        copies = RoleMenuButtonPermission.objects.filter(menu_button=button)
+        self.assertEqual(sorted((item.role_id, item.data_range, tuple(item.dept.values_list('id', flat=True))) for item in copies),
+                         [(role.id, 0, ()), (role.id, 4, (dept.id,))])
+        self.assertEqual(list(RoleMenuButtonPermission.objects.filter(role=configured, menu_button__api=path).values_list('data_range', flat=True)), [0])
+        self.assertFalse(RoleMenuButtonPermission.objects.filter(role__in=[other, shouting], menu_button__api=path).exists())
 
     def test_brand_query_cost_does_not_grow_per_supplier_and_pairs_once(self):
         from django.db import connection
