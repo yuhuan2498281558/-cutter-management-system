@@ -572,7 +572,7 @@ def _life_mileage(openings, params):
         wear = removed.blade_wear_amount
         rows.append({
             'detail_id': removed.id, 'installation_detail_id': installed.id,
-            'cutter_position_no': removed.cutter_position_no, 'tool_parent_type': removed.tool_parent_type,
+            'cutter_position_no': normalize_cutter_position_no(removed.cutter_position_no), 'tool_parent_type': removed.tool_parent_type,
             'radius_mm': radius, 'manufacturer': segment['manufacturer'],
             'installation_ring_no': segment['installation_ring_no'], 'ring_no': segment['ring_no'],
             'service_rings': segment['service_rings'], 'revolutions': round(total, 1), 'km': round(km, 2),
@@ -602,7 +602,7 @@ def _life_mileage(openings, params):
         totals[1] += estimated
         in_service.append({
             'in_service': True, 'detail_id': detail.id,
-            'cutter_position_no': detail.cutter_position_no, 'tool_parent_type': detail.tool_parent_type,
+            'cutter_position_no': normalize_cutter_position_no(detail.cutter_position_no), 'tool_parent_type': detail.tool_parent_type,
             'radius_mm': radius, 'manufacturer': detail.manufacturer or '',
             'installation_ring_no': detail.warehouse.ring_no, 'through_ring_no': str(through[key]),
             'revolutions': round(total, 1), 'km': round(kilometres(radius, total), 2),

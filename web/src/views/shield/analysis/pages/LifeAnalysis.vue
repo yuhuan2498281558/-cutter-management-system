@@ -46,10 +46,10 @@
       </template>
       <el-table :data="matrixRows" row-key="key" :tree-props="{ children: 'children' }" border size="small" :max-height="520"
         :row-class-name="({ row }) => row.key === selection?.key ? 'is-selected' : ''" class="life-table" @row-click="selectRow">
-        <el-table-column label="轨迹" min-width="190" fixed>
-          <template #default="{ row }"><span class="row-label">{{ row.label }}</span><span class="row-sub">{{ row.sub }}</span></template>
+        <el-table-column label="轨迹" min-width="150" fixed>
+          <template #default="{ row }"><span class="row-text"><span class="row-label">{{ row.label }}</span><span class="row-sub">{{ row.sub }}</span></span></template>
         </el-table-column>
-        <el-table-column v-for="column in matrixColumns" :key="column.key" :label="column.label" min-width="118" align="right">
+        <el-table-column v-for="column in matrixColumns" :key="column.key" :label="column.label" min-width="92" align="right">
           <template #default="{ row }">
             <span v-if="row.views[column.key]" class="metric-cell" :title="row.views[column.key].tip">
               <span class="cell-main">{{ row.views[column.key].main }}</span>
@@ -322,8 +322,9 @@ onBeforeUnmount(() => {
 .life-table :deep(.el-table__row) { cursor: pointer; }
 .life-table :deep(.el-table__row.is-selected > td.el-table__cell) { background: var(--dv-hover); }
 .life-detail-table :deep(.el-table__cell) { padding: 6px 0; }
+.row-text { display: inline-grid; vertical-align: top; line-height: 1.35; }
 .row-label { font-weight: 600; color: var(--dv-text); }
-.row-sub { margin-left: 8px; color: var(--dv-text-secondary); font-size: var(--el-font-size-extra-small); }
+.row-sub { color: var(--dv-text-secondary); font-size: var(--el-font-size-extra-small); }
 .metric-cell { display: inline-grid; justify-items: end; line-height: 1.35; }
 .cell-main { color: var(--dv-text); }
 .cell-sub { color: var(--dv-text-secondary); font-size: var(--el-font-size-extra-small); }

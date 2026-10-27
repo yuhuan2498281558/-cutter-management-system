@@ -99,6 +99,13 @@ class LifeMileageApiTests(TestCase):
         self.assertEqual(data['revolution_basis']['tunneling_ring_count'], 1)
         self.assertEqual(data['meta']['schema_version'], 2)
 
+    def test_lowercase_positions_are_reported_in_their_canonical_form(self):
+        self.pair(100, 200, position='y3')
+        data = self.query('life_mileage')
+        self.assertEqual([row['cutter_position_no'] for row in data['segments']], ['Y3'])
+        self.assertEqual([row['cutter_position_no'] for row in data['positions']], ['Y3'])
+        self.assertEqual(data['groups'][0]['bands'][0]['trajectories'][0]['positions'], ['Y3'])
+
     def test_mismatched_positions_and_unconfirmed_pairs_are_excluded_with_a_reason(self):
         self.pair(100, 200, position='1', removed_position='2')
         installed = self.detail(self.opening(100), '3', is_replaced=True, manufacturer='A')
