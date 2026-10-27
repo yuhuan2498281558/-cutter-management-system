@@ -169,6 +169,31 @@ class MemoryService:
                 connection.rollback()
                 raise
 
+    @contextmanager
+    def _legacy_read(self, session_id):
+        """只读快照，不占写锁，其他用户的保存和重置不用等这里读完。
+
+        作用域行还不存在时先短暂取写锁建好：全量 reset 只递增已有作用域，
+        没有这一行，读到旧快照后的迟到写入就不会被拒绝。
+        """
+        for _ in range(2):
+            with self._get_legacy_engine().connect() as connection:
+                if connection.dialect.name == "sqlite":
+                    connection.exec_driver_sql("BEGIN")
+                else:
+                    connection.begin()
+                try:
+                    scope = connection.execute(select(_legacy_scopes).where(
+                        _legacy_scopes.c.session_id == session_id,
+                    )).mappings().one_or_none()
+                    if scope is not None:
+                        yield connection, scope
+                        return
+                finally:
+                    connection.rollback()
+            with self._legacy_transaction() as connection:
+                self._legacy_scope(connection, session_id)
+
     @staticmethod
     def _legacy_scope(connection, session_id):
         values = {"session_id": session_id, "generation": 0, "slots": None}
@@ -234,21 +259,19 @@ class MemoryService:
     def load(self, scope_key: str, owner_id: int | None = None) -> MemorySnapshot:
         if self.backend == "legacy":
             session_id = self.legacy_session_id(scope_key)
-            with self._legacy_transaction() as connection:
-                scope = self._legacy_scope(connection, session_id)
-                filtered = _legacy_messages.c.session_id == session_id
-                count, last = connection.execute(select(
-                    func.count(), func.max(_legacy_messages.c.id),
-                ).where(filtered)).one()
-                rows = list(connection.execute(select(_legacy_messages).where(filtered)
+            with self._legacy_read(session_id) as (connection, scope):
+                rows = list(connection.execute(select(_legacy_messages)
+                    .where(_legacy_messages.c.session_id == session_id)
                     .order_by(_legacy_messages.c.id)).mappings())
-                messages, saved_slots = self._decode_legacy_rows(rows)
-                slots = json.loads(scope["slots"]) if scope["slots"] is not None else saved_slots or {}
-                return MemorySnapshot(
-                    scope_key=scope_key, slots=slots, messages=messages, backend="legacy",
-                    generation=scope["generation"], message_count=count, latest_sequence=last or 0,
-                    context_events=ContextEventStore.load(connection, scope_key, scope["generation"]),
-                )
+                events = ContextEventStore.load(connection, scope_key, scope["generation"])
+            # 解码放在事务之外，长历史也不拖住数据库
+            messages, saved_slots = self._decode_legacy_rows(rows)
+            slots = json.loads(scope["slots"]) if scope["slots"] is not None else saved_slots or {}
+            return MemorySnapshot(
+                scope_key=scope_key, slots=slots, messages=messages, backend="legacy",
+                generation=scope["generation"], message_count=len(rows),
+                latest_sequence=rows[-1]["id"] if rows else 0, context_events=events,
+            )
 
         with transaction.atomic():
             scope = self._get_scope(scope_key, owner_id=owner_id)
@@ -272,8 +295,7 @@ class MemoryService:
             raise ValueError("before_sequence must be positive")
         if self.backend == "legacy":
             session_id = self.legacy_session_id(scope_key)
-            with self._legacy_transaction() as connection:
-                scope = self._legacy_scope(connection, session_id)
+            with self._legacy_read(session_id) as (connection, scope):
                 filtered = _legacy_messages.c.session_id == session_id
                 count = connection.scalar(select(func.count()).select_from(_legacy_messages).where(filtered))
                 query = select(_legacy_messages).where(filtered)
@@ -281,10 +303,10 @@ class MemoryService:
                     query = query.where(_legacy_messages.c.id < int(before_sequence))
                 rows = list(connection.execute(query.order_by(_legacy_messages.c.id.desc())
                                               .limit(limit + 1)).mappings())
-                selected = rows[:limit]
-                messages, _ = self._decode_legacy_rows(reversed(selected))
-                generation = scope["generation"]
-                cursor = selected[-1]["id"] if selected else None
+            selected = rows[:limit]
+            messages, _ = self._decode_legacy_rows(reversed(selected))
+            generation = scope["generation"]
+            cursor = selected[-1]["id"] if selected else None
         else:
             with transaction.atomic():
                 scope = self._get_scope(scope_key, owner_id=owner_id)

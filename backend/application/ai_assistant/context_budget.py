@@ -25,13 +25,20 @@ from .token_estimation import estimate_tokens
 
 
 class ContextBudgetExceeded(ValueError):
+    message = (
+        "本轮上下文超过配置预算（估算 {estimated}，输入预算 {budget}）。"
+        "请缩小查询范围、增大统计分段或拆分问题后重试；本次未生成完整回答。"
+    )
+
     def __init__(self, estimated_tokens, input_budget):
         self.estimated_tokens = estimated_tokens
         self.input_budget = input_budget
-        super().__init__(
-            f"本轮上下文超过配置预算（估算 {estimated_tokens}，输入预算 {input_budget}）。"
-            "请缩小查询范围、增大统计分段或拆分问题后重试；本次未生成完整回答。"
-        )
+        super().__init__(self.message.format(estimated=estimated_tokens, budget=input_budget))
+
+
+class HistoryBudgetExceeded(ContextBudgetExceeded):
+    """不算本轮查询结果就已超限：缩小本轮范围没用，只能重置对话。"""
+    message = "对话历史已超过模型上下文上限，本次未生成回答。请点「重置对话」清空历史后再问。"
 
 
 class OutputLimitExceeded(ValueError):
@@ -334,7 +341,11 @@ def prepare_messages(value, policy, request_options=None):
     if usage := context_usage.get():
         usage.record(prepared, policy, request_options, count, raw, compacted)
     if count > policy.input_budget:
-        raise ContextBudgetExceeded(count, policy.input_budget)
+        parts = dict.fromkeys(("system", "tools", "memory", "question", "results", "other"), 0)
+        estimate_request_tokens(prepared, request_options, policy.tool_protocol_tokens, parts)
+        history_full = parts["memory"] and count - parts["results"] > policy.input_budget
+        error = HistoryBudgetExceeded if history_full else ContextBudgetExceeded
+        raise error(count, policy.input_budget)
     for message in prepared:
         message.response_metadata.pop(_PARTS_KEY, None)
     return prepared

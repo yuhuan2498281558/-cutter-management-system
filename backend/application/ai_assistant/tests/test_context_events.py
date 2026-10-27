@@ -2,6 +2,7 @@ import copy
 from hashlib import sha256
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -31,6 +32,7 @@ class ConversationModel(RecordingToolModel):
     mode: str = "tools"
     with_usage: bool = True
     output_limited: bool = False
+    arguments: str = ARGUMENTS
 
     def _response(self, messages):
         self.seen.append(copy.deepcopy(messages))
@@ -39,7 +41,7 @@ class ConversationModel(RecordingToolModel):
             raise RuntimeError("offline model failure")
         if self.mode == "tools" and not any(isinstance(message, ToolMessage) for message in current):
             calls = [{"id": f"call-{len(self.seen)}-{i}", "type": "function", "function": {
-                "name": "tool_query_tool_change_trend", "arguments": ARGUMENTS,
+                "name": "tool_query_tool_change_trend", "arguments": self.arguments,
             }} for i in range(2)]
             response = AIMessage(content="", additional_kwargs={"tool_calls": calls})
         else:
@@ -78,7 +80,8 @@ class ContextEventTests(SimpleTestCase):
         self.model = ConversationModel()
         self.guard = GuardedChatModel(self.model, ContextBudgetPolicy(), provider="deepseek", model_name="offline-requested")
         self.tool = StructuredTool.from_function(
-            lambda label="", page=1: RAW, name="tool_query_tool_change_trend", description="Read exact statistics.",
+            lambda label="", page=1, ring_range=None, tool_type="": RAW,
+            name="tool_query_tool_change_trend", description="Read exact statistics.",
         )
         self.options = {"user_id": "event-test", "project_id": "P1", "route_mode": "agent"}
         prompt = ChatPromptTemplate.from_messages([
@@ -342,3 +345,66 @@ class ContextEventTests(SimpleTestCase):
                 self.assertEqual(usage.event()["model"], "offline-actual")
             finally:
                 context_usage.reset(token)
+
+    def queried(self, query, **arguments):
+        self.model.mode = "tools"
+        self.model.arguments = json.dumps(arguments)
+        self.ask(query)
+        self.model.mode = "answer"
+
+    def test_history_answers_only_what_an_earlier_query_covers(self):
+        self.queried("查询100到200环换刀情况", ring_range=[100, 200])
+        for query in ("查询120到150环换刀情况", "为什么换得这么多", "查询100到200环刮刀换刀情况"):
+            result = self.assistant.chat(query, self.options)
+            self.assertTrue(result["success"], (query, result))
+            self.assertEqual(result["context"]["model_calls"], 1, query)
+        turns = self.snapshot().message_count
+        for query in ("查询300到400环换刀情况", "全部环段的换刀情况", "最新的换刀情况"):
+            result = self.assistant.chat(query, self.options)
+            self.assertFalse(result["success"], query)
+        self.assertEqual(self.snapshot().message_count, turns)
+
+    def test_history_with_another_tool_type_does_not_cover(self):
+        self.queried("查询100到200环滚刀换刀情况", ring_range=[100, 200], tool_type="DISC")
+        self.assertFalse(self.assistant.chat("查询100到200环刮刀换刀情况", self.options)["success"])
+        self.assertTrue(self.assistant.chat("查询100到200环滚刀换刀情况", self.options)["success"])
+
+    async def test_stream_requires_a_query_for_a_new_range(self):
+        self.queried("查询100到200环换刀情况", ring_range=[100, 200])
+        events = [event async for event in self.assistant.chat_stream("查询300到400环换刀情况", self.options)]
+        self.assertEqual(events[-1]["type"], "error", events)
+        self.assertFalse(any(event["type"] == "chunk" for event in events))
+        events = [event async for event in self.assistant.chat_stream("查询120到150环换刀情况", self.options)]
+        self.assertEqual(events[-1]["type"], "done", events)
+
+    def test_load_reads_without_holding_the_write_lock(self):
+        self.ask()
+        database = self.memory._get_legacy_engine().url.database
+        original = ContextEventStore.load
+        acquired = []
+
+        def load_while_another_writer_starts(connection, scope_key, generation):
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                acquired.append(True)
+                other.rollback()
+            finally:
+                other.close()
+            return original(connection, scope_key, generation)
+
+        with patch.object(ContextEventStore, "load", side_effect=load_while_another_writer_starts):
+            snapshot = self.snapshot()
+        self.assertEqual(acquired, [True])
+        self.assertEqual(snapshot.message_count, 2)
+
+    def test_full_history_asks_for_a_reset_instead_of_a_smaller_range(self):
+        self.memory.append_turn(self.memory.scope_key("event-test"), "旧问题", "长" * 300000)
+        self.model.mode = "answer"
+        for context_mode in ("auto", "new"):
+            result = self.assistant.chat("你好", {**self.options, "context_mode": context_mode})
+            self.assertFalse(result["success"])
+            self.assertIn("对话历史已超过模型上下文上限，本次未生成回答。请点「重置对话」清空历史后再问。", result["error"])
+        self.assistant.reset_memory("event-test")
+        self.assistant._model_needs_tools = Mock(return_value=False)
+        self.assertTrue(self.assistant.chat("你好", self.options)["success"])

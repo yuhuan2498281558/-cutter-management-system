@@ -798,6 +798,30 @@ for _group_tools in TOOL_GROUPS.values():
     _group_tools.append(tool_query_data_catalog)
 del _group_tools
 
+# 历史查询结果能否直接回答本轮：问最新状态的必须重新查库；没写范围的追问可以用历史
+_LATEST_STATE = re.compile(r"最新|实时|现在|目前|今天|截至|进度")
+_REFERS_TO_ANSWER = re.compile(
+    r"这些|上面|上述|刚才|其中|以上|那个|这个(?!项目|工程)|第[一二三四五六七八九十\d]+(?:行|条|项|个)"
+)
+_SCOPE_KEYS = ("ring_range", "tool_type", "cutter_position_no")
+
+
+def _call_covers(args: dict, scope: dict) -> bool:
+    """一次历史查询覆盖本轮范围：它带的每个筛选条件，本轮都有且落在其内。"""
+    ring = args.get("ring_range")
+    if ring:
+        try:
+            low, high = sorted(int(value) for value in ring)
+            start, end = sorted(int(value) for value in scope.get("ring_range") or ())
+        except (TypeError, ValueError):
+            return False
+        if start < low or end > high:
+            return False
+    for key in ("tool_type", "cutter_position_no"):
+        if args.get(key) and str(args[key]).upper() != str(scope.get(key) or "").upper():
+            return False
+    return True
+
 class ToolAssistant:
     """刀具管理智能助手"""
 
@@ -2921,6 +2945,34 @@ class ToolAssistant:
                 return False
         return isinstance(observation, dict) and bool(observation) and not observation.get('error')
 
+    def _history_evidence_covers(self, history_messages, working_context, query) -> bool:
+        """同项目历史里有一次成功查询覆盖本轮的类型和范围时，本轮才可以不重新查库。"""
+        if not working_context.get("project_id") or _LATEST_STATE.search(query):
+            return False
+        succeeded = {
+            message.tool_call_id for message in history_messages
+            if isinstance(message, ToolMessage) and self._tool_observation_succeeded(message)
+        }
+        calls = [
+            call for message in history_messages if isinstance(message, AIMessage)
+            for call in message.tool_calls
+            if call.get("id") in succeeded and call.get("name") != tool_query_data_catalog.name
+        ]
+        if not calls:
+            return False
+        # 按意图筛过的槽位可能丢掉问题里写明的条件，两边合起来才是本轮范围
+        merged = {**self._extract_explicit_memory_slots(query), **(working_context.get("memory_slots") or {})}
+        scope = {key: merged[key] for key in _SCOPE_KEYS if merged.get(key)}
+        # 没写范围、针对上一个回答的追问（为什么、解释、这些刀位里……）直接用历史
+        if not scope and (not working_context.get("query_spec") or _REFERS_TO_ANSWER.search(query)):
+            return True
+        group = self._tool_group_for_query(query)
+        names = None if group == "all" else {item.name for item in TOOL_GROUPS[group]}
+        return any(
+            (names is None or call["name"] in names) and _call_covers(call.get("args") or {}, scope)
+            for call in calls
+        )
+
     @staticmethod
     def _tool_call_batch(action):
         """Calls from the same model message cannot repair each other's errors."""
@@ -3076,10 +3128,7 @@ class ToolAssistant:
         token = context_usage.set(usage)
         try:
             history_messages = self._memory_messages(memory_snapshot, working_context)
-            history_evidence = bool(working_context.get("project_id")) and any(
-                isinstance(message, ToolMessage) and self._tool_observation_succeeded(message)
-                for message in history_messages
-            )
+            history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
             logger.info("AI query user_id=%s query_chars=%s", user_id, len(user_query))
             needs_tools = self._model_needs_tools(merged_query, working_context)
             if working_context.get('require_project') and not working_context.get('project_id') and needs_tools:
@@ -3209,10 +3258,7 @@ class ToolAssistant:
             ctx_msg = self._build_context_message(working_context)
             enriched_input = f"{ctx_msg}\n\n{user_query}" if ctx_msg else user_query
             history_messages = self._memory_messages(memory_snapshot, working_context)
-            history_evidence = bool(working_context.get("project_id")) and any(
-                isinstance(message, ToolMessage) and self._tool_observation_succeeded(message)
-                for message in history_messages
-            )
+            history_evidence = self._history_evidence_covers(history_messages, working_context, original_query)
             usage.inputs[enriched_input] = {"system": ctx_msg or "", "question": user_query}
             memory_info = await sync_to_async(self.memory.context_info)(memory_snapshot, include_recent=(
                 memory_snapshot.backend != "ablate"
