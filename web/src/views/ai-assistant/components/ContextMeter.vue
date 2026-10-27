@@ -56,7 +56,7 @@
           <li>长列表只给第 1 页并标明总数，模型需要时自己翻页或按相同条件重查{{ pagingNote }}</li>
           <li>单个结果超过 {{ formatTokens(info.thresholds.compaction_min_tokens) }} 改成表格式编码，数据不删{{ compactNote }}</li>
           <li v-if="autoCompaction">用到 {{ formatTokens(trigger) }}（窗口的 {{ triggerPercent }}%）时，先精简早前的大查询结果，仍不够再把早前对话整理成摘要，最近的原文保留</li>
-          <li v-else>超过 {{ formatTokens(hardLimit) }} 本问不生成回答，请开新对话或缩小环号范围</li>
+          <li v-else>超过 {{ formatTokens(hardLimit) }} 本问不生成回答，请缩小环号范围或重置对话</li>
         </ul>
       </div>
     </div>
@@ -114,7 +114,7 @@ const tooltipLines = computed(() => {
   const head = info.kind === 'baseline' ? `下一问起步（${source}）` : info.exceeded ? `上一问超出上限（${source}）` : `本轮模型上下文（${source}）`;
   const lines = [head, `已用 ${formatTokens(info.used)} / ${formatTokens(trigger.value ? info.window : info.input_budget)} · ${usedPercent.value}%`];
   if (level.value === 'warning') lines.push(autoCompaction.value ? `接近 ${formatTokens(trigger.value)}，到了会自动整理早前对话` : '接近上限，大范围查询可能超出');
-  if (level.value === 'danger') lines.push(autoCompaction.value && !info.exceeded ? '下一问会先整理早前对话' : '建议开新对话或缩小环号范围');
+  if (level.value === 'danger') lines.push(autoCompaction.value && !info.exceeded ? '下一问会先整理早前对话' : '建议缩小环号范围或重置对话');
   return lines;
 });
 
