@@ -72,6 +72,8 @@ export const buildExportMeta = (info: any, stratumText: string): ExportMetaItem[
     { label: '检查刀具数量（把）', value: formatEmpty(info.checked_tool_count) },
     { label: '更换刀具数量（把）', value: formatEmpty(info.replaced_tool_count) },
     { label: '本次使用距离（m）', value: formatEmpty(info.usage_distance) },
+    { label: '刀盘右转累计读数（圈）', value: formatEmpty(info.right_revolution_reading) },
+    { label: '刀盘左转累计读数（圈）', value: formatEmpty(info.left_revolution_reading) },
     { label: '两次开仓间地层信息', value: stratumText, span: 3 },
     { label: '开仓位置地层信息', value: formatEmpty(info.geological_conditions), span: 3 },
   ];

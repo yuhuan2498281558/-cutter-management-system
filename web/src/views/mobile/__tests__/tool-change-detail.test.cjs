@@ -36,9 +36,9 @@ function mount(t, options = {}) {
     details = [detail(1, '1'), detail(2, '2'), detail(3, '3')],
     task = { id: 7, status: 'IN_PROGRESS' },
     fieldOptions = {},
-    getTask, save, submit, confirm,
+    getTask, save, submit, confirm, saveReadings,
   } = options;
-  const hooks = {}, toasts = [], confirms = [], pushes = [], events = [], gets = [], saves = [], submits = [];
+  const hooks = {}, toasts = [], confirms = [], pushes = [], events = [], gets = [], saves = [], submits = [], readingSaves = [];
   let state;
   const api = {
     getMobileTask: async id => {
@@ -55,6 +55,12 @@ function mount(t, options = {}) {
     submitMobileTask: async taskId => {
       submits.push(taskId); events.push('submit');
       return submit ? submit(taskId) : { code: 2000, msg: 'success' };
+    },
+    saveMobileReadings: async (taskId, data) => {
+      readingSaves.push({ taskId, data }); events.push('readings');
+      if (saveReadings) return saveReadings(data);
+      const toNumber = value => (value === '' ? null : Number(value));
+      return { data: { ...plain(state.task.value), opening_info: { right_revolution_reading: toNumber(data.right_revolution_reading), left_revolution_reading: toNumber(data.left_revolution_reading) } } };
     },
   };
   const context = {
@@ -77,8 +83,39 @@ function mount(t, options = {}) {
   const scope = vue.effectScope();
   state = scope.run(() => context.exports.default.setup({}, { expose() {} }));
   t.after(() => { hooks.onBeforeUnmount?.(); scope.stop(); });
-  return { s: state, hooks, toasts, confirms, pushes, events, gets, saves, submits };
+  return { s: state, hooks, toasts, confirms, pushes, events, gets, saves, submits, readingSaves };
 }
+
+test('cutterhead readings open with the saved values, save trimmed text and show the result in the summary', async t => {
+  const task = { id: 7, status: 'IN_PROGRESS', opening_info: { right_revolution_reading: 469, left_revolution_reading: null } };
+  const { s, toasts, readingSaves } = mount(t, { task });
+  await s.loadTask();
+  assert.equal(s.readingsText.value, '右转 469 · 左转 —');
+  s.openReadings();
+  assert.deepEqual(plain(s.readings), { right: '469', left: '' });
+  s.readings.left = ' 420 ';
+  await s.saveReadings();
+  assert.deepEqual(plain(readingSaves), [{ taskId: '7', data: { right_revolution_reading: '469', left_revolution_reading: '420' } }]);
+  assert.equal(s.readingsText.value, '右转 469 · 左转 420');
+  assert.equal(s.readingsVisible.value, false);
+  assert.deepEqual(toasts, ['读数已保存']);
+});
+
+test('a rejected reading keeps the editor open with the server message; finished tasks cannot save', async t => {
+  const { s, toasts, readingSaves } = mount(t, { saveReadings: async () => { throw { response: { data: { msg: '刀盘累计读数不能为负数' } } }; } });
+  await s.loadTask();
+  assert.equal(s.readingsText.value, '未录入');
+  s.openReadings(); s.readings.right = '-1';
+  await s.saveReadings();
+  assert.equal(s.readingsVisible.value, true);
+  assert.equal(s.savingReadings.value, false);
+  assert.deepEqual(toasts, ['刀盘累计读数不能为负数']);
+  const done = mount(t, { task: { id: 7, status: 'COMPLETED' } });
+  await done.s.loadTask();
+  await done.s.saveReadings();
+  assert.equal(done.readingSaves.length, 0);
+  assert.equal(readingSaves.length, 1);
+});
 
 test('positions sort numbers (with A/B suffix), then Y, then S (L, R, bare), then anything else', async t => {
   const order = ['1', ' 5 ', '10', '80', '80A', '80B', 'Y1', 'Y3', 's1r', 'S2L', 'S2R', 'S4', 'S10L', 'G3R', 'X9'];

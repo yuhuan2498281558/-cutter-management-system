@@ -40,6 +40,8 @@
           <div><dt>检查刀具数量（把）</dt><dd>{{ warehouseInfo.checked_tool_count ?? '-' }}</dd></div>
           <div><dt>更换刀具数量（把）</dt><dd>{{ warehouseInfo.replaced_tool_count ?? '-' }}</dd></div>
           <div><dt>本次使用距离（m）</dt><dd>{{ warehouseInfo.usage_distance ?? '-' }}</dd></div>
+          <div><dt>刀盘右转累计读数（圈）</dt><dd>{{ warehouseInfo.right_revolution_reading ?? '-' }}</dd></div>
+          <div><dt>刀盘左转累计读数（圈）</dt><dd>{{ warehouseInfo.left_revolution_reading ?? '-' }}</dd></div>
         </dl>
         <dl class="warehouse-geology">
           <div><dt>两次开仓间地层信息</dt><dd>{{ stratumInfoDisplay }}</dd></div>

@@ -42,8 +42,8 @@ from .analysis_metrics import (
 from .analysis_strata import opening_strata
 from .cutter_position_scope import normalize_cutter_position_no
 from .mileage import (
-    BASIS as MILEAGE_BASIS, REFERENCE_PENETRATION_MM, REFERENCE_PENETRATION_RANGE_MM, RING_WIDTH_MM,
-    RingRevolutions, group_by_trajectory, kilometres, position_coverage,
+    BASIS as MILEAGE_BASIS, REFERENCE_PENETRATION_MM, REFERENCE_PENETRATION_RANGE_MM, REFERENCE_REVOLUTIONS,
+    REVOLUTION_SOURCES, RING_WIDTH_MM, RingRevolutions, group_by_trajectory, kilometres, position_coverage,
 )
 from .trajectory import get_tool_trajectory
 
@@ -545,11 +545,32 @@ def _life_mileage(openings, params):
     for opening in openings.values('project_id', 'shield_model_id', 'ring_no'):
         key = (opening['project_id'], opening['shield_model_id'])
         through[key] = max(through.get(key, 0), int(opening['ring_no']))
-    revolutions = RingRevolutions(scoped_queryset(ShieldTunnelingData.objects.filter(
-        project_id__in={key[0] for key in through}, shield_machine_id__in={key[1] for key in through},
-    )).values_list('project_id', 'shield_machine_id', 'ring_no', 'penetration', 'point_count'))
+    projects, machines = {key[0] for key in through}, {key[1] for key in through}
+    revolutions = RingRevolutions(
+        scoped_queryset(ShieldTunnelingData.objects.filter(project_id__in=projects, shield_machine_id__in=machines))
+        .values_list('project_id', 'shield_machine_id', 'ring_no', 'counter_revolutions', 'integrated_revolutions'),
+        # 读数是现场抄表的事实，不论开仓汇总是否确认都用
+        scoped_queryset(WarehouseOpeningBasicInfo.objects.filter(
+            project_id__in=projects, shield_model_id__in=machines, ring_no__regex=_RING_NUMERIC_REGEX,
+            right_revolution_reading__isnull=False, left_revolution_reading__isnull=False,
+        )).values_list('project_id', 'shield_model_id', 'ring_no', 'open_time', 'right_revolution_reading', 'left_revolution_reading'),
+    )
 
-    rows, excluded_rows, totals = [], [], [0.0, 0.0]
+    rows, excluded_rows = [], []
+    source_totals = dict.fromkeys(REVOLUTION_SOURCES, 0.0)
+
+    def revolution_fields(machine_key, start, end):
+        """区间总圈数，以及明细行里的圈数、各来源圈数、估算占比和实测与积分推算的对照。"""
+        parts, check = revolutions.span(*machine_key, start, end)
+        total = sum(parts.values())
+        for source, value in parts.items():
+            source_totals[source] += value
+        return total, {
+            'revolutions': round(total, 1),
+            'revolution_sources': {source: round(value, 1) for source, value in parts.items()},
+            'estimated_share': round(parts['reference'] / total, 3) if total else None,
+            'integrated_check': {'measured': round(check[0], 1), 'integrated': round(check[1], 1)} if check else None,
+        }
 
     def exclude(segment, reason):
         excluded_rows.append({
@@ -575,10 +596,8 @@ def _life_mileage(openings, params):
         if radius is None:
             exclude(segment, '刀位轨迹半径未核实')
             continue
-        total, estimated = revolutions.span(removed.warehouse.project_id, removed.warehouse.shield_model_id,
-                                            int(segment['installation_ring_no']), int(segment['ring_no']))
-        totals[0] += total
-        totals[1] += estimated
+        total, fields = revolution_fields((removed.warehouse.project_id, removed.warehouse.shield_model_id),
+                                          int(segment['installation_ring_no']), int(segment['ring_no']))
         km = kilometres(radius, total)
         wear = removed.blade_wear_amount
         rows.append({
@@ -586,8 +605,7 @@ def _life_mileage(openings, params):
             'cutter_position_no': normalize_cutter_position_no(removed.cutter_position_no), 'tool_parent_type': removed.tool_parent_type,
             'radius_mm': radius, 'manufacturer': segment['manufacturer'],
             'installation_ring_no': segment['installation_ring_no'], 'ring_no': segment['ring_no'],
-            'service_rings': segment['service_rings'], 'revolutions': round(total, 1), 'km': round(km, 2),
-            'estimated_share': round(estimated / total, 3) if total else None,
+            'service_rings': segment['service_rings'], **fields, 'km': round(km, 2),
             'wear_state': segment['wear_state'], 'blade_wear_amount': wear,
             'wear_per_100km': round(wear / km * 100, 3) if wear is not None and km > 0 else None,
             'price': float(installed.price) if installed.id in modern and installed.price is not None else None,
@@ -608,18 +626,16 @@ def _life_mileage(openings, params):
         radius = get_tool_trajectory(detail.cutter_position_no, detail.tool_parent_type)['radius_mm']
         if radius is None or (selected and (detail.manufacturer or '') not in selected):
             continue
-        total, estimated = revolutions.span(*key, int(detail.warehouse.ring_no), through[key])
-        totals[0] += total
-        totals[1] += estimated
+        total, fields = revolution_fields(key, int(detail.warehouse.ring_no), through[key])
         in_service.append({
             'in_service': True, 'detail_id': detail.id,
             'cutter_position_no': normalize_cutter_position_no(detail.cutter_position_no), 'tool_parent_type': detail.tool_parent_type,
             'radius_mm': radius, 'manufacturer': detail.manufacturer or '',
             'installation_ring_no': detail.warehouse.ring_no, 'through_ring_no': str(through[key]),
-            'revolutions': round(total, 1), 'km': round(kilometres(radius, total), 2),
-            'estimated_share': round(estimated / total, 3) if total else None,
+            **fields, 'km': round(kilometres(radius, total), 2),
         })
     in_service.sort(key=lambda row: (row['tool_parent_type'], row['radius_mm'], row['cutter_position_no']))
+    grand_total = sum(source_totals.values())
 
     return {
         'groups': group_by_trajectory(rows, in_service),
@@ -632,10 +648,12 @@ def _life_mileage(openings, params):
         'revolution_basis': {
             'ring_width_mm': RING_WIDTH_MM,
             'reference_penetration_mm': REFERENCE_PENETRATION_MM,
-            'reference_revolutions_per_ring': round(RING_WIDTH_MM / REFERENCE_PENETRATION_MM, 1),
+            'reference_revolutions_per_ring': round(REFERENCE_REVOLUTIONS, 1),
             'reference_penetration_range_mm': list(REFERENCE_PENETRATION_RANGE_MM),
-            'tunneling_ring_count': len(revolutions.measured),
-            'estimated_share': round(totals[1] / totals[0], 3) if totals[0] else None,
+            'reading_opening_count': sum(len(item) for item in revolutions.readings.values()),
+            'tunneling_ring_count': len(revolutions.counter.keys() | revolutions.integrated.keys()),
+            'source_share': {source: round(value / grand_total, 3) if grand_total else None for source, value in source_totals.items()},
+            'estimated_share': round(source_totals['reference'] / grand_total, 3) if grand_total else None,
         },
         'basis': MILEAGE_BASIS,
     }

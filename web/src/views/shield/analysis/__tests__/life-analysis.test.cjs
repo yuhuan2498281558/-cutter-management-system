@@ -12,9 +12,11 @@ const summary = (removed, extra = {}) => ({
   abnormal_count: 1, classified_count: removed, unclassified_count: 0, wear_per_100km: removed ? spread([1.5]) : null,
   priced_count: removed, cost_per_km: removed >= 5 ? 31.04 : null, in_service_count: 1, in_service_km: spread([12]), ...extra,
 });
+const sources = (reference, extra = {}) => ({ reading: 0, counter: 0, integrated: 0, reference, ...extra });
 const segment = (id, manufacturer, radius, km, state = 'NORMAL', type = 'DISC') => ({
   detail_id: id, installation_detail_id: id + 100, cutter_position_no: String(id), tool_parent_type: type, radius_mm: radius,
-  manufacturer, installation_ring_no: '100', ring_no: '200', service_rings: 100, revolutions: 12000, km, estimated_share: 1,
+  manufacturer, installation_ring_no: '100', ring_no: '200', service_rings: 100, revolutions: 12000, km,
+  revolution_sources: sources(12000), estimated_share: 1, integrated_check: null,
   wear_state: state, blade_wear_amount: 8, wear_per_100km: 2, price: 5000,
 });
 const data = () => ({
@@ -34,8 +36,8 @@ const data = () => ({
     segment(80, '乙厂', 6809.8, 250), segment(81, '甲厂', 6809.8, 420), segment(90, '乙厂', 3430, 150, 'NORMAL', 'SCRAPER'),
   ],
   in_service: [
-    { detail_id: 5, cutter_position_no: '1', tool_parent_type: 'DISC', radius_mm: 135, manufacturer: '甲厂', installation_ring_no: '400', through_ring_no: '487', revolutions: 10000, km: 8.5, estimated_share: 1 },
-    { detail_id: 6, cutter_position_no: 'S1L', tool_parent_type: 'SCRAPER', radius_mm: 3430, manufacturer: '乙厂', installation_ring_no: '487', through_ring_no: '487', revolutions: 0, km: 0, estimated_share: null },
+    { detail_id: 5, cutter_position_no: '1', tool_parent_type: 'DISC', radius_mm: 135, manufacturer: '甲厂', installation_ring_no: '400', through_ring_no: '487', revolutions: 10000, km: 8.5, revolution_sources: sources(10000), estimated_share: 1, integrated_check: null },
+    { detail_id: 6, cutter_position_no: 'S1L', tool_parent_type: 'SCRAPER', radius_mm: 3430, manufacturer: '乙厂', installation_ring_no: '487', through_ring_no: '487', revolutions: 0, km: 0, revolution_sources: sources(0), estimated_share: null, integrated_check: null },
   ],
   positions: [
     { tool_parent_type: 'DISC', cutter_position_no: '1', radius_mm: 135, removed_count: 1, removed_km: 6.4, in_service_km: 8.5, covered_km: 14.9 },
@@ -43,7 +45,8 @@ const data = () => ({
   ],
   excluded: [{ reason: '厂家反馈未确认', count: 232 }, { reason: '旧刀身份未确认', count: 122 }],
   excluded_rows: [{ detail_id: 7, opening_id: 31, warehouse_id: 'W-31', ring_no: '317', cutter_position_no: '12', tool_parent_type: 'DISC', old_tool_number: 'OLD-7', manufacturer: '甲厂', reason: '厂家反馈未确认' }],
-  revolution_basis: { ring_width_mm: 2000, reference_penetration_mm: 16.67, reference_revolutions_per_ring: 120, reference_penetration_range_mm: [14, 21], tunneling_ring_count: 1, estimated_share: 1 },
+  revolution_basis: { ring_width_mm: 2000, reference_penetration_mm: 16.67, reference_revolutions_per_ring: 120, reference_penetration_range_mm: [14, 21],
+    reading_opening_count: 0, tunneling_ring_count: 1, source_share: sources(1), estimated_share: 1 },
   basis: { mileage: '里程口径', revolutions: '圈数口径', life: '寿命口径' },
 });
 function create(t, options = {}) {
@@ -111,7 +114,28 @@ test('review items flag the estimated mileage and the removed tools left out, wi
   const [estimate, excluded] = r.state.reviewItems.value;
   assert.deepEqual([estimate.pending, estimate.detail, estimate.tip], [true, '全部按参考值约 120 圈/环推算', '圈数口径']);
   assert.deepEqual([excluded.pending, excluded.detail, excluded.tip], [true, '354 把已拆刀', '厂家反馈未确认 232 把；旧刀身份未确认 122 把']);
-  assert.deepEqual(['参考值估算', '掘进推算', '估算 25.0%', '—'], [1, 0, 0.25, null].map(r.state.sourceText));
+});
+
+test('mileage sources name a single source, list shares when mixed, and the check column appears only with a check', async t => {
+  const rows = [
+    { revolutions: 120, revolution_sources: sources(120) },
+    { revolutions: 91, revolution_sources: sources(0, { reading: 91 }) },
+    { revolutions: 200, revolution_sources: sources(50, { counter: 100, integrated: 50 }) },
+    { revolutions: 0, revolution_sources: sources(0) },
+  ];
+  const r = create(t, { request: config => {
+    const body = data();
+    body.segments[2] = { ...body.segments[2], revolution_sources: sources(0, { reading: 91 }), integrated_check: { measured: 91, integrated: 90.1 } };
+    return { data: { ...body, meta: meta(config.params) } };
+  } });
+  await r.mount();
+  assert.deepEqual(rows.map(r.state.sourceText), ['参考值估算', '开仓读数', '计数器 50% · 推算 25% · 估算 25%', '—']);
+  assert.equal(r.state.checkText(r.state.selectedSegments.value.find(row => row.detail_id === 79)), '90.1 / 91（−1.0%）');
+  assert.equal(r.state.checkText(rows[0]), '—');
+  assert.equal(r.state.checkText({ integrated_check: { measured: 100, integrated: 102 } }), '102 / 100（+2.0%）');
+  assert.deepEqual([r.state.segmentChecks.value, r.state.serviceChecks.value], [true, false]);
+  const labels = r.nodes().filter(node => node.type?.name === 'el-table-column').map(node => node.props.label);
+  assert.equal(labels.filter(label => label === '推算 / 实测（圈）').length, 1);
 });
 
 test('PDF export names the tool type and the selected band, and waits for complete data', async t => {

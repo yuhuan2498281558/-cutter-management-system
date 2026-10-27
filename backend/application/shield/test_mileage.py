@@ -1,18 +1,17 @@
 """刀具里程推算与寿命与厂家接口。"""
 import math
+from datetime import datetime, timedelta
 
 from django.test import SimpleTestCase, TestCase
 
 from .mileage import (
-    REFERENCE_PENETRATION_MM, RING_WIDTH_MM, RingRevolutions, group_by_trajectory,
+    REFERENCE_REVOLUTIONS as REFERENCE, REVOLUTION_SOURCES, RingRevolutions, group_by_trajectory,
     kilometres, manufacturer_cells, spread,
 )
 from .models import OldToolRecord, ShieldTunnelingData
 # 只引用模块：把测试类导入本模块会让测试运行器再跑一遍它的用例
 from . import test_analysis
 from .trajectory import get_tool_trajectory
-
-REFERENCE = RING_WIDTH_MM / REFERENCE_PENETRATION_MM
 
 
 def segment(manufacturer='A', km=100.0, radius=3000, position='30', tool_type='DISC', **fields):
@@ -21,14 +20,32 @@ def segment(manufacturer='A', km=100.0, radius=3000, position='30', tool_type='D
 
 
 class MileageCalculationTests(SimpleTestCase):
-    def test_tunneling_rings_use_weighted_penetration_and_the_rest_the_reference(self):
-        revolutions = RingRevolutions([(1, 1, '5', 20, 30), (1, 1, '5', 10, 10), (1, 1, '6', None, 5), (1, 1, 'X', 10, 1)])
-        self.assertAlmostEqual(revolutions.measured[(1, 1, 5)], RING_WIDTH_MM / 17.5)
-        total, estimated = revolutions.span(1, 1, 4, 6)
-        self.assertAlmostEqual(total, RING_WIDTH_MM / 17.5 + REFERENCE)
-        self.assertAlmostEqual(estimated, REFERENCE)
-        self.assertEqual(revolutions.span(1, 2, 4, 6), (2 * REFERENCE, 2 * REFERENCE))
-        self.assertEqual(revolutions.span(1, 1, 6, 6), (0.0, 0.0))
+    def test_tunneling_rings_use_counters_then_integration_then_the_reference(self):
+        revolutions = RingRevolutions([
+            (1, 1, '5', 90, 88), (1, 1, '5', 1, 2),
+            # 一段缺计数器，这一环只能用积分
+            (1, 1, '6', None, 80), (1, 1, '6', 5, 40),
+            (1, 1, '7', None, None), (1, 1, 'X', 1, 1),
+        ])
+        self.assertEqual((revolutions.counter, revolutions.integrated), ({(1, 1, 5): 91}, {(1, 1, 5): 90, (1, 1, 6): 120}))
+        self.assertEqual(revolutions.span(1, 1, 4, 7), ({'reading': 0, 'counter': 91, 'integrated': 120, 'reference': REFERENCE}, (91, 90)))
+        self.assertEqual(revolutions.span(1, 2, 4, 6)[0]['reference'], 2 * REFERENCE)
+        self.assertEqual(revolutions.span(1, 1, 6, 6), (dict.fromkeys(REVOLUTION_SOURCES, 0.0), None))
+
+    def test_opening_readings_cover_whole_intervals_and_a_counter_reset_falls_back(self):
+        moment = datetime(2026, 1, 1)
+        revolutions = RingRevolutions([(1, 1, '11', 100, 110), (1, 1, '12', 100, 100)], [
+            (1, 1, '10', moment, 100, 50),
+            # 同一环开过两次仓，取后一次
+            (1, 1, '12', moment + timedelta(days=1), 300, 90), (1, 1, '12', moment, 999, 999),
+            # 右转读数变小：计数器清零过
+            (1, 1, '14', moment, 10, 95),
+            (1, 1, '15', moment, 20, None),
+        ])
+        self.assertEqual(revolutions.span(1, 1, 10, 14), ({'reading': 240, 'counter': 0, 'integrated': 0, 'reference': 2 * REFERENCE}, (240, 210)))
+        # 下一次读数在区间终点之后，这一段按环取
+        self.assertEqual(revolutions.span(1, 1, 10, 11), ({'reading': 0, 'counter': 100, 'integrated': 0, 'reference': 0}, (100, 110)))
+        self.assertEqual(revolutions.span(1, 1, 14, 15)[0]['reference'], REFERENCE)
 
     def test_kilometres_are_the_circumference_of_the_trajectory_times_revolutions(self):
         self.assertAlmostEqual(kilometres(1000, 120), 2 * math.pi * 120 / 1000)
@@ -77,16 +94,18 @@ class LifeMileageApiTests(TestCase):
 
     def test_removed_segment_mileage_wear_rate_and_the_tool_still_in_service(self):
         ShieldTunnelingData.objects.create(project=self.project, shield_machine=self.machine, ring_no='150',
-                                           penetration=20, point_count=10)
+                                           counter_revolutions=100, integrated_revolutions=98, point_count=10)
         self.pair(100, 200, wear_condition='偏磨', blade_wear_amount=10, manufacturer='B')
         self.detail(self.opening(300), '2', is_replaced=True, manufacturer='C')
         data = self.query('life_mileage')
         radius = get_tool_trajectory('1', 'DISC')['radius_mm']
-        revolutions = 99 * REFERENCE + RING_WIDTH_MM / 20
+        revolutions = 99 * REFERENCE + 100
         [row] = data['segments']
         self.assertEqual((row['manufacturer'], row['radius_mm'], row['service_rings']), ('B', radius, 100))
         self.assertEqual(row['km'], round(kilometres(radius, revolutions), 2))
         self.assertEqual(row['estimated_share'], round(99 * REFERENCE / revolutions, 3))
+        self.assertEqual(row['revolution_sources'], {'reading': 0, 'counter': 100, 'integrated': 0, 'reference': round(99 * REFERENCE, 1)})
+        self.assertEqual(row['integrated_check'], {'measured': 100, 'integrated': 98})
         self.assertEqual((row['wear_state'], row['wear_per_100km']), ('ABNORMAL', round(10 / kilometres(radius, revolutions) * 100, 3)))
         self.assertEqual(row['price'], 200)
         # 第 200 环换下的同时装上新刀，到范围内最后一次开仓（第 300 环）一直在役
@@ -98,6 +117,28 @@ class LifeMileageApiTests(TestCase):
         self.assertEqual(position['covered_km'], round(row['km'] + service['1']['km'], 2))
         self.assertEqual(data['revolution_basis']['tunneling_ring_count'], 1)
         self.assertEqual(data['meta']['schema_version'], 2)
+
+    def test_opening_readings_give_measured_mileage_with_the_integrated_check_where_every_ring_has_one(self):
+        first = self.opening(100, right_revolution_reading=1000, left_revolution_reading=500)
+        # 未确认汇总的开仓不进统计范围，但它的读数照样用来切分区间
+        self.opening(150, summary_status='DRAFT', right_revolution_reading=5000, left_revolution_reading=1500)
+        second = self.opening(200, right_revolution_reading=9000, left_revolution_reading=2500)
+        instance = self.install(self.detail(first, is_replaced=True, manufacturer='A', price=200))
+        removed = self.detail(second, is_replaced=True)
+        OldToolRecord.objects.create(tool_change_detail=removed, confirmed_tool_instance=instance, inspection_status='CONFIRMED')
+        ShieldTunnelingData.objects.bulk_create([
+            ShieldTunnelingData(project=self.project, shield_machine=self.machine, ring_no=str(ring), integrated_revolutions=99)
+            for ring in [120, *range(151, 201)]
+        ])
+        data = self.query('life_mileage')
+        [row] = data['segments']
+        radius = get_tool_trajectory('1', 'DISC')['radius_mm']
+        self.assertEqual((row['revolutions'], row['km'], row['estimated_share']), (10000, round(kilometres(radius, 10000), 2), 0))
+        self.assertEqual(row['revolution_sources'], {'reading': 10000, 'counter': 0, 'integrated': 0, 'reference': 0})
+        # 100–150 环只有一环有积分，不对照；150–200 环每环都有
+        self.assertEqual(row['integrated_check'], {'measured': 5000, 'integrated': 4950})
+        basis = data['revolution_basis']
+        self.assertEqual((basis['reading_opening_count'], basis['source_share']['reading'], basis['estimated_share']), (3, 1, 0))
 
     def test_lowercase_positions_are_reported_in_their_canonical_form(self):
         self.pair(100, 200, position='y3')

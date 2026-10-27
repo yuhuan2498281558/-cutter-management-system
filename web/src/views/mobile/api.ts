@@ -29,6 +29,11 @@ export function saveMobileDetail(taskId: string | number, data: FormData) {
   });
 }
 
+/** 开仓时刀盘右转、左转累计读数；空字符串表示没读到 */
+export function saveMobileReadings(taskId: string | number, data: { right_revolution_reading: string; left_revolution_reading: string }) {
+  return request({ url: `/api/shield/mobile/tasks/${taskId}/save_readings/`, method: 'post', data });
+}
+
 export function submitMobileTask(taskId: string | number) {
   return request({ url: `/api/shield/mobile/tasks/${taskId}/submit/`, method: 'post' });
 }

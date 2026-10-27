@@ -118,7 +118,8 @@ test('full export keeps all 18 original fields, including fields now inside expa
     'wear_condition', 'blade_wear_amount', 'trajectory', 'is_replaced', 'replacement_count',
     'manufacturer', 'new_tool_record_data', 'replacement_type', 'repair_parts', 'brand', 'price', 'old_photo_links', 'remark',
   ]));
-  assert.equal(s.exportMeta.value.length, 16);
+  // 开仓信息 16 项加刀盘右转、左转累计读数
+  assert.equal(s.exportMeta.value.length, 18);
 });
 
 test('active filter feedback tracks independent conditions without changing export data', t => {
@@ -336,7 +337,7 @@ test('actual dropdown-to-CSV export retains every row and 18 columns despite emp
   assert.equal(blobs.length, 1);
   const csv = parseCsv((await blobs[0].text()).replace(/^\uFEFF/, ''));
   const headerIndex = csv.findIndex(row => row.includes('刀位号') && row.includes('刀具编号'));
-  assert.equal(headerIndex, 17); // 16 opening metadata rows and one separator
+  assert.equal(headerIndex, 19); // 18 opening metadata rows and one separator
   assert.equal(csv[headerIndex].length, 18);
   const data = csv.slice(headerIndex + 1);
   assert.equal(data.length, rows.length);

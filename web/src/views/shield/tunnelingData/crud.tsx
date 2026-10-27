@@ -58,6 +58,10 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				torque: { title: '扭矩', type: 'number', column: { minWidth: 100 } },
 				cutterhead_speed: { title: '刀盘转速', type: 'number', column: { minWidth: 120 } },
 				penetration: { title: '贯入力', type: 'number', column: { minWidth: 100 } },
+				advance_speed: { title: '推进速度（mm/min）', type: 'number', column: { minWidth: 140 } },
+				// 导入时按本段采样点算出，用于刀具里程，不手填
+				counter_revolutions: { title: '刀盘圈数（计数器）', type: 'number', column: { minWidth: 140 }, form: { show: false } },
+				integrated_revolutions: { title: '刀盘圈数（积分推算）', type: 'number', column: { minWidth: 150 }, form: { show: false } },
 				point_count: {
 					title: '采样点数',
 					type: 'number',

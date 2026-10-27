@@ -91,7 +91,8 @@
             <el-table-column label="原安装厂家" min-width="140"><template #default="{ row }">{{ row.manufacturer || '未登记厂家' }}</template></el-table-column>
             <el-table-column label="服役环段" width="120"><template #default="{ row }">{{ row.installation_ring_no }}–{{ row.ring_no }} 环</template></el-table-column>
             <el-table-column label="里程（km）" width="100" align="right"><template #default="{ row }">{{ formatNumber(row.km, 1) }}</template></el-table-column>
-            <el-table-column label="里程来源" width="110"><template #default="{ row }">{{ sourceText(row.estimated_share) }}</template></el-table-column>
+            <el-table-column label="里程来源" min-width="130"><template #default="{ row }">{{ sourceText(row) }}</template></el-table-column>
+            <el-table-column v-if="segmentChecks" label="推算 / 实测（圈）" min-width="150" align="right"><template #default="{ row }">{{ checkText(row) }}</template></el-table-column>
             <el-table-column label="拆除时" width="80"><template #default="{ row }"><span :class="{ 'is-abnormal': row.wear_state === 'ABNORMAL' }">{{ wearStateLabel(row.wear_state) }}</span></template></el-table-column>
             <el-table-column label="刀刃磨损（mm）" width="125" align="right"><template #default="{ row }">{{ formatNumber(row.blade_wear_amount, 2) }}</template></el-table-column>
             <el-table-column label="每百公里磨损（mm）" width="150" align="right"><template #default="{ row }">{{ formatNumber(row.wear_per_100km, 2) }}</template></el-table-column>
@@ -120,7 +121,8 @@
             <el-table-column label="安装环" width="90" align="right"><template #default="{ row }">{{ row.installation_ring_no }}</template></el-table-column>
             <el-table-column label="截至环" width="90" align="right"><template #default="{ row }">{{ row.through_ring_no }}</template></el-table-column>
             <el-table-column label="已走里程（km）" width="130" align="right"><template #default="{ row }">{{ formatNumber(row.km, 1) }}</template></el-table-column>
-            <el-table-column label="里程来源" min-width="110"><template #default="{ row }">{{ sourceText(row.estimated_share) }}</template></el-table-column>
+            <el-table-column label="里程来源" min-width="130"><template #default="{ row }">{{ sourceText(row) }}</template></el-table-column>
+            <el-table-column v-if="serviceChecks" label="推算 / 实测（圈）" min-width="150" align="right"><template #default="{ row }">{{ checkText(row) }}</template></el-table-column>
           </el-table>
         </div>
       </div>
@@ -152,7 +154,7 @@ import ScopeSummary from '../components/ScopeSummary.vue';
 import { getLifeMileage } from '../api';
 import { LIFE_METRICS, buildDistributionOption, cellView, radiusText, spreadText, wearStateLabel } from '../utils/lifeChartOptions';
 import type { CellView, LifeMetric } from '../utils/lifeChartOptions';
-import type { AnalysisFilter, LifeMileageData, MileageBand, MileageTrajectory } from '../types';
+import type { AnalysisFilter, LifeMileageData, MileageBand, MileageRevolutions, MileageTrajectory, RevolutionSource } from '../types';
 import { analysisExportMeta, formatNumber, formatPercent, requireAnalysisV2 } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
@@ -171,10 +173,11 @@ interface MatrixRow {
 const MATRIX_BASIS = '一行一个 1000 mm 分带，展开看带内每条轨迹（同一半径的刀位）。不少于 5 段给中位数，否则列出各段的值；悬停格子看四分位。不排名，不评最佳厂家。点一行，下方分布图和已拆段明细换成这一行。';
 const CURVE_BASIS = '每家一条曲线：横轴是里程，纵轴是该厂家已拆段中在这个里程之前换下的比例；实心点为非正常拆除，空心点为正常或未分类。只描述已拆样本，不是生存曲线，在役刀具不在图上。';
 const SERVICE_BASIS = '范围内最后一次开仓时各刀位装着的刀，已走里程算到那次开仓；不进寿命统计。';
+const CHECK_BASIS = '实测圈数（开仓读数或掘进计数器）和推进速度 ÷ 贯入度积分推算都有时，“推算 / 实测”列并排给出两者，括号里是推算比实测多或少的比例；里程用实测值。';
 const DETAIL_BASIS: Record<string, string> = {
-  segments: '按拆除环归入筛选范围；厂家是这把刀安装时登记的厂家。',
+  segments: `按拆除环归入筛选范围；厂家是这把刀安装时登记的厂家。${CHECK_BASIS}`,
   positions: '累计里程 = 该刀位已拆段里程之和 + 在役刀具已走里程；初装刀具没有安装记录，不计入。',
-  service: SERVICE_BASIS,
+  service: `${SERVICE_BASIS}${CHECK_BASIS}`,
   excluded: '系统未能确认安装与拆除配对，或安装与拆除不在同一刀位、刀位半径未核实的已拆刀；补齐旧刀身份和厂家反馈后会计入。',
 };
 
@@ -202,10 +205,23 @@ const serviceKmText = computed(() => {
 });
 
 const excludedCount = computed(() => (result.value?.excluded ?? []).reduce((total, item) => total + item.count, 0));
-function sourceText(share: number | null) {
-  if (share == null) return '—';
-  if (share >= 1) return '参考值估算';
-  return share <= 0 ? '掘进推算' : `估算 ${formatPercent(share)}`;
+// 全称用于单一来源，简称用于多来源混合时列出各自占比
+const SOURCE_LABELS: Record<RevolutionSource, [string, string]> = {
+  reading: ['开仓读数', '读数'], counter: ['掘进计数器', '计数器'], integrated: ['积分推算', '推算'], reference: ['参考值估算', '估算'],
+};
+function sourceText(row: MileageRevolutions) {
+  const sources = (Object.keys(SOURCE_LABELS) as RevolutionSource[]).filter(source => (row.revolution_sources?.[source] ?? 0) > 0);
+  if (!sources.length) return '—';
+  if (sources.length === 1) return SOURCE_LABELS[sources[0]][0];
+  return sources.map(source => `${SOURCE_LABELS[source][1]} ${Math.round(row.revolution_sources[source] / row.revolutions * 100)}%`).join(' · ');
+}
+function checkText(row: MileageRevolutions) {
+  const check = row.integrated_check;
+  if (!check) return '—';
+  const text = `${formatNumber(check.integrated, 1)} / ${formatNumber(check.measured, 1)}`;
+  if (!check.measured) return text;
+  const diff = (check.integrated - check.measured) / check.measured * 100;
+  return `${text}（${diff < 0 ? '−' : '+'}${Math.abs(diff).toFixed(1)}%）`;
 }
 const reviewItems = computed(() => {
   const revolutions = result.value?.revolution_basis;
@@ -272,6 +288,9 @@ const selectedSegments = computed(() => {
 });
 const typedPositions = computed(() => (result.value?.positions ?? []).filter(row => row.tool_parent_type === group.value?.tool_parent_type));
 const typedService = computed(() => (result.value?.in_service ?? []).filter(row => row.tool_parent_type === group.value?.tool_parent_type));
+// 有可对照的行才出“推算 / 实测”列
+const segmentChecks = computed(() => selectedSegments.value.some(row => row.integrated_check));
+const serviceChecks = computed(() => typedService.value.some(row => row.integrated_check));
 
 const detailTab = ref('segments');
 const detailEmpty = computed(() => ({

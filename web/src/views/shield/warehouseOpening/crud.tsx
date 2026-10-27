@@ -342,6 +342,25 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 						order: 8,
 					},
 				},
+				// 与同机上一次开仓的读数相减，得到期间刀盘转了多少圈，用于刀具里程
+				right_revolution_reading: {
+					title: '刀盘右转累计读数（圈）',
+					type: 'number',
+					column: { minWidth: 170 },
+					form: {
+						component: { placeholder: '开仓时设备上的读数', min: 0, controls: false },
+						order: 6,
+					},
+				},
+				left_revolution_reading: {
+					title: '刀盘左转累计读数（圈）',
+					type: 'number',
+					column: { minWidth: 170 },
+					form: {
+						component: { placeholder: '开仓时设备上的读数', min: 0, controls: false },
+						order: 7,
+					},
+				},
 				checked_tool_count: {
 					title: '检查刀具数量（把）',
 					type: 'number',

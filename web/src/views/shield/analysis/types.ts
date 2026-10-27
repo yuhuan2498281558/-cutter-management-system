@@ -357,7 +357,18 @@ export interface MileageGroup {
   bands: MileageBand[];
 }
 
-export interface MileageSegment {
+/** 圈数来源：开仓读数差、掘进计数器、掘进积分推算、参考值估算 */
+export type RevolutionSource = 'reading' | 'counter' | 'integrated' | 'reference';
+
+/** 一段（或在役刀具）的圈数及来源；实测部分与积分推算都有时给出对照 */
+export interface MileageRevolutions {
+  revolutions: number;
+  revolution_sources: Record<RevolutionSource, number>;
+  estimated_share: number | null;
+  integrated_check: { measured: number; integrated: number } | null;
+}
+
+export interface MileageSegment extends MileageRevolutions {
   detail_id: number;
   installation_detail_id: number;
   cutter_position_no: string;
@@ -367,16 +378,14 @@ export interface MileageSegment {
   installation_ring_no: string;
   ring_no: string;
   service_rings: number;
-  revolutions: number;
   km: number;
-  estimated_share: number | null;
   wear_state: 'NORMAL' | 'ABNORMAL' | null;
   blade_wear_amount: number | null;
   wear_per_100km: number | null;
   price: number | null;
 }
 
-export interface MileageInService {
+export interface MileageInService extends MileageRevolutions {
   detail_id: number;
   cutter_position_no: string;
   tool_parent_type: string;
@@ -384,9 +393,7 @@ export interface MileageInService {
   manufacturer: string;
   installation_ring_no: string;
   through_ring_no: string;
-  revolutions: number;
   km: number;
-  estimated_share: number | null;
 }
 
 export interface MileagePosition {
@@ -415,7 +422,9 @@ export interface LifeMileageData {
     reference_penetration_mm: number;
     reference_revolutions_per_ring: number;
     reference_penetration_range_mm: number[];
+    reading_opening_count: number;
     tunneling_ring_count: number;
+    source_share: Record<RevolutionSource, number | null>;
     estimated_share: number | null;
   };
   basis: Record<string, string>;
