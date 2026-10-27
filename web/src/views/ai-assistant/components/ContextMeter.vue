@@ -50,16 +50,7 @@
       <p v-else-if="info?.kind === 'rule'" class="panel-empty">直连查库不调用模型，不占模型上下文。</p>
       <p v-else class="panel-empty">还没有用量数据，发一次模型分析后显示。</p>
 
-      <div v-if="info" class="panel-rules">
-        <div class="rules-title">上下文怎么管理</div>
-        <ul>
-          <li>整段对话原文带入，包括之前同一项目的查询结果{{ historyNote }}</li>
-          <li>长列表只给第 1 页并标明总数，模型需要时自己翻页或按相同条件重查{{ pagingNote }}</li>
-          <li>单个结果超过 {{ formatTokens(info.thresholds.compaction_min_tokens) }} 改成表格式编码，数据不删{{ compactNote }}</li>
-          <li v-if="autoCompaction">用到 {{ formatTokens(trigger) }}（窗口的 {{ triggerPercent }}%）时，先精简早前的大查询结果，仍不够再把早前对话整理成摘要，最近的原文保留</li>
-          <li v-else>超过 {{ formatTokens(hardLimit) }} 本问不生成回答，请缩小环号范围或重置对话</li>
-        </ul>
-      </div>
+      <p v-if="info" class="panel-rule">{{ ruleLine }}</p>
       <div v-if="canCompact" class="panel-actions">
         <el-button size="small" :disabled="busy" @click="requestCompact">整理早前对话</el-button>
       </div>
@@ -169,14 +160,10 @@ const billingLine = computed(() => {
   return `本轮接口计费：输入 ${formatTokens(usage.prompt_tokens)}${cache} · 输出 ${formatTokens(usage.completion_tokens)}`;
 });
 
-const historyNote = computed(() => {
-  const history = props.info?.history;
-  if (!history) return '';
-  const parts = [];
-  if (history.other_project_turns) parts.push(`${history.other_project_turns} 轮属于其他项目`);
-  if (history.legacy_qa_turns) parts.push(`${history.legacy_qa_turns} 轮是改版前的记录`);
-  return parts.length ? `（${parts.join('、')}，只带问答文字）` : '';
-});
+// 面板底部只说满了会怎样；分页、编码等内部做法不在这里展开
+const ruleLine = computed(() => (autoCompaction.value
+  ? `用到 ${triggerPercent.value}% 时自动整理早前对话，最近的原文保留`
+  : `超过 ${formatTokens(hardLimit.value)} 本问不生成回答，请缩小环号范围或重置对话`));
 
 const compactionLine = computed(() => {
   const compaction = props.info?.compaction;
@@ -190,16 +177,6 @@ const requestCompact = () => {
   panelOpen.value = false;
   emit('compact');
 };
-
-const pagingNote = computed(() => {
-  const info = props.info;
-  if (!info || info.paged_lists === undefined) return '';
-  const parts = [];
-  if (info.paged_lists) parts.push(`分页 ${info.paged_lists} 处`);
-  if (info.page_requests) parts.push(`翻页 ${info.page_requests} 次`);
-  return parts.length ? `（本轮${parts.join('，')}）` : '';
-});
-const compactNote = computed(() => (props.info?.compacted_results ? `（本轮 ${props.info.compacted_results} 条）` : ''));
 </script>
 
 <style scoped lang="scss">
@@ -382,21 +359,12 @@ const compactNote = computed(() => (props.info?.compacted_results ? `（本轮 $
     border-top: 1px solid var(--dv-border);
   }
 
-  .panel-rules {
+  .panel-rule {
+    margin: 0;
     border-top: 1px solid var(--dv-border);
     padding-top: 8px;
-
-    .rules-title {
-      font-weight: 600;
-      margin: 4px 0 2px;
-    }
-
-    ul {
-      margin: 0 0 4px;
-      padding-left: 16px;
-      color: var(--dv-text-secondary);
-      line-height: 1.6;
-    }
+    color: var(--dv-text-secondary);
+    line-height: 1.6;
   }
 }
 </style>

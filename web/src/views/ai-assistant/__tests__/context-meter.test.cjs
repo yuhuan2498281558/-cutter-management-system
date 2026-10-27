@@ -19,7 +19,7 @@ function loadMeter(info) {
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
-    + '\nexports.meter = { formatTokens, usedPercent, level, tooltipLines, rows, barRows, triggerShare, pagingNote, compactNote, autoCompaction, historyNote, billingLine, compactionLine, canCompact, requestCompact, panelOpen };';
+    + '\nexports.meter = { formatTokens, usedPercent, level, tooltipLines, rows, barRows, triggerShare, autoCompaction, ruleLine, billingLine, compactionLine, canCompact, requestCompact, panelOpen };';
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, context);
   return { props, emitted, ...context.exports.meter };
 }
@@ -101,21 +101,18 @@ test('without automatic compaction the panel states the hard limit; with it the 
   assert.equal(due.tooltipLines.value[2], '下一问会先整理早前对话');
 });
 
-test('provider billing, older or other-project turns, paging and compaction counts are reported only when present', () => {
+test('provider billing is reported only when present; the panel ends with one line on what happens when it fills', () => {
   const m = loadMeter(turn(20000, {
     provider_usage: { prompt_tokens: 30000, completion_tokens: 480, cache_hit_tokens: 24000 },
     history: { turns: 4, tool_results: 3, legacy_qa_turns: 2, other_project_turns: 1, tokens: 1800 },
     paged_lists: 2, page_requests: 1,
   }));
   assert.equal(m.billingLine.value, '本轮接口计费：输入 30k（缓存命中 24k） · 输出 480');
-  assert.equal(m.historyNote.value, '（1 轮属于其他项目、2 轮是改版前的记录，只带问答文字）');
-  assert.equal(m.pagingNote.value, '（本轮分页 2 处，翻页 1 次）');
-  assert.equal(m.compactNote.value, '（本轮 1 条）');
+  assert.match(m.ruleLine.value, /^超过 .+ 本问不生成回答，请缩小环号范围或重置对话$/);
+  const auto = loadMeter(turn(20000, { compaction: { ...turn(0).compaction, auto: true } }));
+  assert.equal(auto.ruleLine.value, '用到 80% 时自动整理早前对话，最近的原文保留');
   const bare = loadMeter(turn(20000, { compacted_results: 0, paged_lists: undefined }));
   assert.equal(bare.billingLine.value, '');
-  assert.equal(bare.historyNote.value, '');
-  assert.equal(bare.pagingNote.value, '');
-  assert.equal(bare.compactNote.value, '');
   assert.equal(loadMeter({ ...turn(20000), kind: 'baseline', provider_usage: { prompt_tokens: 1, completion_tokens: 1, cache_hit_tokens: 0 } }).billingLine.value, '');
 });
 
