@@ -81,30 +81,33 @@ def spread(values):
     return {'count': len(values), 'median': round(middle, 2), 'q1': round(q1, 2), 'q3': round(q3, 2)}
 
 
+def summarize(removed, current):
+    """一组已拆段和在役刀具的寿命、磨损、成本和在役情况。"""
+    classified = [row for row in removed if row['wear_state'] is not None]
+    priced = [row for row in removed if row['price'] is not None]
+    priced_km = sum(row['km'] for row in priced)
+    return {
+        'removed_count': len(removed),
+        'life_km': spread([row['km'] for row in removed]),
+        'abnormal_count': sum(row['wear_state'] == 'ABNORMAL' for row in classified),
+        'classified_count': len(classified),
+        'unclassified_count': len(removed) - len(classified),
+        'wear_per_100km': spread([row['wear_per_100km'] for row in removed if row['wear_per_100km'] is not None]),
+        'priced_count': len(priced),
+        'cost_per_km': (round(sum(row['price'] for row in priced) / priced_km, 2)
+                        if len(priced) >= QUARTILE_MIN_SAMPLES and priced_km > 0 else None),
+        'in_service_count': len(current),
+        'in_service_km': spread([row['km'] for row in current]),
+    }
+
+
 def manufacturer_cells(segments, in_service):
-    """一组已拆段和在役刀具按厂家汇总；厂家按名称排序，不排名。"""
+    """按厂家汇总；厂家按名称排序，不排名。"""
     names = sorted({row['manufacturer'] for row in segments} | {row['manufacturer'] for row in in_service})
-    cells = []
-    for name in names:
-        removed = [row for row in segments if row['manufacturer'] == name]
-        current = [row for row in in_service if row['manufacturer'] == name]
-        classified = [row for row in removed if row['wear_state'] is not None]
-        priced = [row for row in removed if row['price'] is not None]
-        cells.append({
-            'manufacturer': name,
-            'removed_count': len(removed),
-            'life_km': spread([row['km'] for row in removed]),
-            'abnormal_count': sum(row['wear_state'] == 'ABNORMAL' for row in classified),
-            'classified_count': len(classified),
-            'unclassified_count': len(removed) - len(classified),
-            'wear_per_100km': spread([row['wear_per_100km'] for row in removed if row['wear_per_100km'] is not None]),
-            'priced_count': len(priced),
-            'cost_per_km': (round(sum(row['price'] for row in priced) / sum(row['km'] for row in priced), 2)
-                            if len(priced) >= QUARTILE_MIN_SAMPLES and sum(row['km'] for row in priced) > 0 else None),
-            'in_service_count': len(current),
-            'in_service_km': spread([row['km'] for row in current]),
-        })
-    return cells
+    return [{'manufacturer': name, **summarize(
+        [row for row in segments if row['manufacturer'] == name],
+        [row for row in in_service if row['manufacturer'] == name],
+    )} for name in names]
 
 
 def group_by_trajectory(segments, in_service):
@@ -126,15 +129,21 @@ def group_by_trajectory(segments, in_service):
                 trajectories.append({
                     'radius_mm': radius,
                     'positions': sorted({row['cutter_position_no'] for row in track + track_service}, key=position_sort_key),
+                    'summary': summarize(track, track_service),
                     'cells': manufacturer_cells(track, track_service),
                 })
             bands.append({
                 'radius_min': lower, 'radius_max': lower + BAND_WIDTH_MM,
                 'trajectory_count': len(trajectories),
+                'summary': summarize(band, band_service),
                 'cells': manufacturer_cells(band, band_service),
                 'trajectories': trajectories,
             })
-        groups.append({'tool_parent_type': tool_type, 'label': label, 'bands': bands})
+        groups.append({
+            'tool_parent_type': tool_type, 'label': label,
+            'manufacturers': sorted({row['manufacturer'] for row in typed + typed_service}),
+            'summary': summarize(typed, typed_service), 'bands': bands,
+        })
     return groups
 
 

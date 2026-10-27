@@ -55,6 +55,8 @@ class MileageCalculationTests(SimpleTestCase):
         self.assertEqual((band['radius_min'], band['radius_max'], band['trajectory_count']), (6000, 7000, 2))
         self.assertEqual(band['trajectories'][0]['positions'], ['78', 'Y3'])
         self.assertEqual([cell['manufacturer'] for cell in band['trajectories'][0]['cells']], ['A', 'B'])
+        self.assertEqual(band['trajectories'][0]['summary']['removed_count'], 2)
+        self.assertEqual((disc['manufacturers'], disc['summary']['removed_count'], band['summary']['removed_count']), (['A', 'B'], 3, 3))
         self.assertEqual((scraper['label'], scraper['bands'][0]['radius_min']), ('刮刀', 3000))
 
 
