@@ -82,3 +82,8 @@ export function getCustomChart(params: AnalysisFilterParams & {
 } = {}) {
   return request({ url: API_PREFIX + 'custom_chart/', method: 'get', params });
 }
+
+/** 寿命与厂家：按轨迹推算里程，按刀型和轨迹分带比较厂家 */
+export function getLifeMileage(params: AnalysisFilterParams = {}) {
+  return request({ url: API_PREFIX + 'life_mileage/', method: 'get', params });
+}

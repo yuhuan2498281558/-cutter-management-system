@@ -8,6 +8,7 @@
       <el-tab-pane label="概览" name="overview" />
       <el-tab-pane label="成本" name="cost" />
       <el-tab-pane label="磨损" name="wear" />
+      <el-tab-pane label="寿命与厂家" name="life" />
       <el-tab-pane label="自定义" name="custom" />
     </el-tabs>
     <FilterPanel @filter-change="onFilterChange" />
@@ -16,6 +17,7 @@
       <Overview v-if="activeTab === 'overview'" :filter="currentFilter" :actions-target="actionsRef" />
       <CostAnalysis v-else-if="activeTab === 'cost'" :filter="currentFilter" :actions-target="actionsRef" />
       <WearAnalysis v-else-if="activeTab === 'wear'" :filter="currentFilter" :actions-target="actionsRef" />
+      <LifeAnalysis v-else-if="activeTab === 'life'" :filter="currentFilter" :actions-target="actionsRef" />
       <CustomAnalysis v-else-if="activeTab === 'custom'" :filter="currentFilter" :actions-target="actionsRef" />
     </div>
   </div>
@@ -27,6 +29,7 @@ import FilterPanel from './components/FilterPanel.vue';
 import Overview from './pages/Overview.vue';
 import CostAnalysis from './pages/CostAnalysis.vue';
 import WearAnalysis from './pages/WearAnalysis.vue';
+import LifeAnalysis from './pages/LifeAnalysis.vue';
 import CustomAnalysis from './pages/CustomAnalysis.vue';
 import type { AnalysisFilter } from './types';
 

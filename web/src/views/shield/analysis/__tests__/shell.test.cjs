@@ -15,17 +15,17 @@ test('shell puts tabs under the title, filters above the page and hands the acti
 
   const tabs = nodes.find(node => node.type?.name === 'el-tabs');
   const panes = descendants(tabs).filter(node => node.type?.name === 'el-tab-pane');
-  assert.deepEqual(panes.map(node => node.props.label), ['概览', '成本', '磨损', '自定义']);
+  assert.deepEqual(panes.map(node => node.props.label), ['概览', '成本', '磨损', '寿命与厂家', '自定义']);
   assert.ok(panes.every(node => node.children == null), 'tabs only navigate');
   const order = ['el-tabs', 'FilterPanel', 'Overview'].map(name => nodes.findIndex(node => node.type?.name === name));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
   assert.equal(descendants(tabs).some(node => node.type?.name === 'Overview'), false);
 
-  const page = name => h.nodes().filter(node => ['Overview', 'CostAnalysis', 'WearAnalysis', 'CustomAnalysis'].includes(node.type?.name)).map(node => [node.type.name, node.props['actions-target']]);
+  const page = name => h.nodes().filter(node => ['Overview', 'CostAnalysis', 'WearAnalysis', 'LifeAnalysis', 'CustomAnalysis'].includes(node.type?.name)).map(node => [node.type.name, node.props['actions-target']]);
   assert.deepEqual(page(), [['Overview', null]]);
   const target = { nodeType: 1 };
   h.state.actionsRef.value = target;
-  for (const [tab, name] of [['cost', 'CostAnalysis'], ['wear', 'WearAnalysis'], ['custom', 'CustomAnalysis']]) {
+  for (const [tab, name] of [['cost', 'CostAnalysis'], ['wear', 'WearAnalysis'], ['life', 'LifeAnalysis'], ['custom', 'CustomAnalysis']]) {
     h.state.activeTab.value = tab;
     const [[rendered, passed], ...others] = page();
     assert.equal(rendered, name); assert.equal(vue.toRaw(passed), target); assert.equal(others.length, 0);
