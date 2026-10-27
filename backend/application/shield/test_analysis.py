@@ -620,6 +620,39 @@ class AnalysisContractTests(TestCase):
         self.assertEqual(result['data']['items'][0]['installation_count'], 0)
         self.assertIsNone(result['data']['items'][0]['avg_cost'])
 
+    def test_roles_granted_the_old_brand_endpoints_keep_access_to_brand_comparison(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from dvadmin.system.models import Dept, Menu, MenuButton, Role, RoleMenuButtonPermission, Users
+        migration = importlib.import_module('application.shield.migrations.0044_brand_comparison_permission')
+        dept = Dept.objects.create(name='厂家只读部门', key='analysis-brand-dept')
+        role = Role.objects.create(name='厂家只读', key='analysis-brand-reader')
+        other = Role.objects.create(name='无厂家权限', key='analysis-brand-none')
+        user = Users.objects.create(username='analysis-brand-reader', dept=dept, is_superuser=False)
+        user.role.add(role)
+        menu = Menu.objects.create(name='厂家分析', web_path='/shield/analysis')
+        for action, data_range in (('brand_cost', 4), ('brand_price_trend', 3)):
+            button = MenuButton.objects.create(menu=menu, name=action, value=f'Old{action}', api=f'/api/shield/analysis/{action}/', method=0)
+            grant = RoleMenuButtonPermission.objects.create(role=role, menu_button=button, data_range=data_range)
+            grant.dept.add(dept)
+        path = '/api/shield/analysis/brand_comparison/'
+        view = AnalysisViewSet.as_view({'get': 'brand_comparison'})
+
+        def code():
+            request = APIRequestFactory().get(path)
+            force_authenticate(request, user=user)
+            return view(request).data['code']
+
+        self.assertEqual(code(), 4000)
+        migration.grant_brand_comparison(django_apps, None)
+        migration.grant_brand_comparison(django_apps, None)
+        self.assertEqual(code(), 2000)
+        [copy] = RoleMenuButtonPermission.objects.filter(menu_button__api=path)
+        # 取对照表接口 brand_cost 的授权：自定数据范围和部门原样带过去，只授给原来有权限的角色
+        self.assertEqual((copy.role_id, copy.data_range, list(copy.dept.values_list('id', flat=True))), (role.id, 4, [dept.id]))
+        self.assertEqual(MenuButton.objects.filter(api=path).count(), 1)
+        self.assertFalse(RoleMenuButtonPermission.objects.filter(role=other).exists())
+
     def test_brand_query_cost_does_not_grow_per_supplier_and_pairs_once(self):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext

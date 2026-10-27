@@ -101,6 +101,24 @@ test('cutterhead readings open with the saved values, save trimmed text and show
   assert.deepEqual(toasts, ['读数已保存']);
 });
 
+test('while readings are saving the editor stays locked, so a late response cannot overwrite a reopened edit', async t => {
+  const hold = deferred();
+  const { s, readingSaves } = mount(t, { saveReadings: data => hold.promise.then(() => ({ data: { id: 7, status: 'IN_PROGRESS', opening_info: { right_revolution_reading: Number(data.right_revolution_reading), left_revolution_reading: null } } })) });
+  await s.loadTask();
+  s.openReadings(); s.readings.right = '100';
+  const saving = s.saveReadings();
+  assert.equal(s.savingReadings.value, true);
+  s.readings.right = '999'; s.openReadings();
+  assert.equal(s.readings.right, '999', 'reopening during a save does not reload the form');
+  await s.saveReadings();
+  assert.equal(readingSaves.length, 1, 'a second save waits for the first');
+  hold.resolve(); await saving;
+  assert.equal(s.readingsText.value, '右转 100 · 左转 —');
+  const source = fs.readFileSync(path.resolve(__dirname, '../tool-change/detail.vue'), 'utf8');
+  assert.match(source, /:close-on-click-overlay="!savingReadings"/);
+  assert.equal((source.match(/:disabled="readonly \|\| savingReadings"/g) || []).length, 2);
+});
+
 test('a rejected reading keeps the editor open with the server message; finished tasks cannot save', async t => {
   const { s, toasts, readingSaves } = mount(t, { saveReadings: async () => { throw { response: { data: { msg: '刀盘累计读数不能为负数' } } }; } });
   await s.loadTask();

@@ -172,11 +172,12 @@
       <van-picker title="选择磨损描述" :columns="wearPickerColumns" @confirm="onWearConfirm" @cancel="wearPickerVisible = false" />
     </van-popup>
 
-    <van-popup v-model:show="readingsVisible" position="bottom" round>
+    <!-- 保存期间锁住输入和关闭，迟到的响应才不会覆盖重新打开后的编辑 -->
+    <van-popup v-model:show="readingsVisible" position="bottom" round :close-on-click-overlay="!savingReadings">
       <div class="readings-editor">
         <div class="editor-title">刀盘累计读数（圈）</div>
-        <van-field v-model="readings.right" type="number" label="右转累计" placeholder="设备上的读数" clearable :disabled="readonly" />
-        <van-field v-model="readings.left" type="number" label="左转累计" placeholder="设备上的读数" clearable :disabled="readonly" />
+        <van-field v-model="readings.right" type="number" label="右转累计" placeholder="设备上的读数" clearable :disabled="readonly || savingReadings" />
+        <van-field v-model="readings.left" type="number" label="左转累计" placeholder="设备上的读数" clearable :disabled="readonly || savingReadings" />
         <van-button block type="primary" :loading="savingReadings" :disabled="readonly" @click="saveReadings">保存读数</van-button>
       </div>
     </van-popup>
@@ -634,6 +635,7 @@ const readingsText = computed(() => {
   return `右转 ${readingText(info.right_revolution_reading)} · 左转 ${readingText(info.left_revolution_reading)}`;
 });
 function openReadings() {
+  if (savingReadings.value) return;
   const info = task.value?.opening_info || {};
   readings.right = info.right_revolution_reading == null ? '' : String(info.right_revolution_reading);
   readings.left = info.left_revolution_reading == null ? '' : String(info.left_revolution_reading);

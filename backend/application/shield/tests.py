@@ -216,6 +216,32 @@ class ToolChangeFlowTests(TestCase):
         # 积分取前一个点的速度 ÷ 贯入度，每小段 3 r/min × 5 s = 0.25 圈；贯入度为 0 的点之后那一小段和断档都不计
         self.assertEqual([row.integrated_revolutions for row in rows], [0.5, 0.25])
         self.assertEqual([row.advance_speed for row in rows], [40, 60])
+        # 中间一个点缺采集时间：分段会丢掉它，而它正好是清零后的读数，计数器不能当完整实测
+        gap = [header, "2026-01-02 08:00:00,100,50,30,10,1.5", ",2,50,30,10,1.5", "2026-01-02 08:00:10,110,55,30,10,1.5"]
+        upload = SimpleUploadedFile("TBM_第8环.csv", "\n".join(gap).encode("utf-8"), content_type="text/csv")
+        response = client.post(
+            "/api/shield/tunneling_data/import_csv/",
+            {"file": upload, "project": self.opening.project_id, "shield_machine": self.opening.shield_model_id, "segment_count": 1},
+            format="multipart", HTTP_USER_AGENT="shield-tunneling-import-test",
+        )
+        self.assertEqual(response.data["code"], 2000, response.data)
+        [row] = ShieldTunnelingData.objects.filter(ring_no="8")
+        self.assertIsNone(row.counter_revolutions)
+        self.assertEqual(row.integrated_revolutions, 0.5)
+
+    def test_desktop_opening_rejects_non_finite_or_negative_revolution_readings(self):
+        for value, message in (("nan", "必须是有限的数值"), ("inf", "必须是有限的数值"), ("-1", "0")):
+            serializer = WarehouseOpeningBasicInfoCreateUpdateSerializer(
+                self.opening, data={"right_revolution_reading": value}, partial=True,
+            )
+            self.assertFalse(serializer.is_valid(), value)
+            # 序列化器的错误以字段的 verbose_name 为键
+            [errors] = serializer.errors.values()
+            self.assertIn(message, str(errors[0]), value)
+        serializer = WarehouseOpeningBasicInfoCreateUpdateSerializer(
+            self.opening, data={"right_revolution_reading": "485.5", "left_revolution_reading": None}, partial=True,
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_field_options_are_served_by_backend(self):
         request = self.request_for(self.first_operator)

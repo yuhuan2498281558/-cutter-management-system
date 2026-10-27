@@ -1,3 +1,6 @@
+import math
+
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, RegexValidator
 from django.db import models, transaction
 from django.conf import settings
@@ -7,6 +10,12 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from dvadmin.utils.models import CoreModel
 from .cutter_position_scope import is_active_cutter_position
+
+
+def validate_finite(value):
+    # NaN、Infinity 能通过 MinValueValidator，存进去后接口无法序列化成 JSON
+    if value is not None and not math.isfinite(value):
+        raise ValidationError("必须是有限的数值")
 
 
 TOOL_TYPES = [
@@ -554,10 +563,12 @@ class WarehouseOpeningBasicInfo(CoreModel):
     usage_distance = models.FloatField(verbose_name="usage distance", blank=True, null=True)
     # 开仓时盾构机上刀盘右转、左转累计旋转数的读数；与同机上一次开仓相减得到期间刀盘圈数
     right_revolution_reading = models.FloatField(
-        verbose_name="cutterhead right revolution reading", blank=True, null=True, validators=[MinValueValidator(0)],
+        verbose_name="cutterhead right revolution reading", blank=True, null=True,
+        validators=[MinValueValidator(0), validate_finite],
     )
     left_revolution_reading = models.FloatField(
-        verbose_name="cutterhead left revolution reading", blank=True, null=True, validators=[MinValueValidator(0)],
+        verbose_name="cutterhead left revolution reading", blank=True, null=True,
+        validators=[MinValueValidator(0), validate_finite],
     )
 
     class Meta:

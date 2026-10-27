@@ -366,6 +366,8 @@ class RoutingRefreshTests(SimpleTestCase):
         self.assertIn('分段均值偏高筛查', answer)
         self.assertIn('| 5 | 2 | 2026-01-01 10:00 | 2026-01-01 10:05 | 总推力 | 180 | 100 | 1.8 |', answer)
         self.assertNotIn('波动', answer)
+        # 服务层调用不再传单位，报告用贯入度的 mm/r
+        self.assertIn('| 贯入度 | mm/r |', answer)
 
     def test_correlation_coverage_and_no_comparison_for_insufficient_overlap(self):
         data = {'total_records': 2, 'comparable_segment_count': 0, 'coverage': {

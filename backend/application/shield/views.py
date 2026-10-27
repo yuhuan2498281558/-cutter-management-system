@@ -784,11 +784,12 @@ TUNNELING_GAP_SECONDS = 120
 REVOLUTION_READINGS = ('right_revolution_reading', 'left_revolution_reading')
 
 
-def _segment_revolutions(segments):
+def _segment_revolutions(segments, counters=True):
     """一环按时间分好的各段 → 每段的 (计数器圈数, 积分圈数)。
 
     两种圈数都按相邻两个采样点累加，这一小段记在后一个点所在的段，所以各段首尾相接，相加就是整环。
-    计数器：右转、左转累计旋转数各自的差相加；任一侧读数变小（计数器清零）或不足两个读数，整环为空。
+    计数器：右转、左转累计旋转数各自的差相加；任一侧读数变小（计数器清零）或不足两个读数，整环为空；
+    分段时丢掉了采样点（counters=False）也为空，因为丢掉的点里可能正好有清零。
     积分：前一个点的推进速度(mm/min) ÷ 贯入度(mm/r) × 间隔；断档、贯入度不大于 0 的小段不计，整环一段都算不了时为空。
     """
     counter, integrated = [0.0] * len(segments), [0.0] * len(segments)
@@ -811,7 +812,7 @@ def _segment_revolutions(segments):
                     integrated[index] += previous.advance_speed / previous.penetration * seconds / 60
                     integrable = True
             previous = record
-    counted = not reset and all(steps.values())
+    counted = counters and not reset and all(steps.values())
     return [(round(c, 3) if counted else None, round(i, 3) if integrable else None) for c, i in zip(counter, integrated)]
 
 
@@ -888,7 +889,9 @@ class ShieldTunnelingDataViewSet(CustomModelViewSet):
         records = []
         for group in grouped_records.values():
             segments = _split_records_into_time_segments(group, segment_count, lambda item: item.record_time)
-            for (segment_index, segment), (counter, integrated) in zip(segments, _segment_revolutions(segments)):
+            # 有采集时间的点存在时，缺时间的点排不出先后，分段会丢掉它们
+            kept_all = sum(len(segment) for _, segment in segments) == len(group)
+            for (segment_index, segment), (counter, integrated) in zip(segments, _segment_revolutions(segments, kept_all)):
                 record = _average_tunneling_records(
                     segment,
                     import_source=upload_file.name,

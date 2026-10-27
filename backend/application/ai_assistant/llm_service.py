@@ -275,7 +275,6 @@ _HISTORY_DB_URL = os.environ.get(
 
 
 _DEFAULT_PROJECT_ID = os.environ.get("DEMO_PROJECT_ID", "demo-project")
-PENETRATION_FORCE_UNIT = os.environ.get("AI_ASSISTANT_PENETRATION_FORCE_UNIT", "")
 
 # Agent 工具的公开参数不包含 project_id，项目范围必须由当前 HTTP 请求绑定，
 # 不能让模型猜测或选择项目。ContextVar 只在单次工具函数执行期间设置，既能
@@ -2157,10 +2156,10 @@ class ToolAssistant:
         return ""
 
     def _format_recommend_tools_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("recommendation", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("recommendation", json.loads(raw), self._answer_table, scope)
 
     def _format_tool_performance_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("performance", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("performance", json.loads(raw), self._answer_table, scope)
 
     def _format_opening_efficiency_answer(self, raw: str) -> str:
         data = json.loads(raw)
@@ -2215,7 +2214,7 @@ class ToolAssistant:
         return "\n".join(lines)
 
     def _format_stratum_wear_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("stratum_wear", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("stratum_wear", json.loads(raw), self._answer_table, scope)
 
     @staticmethod
     def _answer_table(headers, rows) -> list[str]:
@@ -2270,7 +2269,7 @@ class ToolAssistant:
         return "\n".join(lines)
 
     def _format_manufacturer_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("manufacturer", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("manufacturer", json.loads(raw), self._answer_table, scope)
 
     def _format_opening_answer(self, raw: str, sort_abnormal: bool = False) -> str:
         data = json.loads(raw)
@@ -2492,13 +2491,13 @@ class ToolAssistant:
         return "\n".join(lines)
 
     def _format_trend_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("change_trend", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("change_trend", json.loads(raw), self._answer_table, scope)
 
     def _format_position_stratum_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("position_stratum", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("position_stratum", json.loads(raw), self._answer_table, scope)
 
     def _format_stratum_distribution_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("stratum_distribution", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("stratum_distribution", json.loads(raw), self._answer_table, scope)
 
     def _format_metric_stats(self, name: str, stats: dict, unit: str) -> str:
         avg = stats.get("avg")
@@ -2515,24 +2514,17 @@ class ToolAssistant:
             parts.append(f"最大 {round(float(max_value), 3)}{unit}")
         return f"- {name}：" + "，".join(parts)
 
-    def _format_penetration_force(self, value) -> str:
-        if value is None:
-            return "暂无"
-        unit = PENETRATION_FORCE_UNIT.strip()
-        suffix = unit if unit else "（原始值）"
-        return f"{round(float(value), 3)}{suffix}"
-
     def _format_analysis_payload_answer(self, title: str, data: dict, scope: dict = None) -> str | None:
         if 'manufacturers' in data:
-            return render_report('manufacturer', data, self._answer_table, scope, PENETRATION_FORCE_UNIT)
+            return render_report('manufacturer', data, self._answer_table, scope)
         if 'stratum_analysis' in data:
-            return render_report('stratum_wear', data, self._answer_table, scope, PENETRATION_FORCE_UNIT)
+            return render_report('stratum_wear', data, self._answer_table, scope)
         if '掘进-磨损关联' in title:
-            return render_report('tunneling_correlation', data, self._answer_table, {key: value for key, value in (scope or {}).items() if key in {'project_id', 'ring_range'}}, PENETRATION_FORCE_UNIT)
+            return render_report('tunneling_correlation', data, self._answer_table, {key: value for key, value in (scope or {}).items() if key in {'project_id', 'ring_range'}})
         if 'anomaly_fields' in data:
-            return render_report('tunneling_anomaly', data, self._answer_table, scope, PENETRATION_FORCE_UNIT)
+            return render_report('tunneling_anomaly', data, self._answer_table, scope)
         if 'metrics' in data:
-            return render_report('tunneling_summary', data, self._answer_table, scope, PENETRATION_FORCE_UNIT)
+            return render_report('tunneling_summary', data, self._answer_table, scope)
         # 常用规则回答直接展示原始统计字段，避免旧 facts/highlights 重复数字与通用建议。
         if 'top_positions' in data:
             return self._format_cutter_position_answer(json.dumps(data, ensure_ascii=False))
@@ -2628,13 +2620,13 @@ class ToolAssistant:
             return structured_answer
 
     def _format_tunneling_summary_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("tunneling_summary", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("tunneling_summary", json.loads(raw), self._answer_table, scope)
 
     def _format_tunneling_trend_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("tunneling_trend", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("tunneling_trend", json.loads(raw), self._answer_table, scope)
 
     def _format_tunneling_anomaly_answer(self, raw: str, scope: dict = None) -> str:
-        return render_report("tunneling_anomaly", json.loads(raw), self._answer_table, scope, PENETRATION_FORCE_UNIT)
+        return render_report("tunneling_anomaly", json.loads(raw), self._answer_table, scope)
 
     def _format_recent_abnormal_wear_cause_answer(self, user_query: str, context: dict = None) -> str:
         params = self._context_params(user_query, context)
@@ -2660,7 +2652,7 @@ class ToolAssistant:
         if any(result.get('error') for result in (change, stratum_wear, tunneling, opening)):
             raise RuntimeError("关联数据查询失败，请稍后重试；当前不能据此判断没有数据")
 
-        return render_abnormal_cause(change, stratum_wear, tunneling, opening, params, self._answer_table, PENETRATION_FORCE_UNIT)
+        return render_abnormal_cause(change, stratum_wear, tunneling, opening, params, self._answer_table)
     def _direct_stratum_wear_analysis(self, user_query: str, context: dict = None) -> str:
         params = self._context_params(user_query, context)
         raw = analyze_stratum_wear_correlation(json.dumps(params, ensure_ascii=False))
