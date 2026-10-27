@@ -138,7 +138,7 @@ test('tracing a tool needs a tool number before the question can be sent', async
 });
 
 const titles = templates => Array.from(templates, template => template.title);
-const OPENING_REVIEW = '复盘最近5次开仓：列出环号、开仓间隔、开仓时长、换刀时长、检查数、更换数和异常率，找出异常率最高的几次开仓，并列出这几次的高频刀位和需关注未更换的刀。';
+const OPENING_REVIEW = '复盘最近5次开仓：列出环号、开仓间隔、开仓时长、换刀时长、检查数、更换数和异常率，找出异常率最高的几次开仓，并列出这几次更换较多的刀位和需关注未更换的刀。';
 
 test('switching to the model path picks the first default template, ticks its data types and fills its question without a prefix', async () => {
   const h = loadInput();
@@ -166,15 +166,15 @@ test('choosing a template adds its data types and writes its question with the c
   h.selectedSources.value = ['cost'];
   h.handleTemplateChange('型号选型参考');
   assert.deepEqual(Array.from(h.selectedSources.value), ['tool_change', 'manufacturer', 'cost']);
-  assert.equal(h.inputText.value, '列出全部刀具各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。');
+  assert.equal(h.inputText.value, '列出全部刀具各型号已拆下刀具的平均服役环数和样本数，再逐家列出各厂家的新刀报价和每环报价（报价 ÷ 该型号平均服役环数），按每环报价从低到高排序，作为选型参考，并说明样本量和报价的局限。');
   assert.match(await renderInput(h), /<select class="slot-select">(<option value="(全部刀具|滚刀|刮刀)"( selected)?>(全部刀具|滚刀|刮刀)<\/option>){3}<\/select>/);
   h.templateParams.value['型号选型参考'].tool = '滚刀';
   h.composeModelQuestion();
-  assert.equal(h.inputText.value, '列出滚刀各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。');
+  assert.equal(h.inputText.value, '列出滚刀各型号已拆下刀具的平均服役环数和样本数，再逐家列出各厂家的新刀报价和每环报价（报价 ÷ 该型号平均服役环数），按每环报价从低到高排序，作为选型参考，并说明样本量和报价的局限。');
   h.handleTemplateChange('前后环段对比');
   h.templateParams.value['前后环段对比'].n = 30;
   h.composeModelQuestion();
-  assert.equal(h.inputText.value, '以30环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段的高频刀位；只做逐段对比，不下趋势结论。');
+  assert.equal(h.inputText.value, '以30环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段更换次数最多的刀位；只做逐段对比，不下趋势结论。');
 });
 
 test('model templates need their parameters before the question can be sent', async () => {

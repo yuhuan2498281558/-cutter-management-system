@@ -56,7 +56,8 @@ export type FocusSource =
   | 'manufacturer'
   | 'cost'
   | 'repair'
-  | 'lifecycle';
+  | 'lifecycle'
+  | 'mileage';
 
 export interface ModelPromptTemplate {
   title: string;

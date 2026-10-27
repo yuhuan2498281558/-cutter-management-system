@@ -24,6 +24,7 @@ export const FOCUS_SOURCES: Array<{ value: FocusSource; label: string }> = [
   { value: 'cost', label: '报价与登记金额' },
   { value: 'repair', label: '旧刀返修' },
   { value: 'lifecycle', label: '单把刀追溯' },
+  { value: 'mileage', label: '寿命与里程' },
 ];
 
 // 模板参数 {tool} 的可选刀型
@@ -33,19 +34,20 @@ export const TOOL_TYPE_OPTIONS = ['全部刀具', '滚刀', '刮刀'];
 // {n} 的含义同规则路径的 numKey，{tool} 是刀型，{id} 是用户填写的刀具编号（必填）。
 export const modelPromptTemplates: ModelPromptTemplate[] = [
   { title: '近期异常磨损分布', query: '统计最近{n}环的现场观测记录，按磨损类型、刀具类型和刀位列出异常磨损的数量和占比，指出异常集中的刀位和环段，并列出需要复核的记录。', sources: ['tool_change', 'position'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
-  { title: '前后环段对比', query: '以{n}环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段的高频刀位；只做逐段对比，不下趋势结论。', sources: ['tool_change', 'position'], numKey: 'interval', min: 10, max: 200, step: 10, defaultValue: 50 },
-  { title: '开仓复盘', query: '复盘最近{n}次开仓：列出环号、开仓间隔、开仓时长、换刀时长、检查数、更换数和异常率，找出异常率最高的几次开仓，并列出这几次的高频刀位和需关注未更换的刀。', sources: ['opening', 'inspection', 'position'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5, isDefault: true },
+  { title: '前后环段对比', query: '以{n}环为一段，对比各段的更换次数、更换率和已分类异常率，说明变化最大的环段和该段更换次数最多的刀位；只做逐段对比，不下趋势结论。', sources: ['tool_change', 'position'], numKey: 'interval', min: 10, max: 200, step: 10, defaultValue: 50 },
+  { title: '开仓复盘', query: '复盘最近{n}次开仓：列出环号、开仓间隔、开仓时长、换刀时长、检查数、更换数和异常率，找出异常率最高的几次开仓，并列出这几次更换较多的刀位和需关注未更换的刀。', sources: ['opening', 'inspection', 'position'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5, isDefault: true },
   { title: '检查完成情况', query: '检查最近{n}次开仓的现场检查完成情况：各次开仓已检查、未检查和需关注未更换的数量，列出还没检查的刀位。', sources: ['inspection', 'opening'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
   { title: '异常集中的刀位', query: '找出异常观测数最多的前{n}个刀位，列出每个刀位的现场观测数、异常类型和更换次数，并给出这些刀位最近几次开仓的检查记录。', sources: ['position', 'tool_change', 'inspection'], numKey: 'topN', min: 3, max: 30, defaultValue: 10 },
-  { title: '开仓位置地层对照', query: '列出最近{n}次开仓所在位置的地层和仓间经过的地层（按纵断面面积），与每次开仓的异常率、高频刀位并列对照；只做并列，不判断地层是否导致磨损。', sources: ['stratum', 'opening', 'tool_change'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
+  { title: '开仓位置地层对照', query: '列出最近{n}次开仓所在位置的地层和仓间经过的地层（按纵断面面积），与每次开仓的异常率、更换较多的刀位并列对照；只做并列，不判断地层是否导致磨损。', sources: ['stratum', 'opening', 'tool_change'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
   { title: '地层组成与换刀', query: '统计最近{n}环的纵断面六类面积占比，并与同一范围的换刀次数、更换率和异常率并列列出。', sources: ['stratum', 'tool_change'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
   { title: '掘进与换刀覆盖核对', query: '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入度和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。', sources: ['tunneling', 'tool_change'] },
   { title: '掘进分段均值偏高筛查', query: '筛查已导入的掘进数据中推力、扭矩、贯入度分段均值偏高的记录，列出环号、时间段和数值，并说明这类数据能说明什么、不能说明什么。', sources: ['tunneling'] },
   { title: '厂家寿命与异常率', query: '按刀具原安装时的厂家，对比已确认拆下刀具的平均服役环数、已分类异常率和样本量，另列各厂家本次新装的供货次数和登记金额；样本少的厂家单独说明。', sources: ['manufacturer', 'cost'] },
-  { title: '型号选型参考', query: '列出{tool}各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。', sources: ['cost', 'manufacturer', 'tool_change'], toolParam: true },
+  { title: '型号选型参考', query: '列出{tool}各型号已拆下刀具的平均服役环数和样本数，再逐家列出各厂家的新刀报价和每环报价（报价 ÷ 该型号平均服役环数），按每环报价从低到高排序，作为选型参考，并说明样本量和报价的局限。', sources: ['cost', 'manufacturer', 'tool_change'], toolParam: true },
   { title: '登记金额汇总', query: '汇总新装登记金额、厂家已确认的返修金额和待厂家反馈的返修金额，按厂家和刀型分别列出，并说明这些是登记金额不是实际支出。', sources: ['cost', 'repair'] },
   { title: '返修进度', query: '统计旧刀返修的厂家反馈进度：待反馈、已确认、已归档各多少，已报废和待厂家确认的报废建议各多少，列出部件失效原因的分布。', sources: ['repair'] },
-  { title: '失效原因与刀位', query: '列出轴承、刀圈等部件失效的旧刀，对照这些刀拆下时所在的刀位和开仓，指出重复出现的刀位。', sources: ['repair', 'position', 'opening'] },
+  { title: '失效原因与刀位', query: '统计轴承、刀圈等部件失效的旧刀，按刀位列出出现次数、旧刀编号和拆下时的开仓环号，指出重复出现的刀位。', sources: ['repair', 'position', 'opening'] },
+  { title: '按轨迹比较厂家里程', query: '在同一轨迹分带内，对比各厂家{tool}的至更换里程、非正常比例、每百公里磨损和每公里成本；少于 5 段的单独说明，并说明里程有多少是估算的，不评最佳厂家。', sources: ['mileage', 'manufacturer'], toolParam: true },
   { title: '追溯一把刀', query: '追溯刀具 {id} 的安装、检查、拆下和返修全过程，列出缺失的环节。', sources: ['lifecycle'], textKey: 'id' },
   { title: '近期数据复核清单', query: '汇总最近{n}环的换刀、开仓检查、刀位、地层和旧刀返修数据，生成一份数据复核清单：每条写明对象（刀位、开仓或环段）、依据的数字和建议的复核动作，不推断原因。', sources: ['tool_change', 'opening', 'inspection', 'position', 'stratum', 'repair'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100, isDefault: true },
   { title: '异常磨损待复核线索', query: '结合最近{n}环的换刀、地层和掘进数据，列出异常磨损的待复核线索；某类数据覆盖不到这个范围时如实说明，不断言原因。', sources: ['tool_change', 'stratum', 'tunneling'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100, isDefault: true },
@@ -153,6 +155,16 @@ export const quickQuestionGroups: QuickQuestionGroup[] = [
       { label: '刮刀选型参考', query: '推荐刮刀型号，列出平均服役环数、样本数和新刀报价区间' },
       { label: '追溯刀具', query: '追溯刀具 {id} 的安装、检查、拆下和返修过程', textKey: 'id' },
       { label: '可查数据', query: '现在有哪些数据可以查，各类数据覆盖到哪里' },
+    ],
+  },
+  {
+    title: '刀具里程',
+    desc: '按刀位轨迹和刀盘圈数算的至更换里程、每公里成本',
+    items: [
+      { label: '滚刀至更换里程', query: '滚刀至更换里程按厂家对比' },
+      { label: '刮刀至更换里程', query: '刮刀至更换里程按厂家对比' },
+      { label: '每公里成本与磨损', query: '统计各厂家刀具每公里成本和每百公里磨损' },
+      { label: '单个刀位里程', query: '统计S1L刀位历次服役段的里程' },
     ],
   },
 ];
