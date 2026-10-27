@@ -403,6 +403,10 @@ class ContextEventTests(SimpleTestCase):
     def test_full_history_asks_for_a_reset_instead_of_a_smaller_range(self):
         self.memory.append_turn(self.memory.scope_key("event-test"), "旧问题", "长" * 300000)
         self.model.mode = "answer"
+        # 整理不出空间时（如 Django 后端）才走到这条提示；能整理的情况见 test_history_compaction
+        self.assistant._compaction_check = lambda snapshot, context, text: (
+            False, self.assistant._memory_messages(snapshot, context), None,
+        )
         for context_mode in ("auto", "new"):
             result = self.assistant.chat("你好", {**self.options, "context_mode": context_mode})
             self.assertFalse(result["success"])

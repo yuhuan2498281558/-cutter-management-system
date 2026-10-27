@@ -10,7 +10,7 @@
 4. 输入限额 = 配置窗口 − 输出上限 − 安全余量。压缩后仍超限则抛出明确错误，不静默删除证据或更改查询范围。本轮查询结果导致超限时，提示缩小范围或拆分问题；不算本轮结果、历史本身就已超限时抛出 `HistoryBudgetExceeded`，提示点「重置对话」清空历史，因为缩小范围和 new 模式都不会减少回放的历史。
 5. 将输出上限实际传给供应商。供应商明确返回 `finish_reason=length` 或 `done_reason=length` 时视为未完成；直聊/Agent 不保存该轮，也不发送成功 `done`。可选润色失败仍沿用原有的完整规则回答回退。
 
-原 `intermediate_steps`、工具事件、参数校验及纠错关联均保留原文。列式编码不合并均值、不重算分母、不改变 TopK，不将未知值补为零；错误、异常 JSON、重复键及存在数值精度风险的输入保持原文。统计约束继续使用共用 `ANSWER_POLICY`。阶段 A 不裁剪、不摘要早前工具结果，不创建检查点、不做超限恢复或手动压缩；80% 触发线只计算和输出，阶段 B 才执行压缩。
+原 `intermediate_steps`、工具事件、参数校验及纠错关联均保留原文。列式编码不合并均值、不重算分母、不改变 TopK，不将未知值补为零；错误、异常 JSON、重复键及存在数值精度风险的输入保持原文。统计约束继续使用共用 `ANSWER_POLICY`。早前对话的精简和摘要见下文“阶段 B：自动整理”。
 
 ## 事件存储与提交
 
@@ -49,9 +49,9 @@ history 接口 baseline 为下一问起步预测：`最后一次实际 prompt_to
 
 baseline 只使用配置和纯消息编码/估算，不初始化模型客户端、不调用有副作用的 prepare、不请求供应商。供应商别名仍按最近返回的实际模型名记录；同一别名在供应商侧重新映射，只有下一次响应才能得知。直接聊天和不同工具组的 system/schema 与默认全工具 baseline 不同时也会完整估算。
 
-### 阶段 B 前端已按以下约定实现（2026-10-27）
+### 阶段 B 前端约定（2026-10-27）
 
-后端没提供的字段，页面不显示对应内容；阶段 B 后端按这里实现即可接上。
+后端没提供的字段，页面不显示对应内容。精简版后端已提供除 `compaction.manual` 和 `POST /api/ai/compact/` 之外的全部字段。
 
 - `compaction.auto: true`：后端到触发线会自动整理。面板说明改为“用到 X 时先精简早前的大查询结果……”，接近触发线时圆环提示“到了会自动整理早前对话”。
 - `compaction.manual: true`：提供手动整理接口。历史至少 2 轮时，面板底部显示“整理早前对话”按钮。
@@ -61,7 +61,23 @@ baseline 只使用配置和纯消息编码/估算，不初始化模型客户端�
 - `POST /api/ai/compact/`：立即整理当前用户的早前对话，成功返回 `{"code": 2000, "data": {"context": <baseline ContextInfo>}}`；失败按现有格式返回 `msg`，页面显示“整理失败：<msg>”。
 - memory 事件和同步结果的 `memory` 已带 `turn_sequences: [问题序号, 回答序号]`（本次已实现），页面据此给本次会话的新消息补序号。
 
-`compaction` 在阶段 A 固定为 `{"state":"none","checkpoints":0,"pruned_results":0,"last_at":null,"last_before":null,"last_after":null}`。参考本机 dsh-compaction 的工具配对边界与 dsh-compaction-basic 的窗口比例计算；没有引入其压缩、裁剪或检查点执行逻辑。
+## 阶段 B：自动整理（精简版，2026-10-27）
+
+参考业界智能体框架“先裁剪、再摘要、保留最近原文”的分层思路，自行实现；没有引入外部代码。只在 legacy 记忆后端生效，Django 后端和 ablate 不整理（`compaction.auto` 为 false）。
+
+**何时整理**：规则直答不调模型，不整理。其余路径在调用模型之前，按“系统提示 + 全部工具 schema + 回放的历史 + 本轮输入”估算第一次调用的输入量；有实测锚点时乘以“实测 / 估算”比例（限 0.5–1.5 倍），与用量圆环的口径一致。超过触发线才整理。
+
+**怎么整理**：
+1. 从最近一轮往前累加，装得下 `window × retain_ratio` 的完整轮次保留原文；再往前的轮次参与整理。整理以轮为单位，不会拆开工具调用和结果的配对。
+2. 先精简：参与整理的轮次里，不小于 1000 估算 token 的工具结果换成“【早前查询结果已精简】……保留的汇总”，标量字段照抄，长列表换成条数。工具调用参数保留在历史里，模型需要明细时按原参数重查。精简后的结果不再算作“历史证据”，追问这些轮次的数字要重新查库。
+3. 精简后仍超触发线，就把参与整理的轮次（连同之前的摘要）写成摘要。提示词见 `prompts.CHECKPOINT_PROMPT`，分为用户目标与纠正、查询范围、已执行的查询、关键数字、结论与证据限制、未完成事项六栏。摘要里的数字逐个核对，必须能在材料中找到（个位整数不查）；对不上就告诉模型并重写一次，仍对不上或模型调用失败时，改用“之前的摘要 + 每轮问题和回答开头”的节选。摘要调用的计费计入本轮。
+4. 回放时，摘要覆盖的轮次替换为一问一答：问为“【早前对话摘要】……”，答为固定的确认语；之后的轮次按精简记录或原文回放。
+
+**记录**：每次整理在 `ai_context_events` 追加一条 `kind=compaction` 的记录，payload 为 `{"mode": "prune" | "checkpoint", "through_sequence", "summary"（仅摘要）, "before", "after"}`，写入时检查 generation，对话被重置后不写。回放只看最新的摘要和最远的精简位置，因此两次整理之间历史前缀不变，供应商前缀缓存仍可命中。reset 会连同这些记录一起删除。
+
+**超长重试**：工具调用路径（同步与流式）在供应商报上下文超长，或本地预算超限时，强制整理一次（不看触发线；没有可保留的轮次时整理全部历史）并重跑本轮。流式只在页面还没收到回答文字时重试。整理不出空间时照常报错，历史本身超限仍提示“请点「重置对话」”。
+
+**页面**：流式在整理前后发送 `status` 事件（compacting / done）。`compaction` 字段为 `{"state": "none" | "pruned" | "checkpoint", "auto", "manual": false, "checkpoints", "pruned_results", "last_at", "last_before", "last_after", "through_sequence"}`，`history` 另带 `summarized_turns` 和 `pruned_results`。精简版不提供手动整理接口和回查原文工具。
 
 ## 配置
 
@@ -70,8 +86,8 @@ baseline 只使用配置和纯消息编码/估算，不初始化模型客户端�
 - `AI_CONTEXT_WINDOW_TOKENS`：应用预算窗口。OpenAI/DeepSeek/兼容 API 默认 `256000`；Ollama 默认取 `OLLAMA_NUM_CTX`（缺省 `4096`），不得超过该值。
 - `AI_CONTEXT_OUTPUT_TOKENS`：预留并实际限制输出。API 默认 `8192`；Ollama 默认取 `OLLAMA_NUM_PREDICT`（缺省 `1024`）。显式配置优先。
 - `AI_CONTEXT_SAFETY_MARGIN_TOKENS`：API 默认 `4096`，Ollama 默认 `512`。
-- `AI_CONTEXT_TRIGGER_RATIO`：默认 `0.8`，触发线 `window × trigger_ratio = 204800`，仅供阶段 B 使用。
-- `AI_CONTEXT_RETAIN_RATIO`：默认 `0.16`，仅供阶段 B 使用；必须满足 `0 < retain_ratio < trigger_ratio < 1`。
+- `AI_CONTEXT_TRIGGER_RATIO`：默认 `0.8`，触发线 `window × trigger_ratio = 204800`，本轮第一次调用的预计输入量超过它时整理早前对话。
+- `AI_CONTEXT_RETAIN_RATIO`：默认 `0.16`，整理时最近约 `window × retain_ratio = 40960` 的完整轮次保留原文；必须满足 `0 < retain_ratio < trigger_ratio < 1`。
 - `AI_CONTEXT_COMPACTION_MIN_TOKENS`：默认 `1000`，低于阈值的工具正文不改写。
 - `AI_CONTEXT_TOOL_PROTOCOL_TOKENS`：默认 `1024`，有非空tools/functions的请求额外计入一次协议预留，包括tool_choice=none；工具schema仍完整计数。用于供应商工具模板开销，与安全余量分开。
 

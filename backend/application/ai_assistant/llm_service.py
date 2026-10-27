@@ -29,13 +29,14 @@ from .tools import (
     classify_wear_counts,
     is_abnormal_wear,
 )
-from .prompts import SYSTEM_PROMPT, ANSWER_POLICY
+from .prompts import SYSTEM_PROMPT, ANSWER_POLICY, CHECKPOINT_PROMPT
 from .agent_views import AGENT_PAGE_SIZE, agent_view
 from .context_budget import (
-    ContextUsage, GuardedChatModel, context_usage, mark_context_message,
+    ContextBudgetExceeded, ContextUsage, GuardedChatModel, context_usage, mark_context_message,
     encode_messages, estimate_request_tokens, request_fingerprint,
 )
-from .context_events import ContextEventStore
+from .context_events import CHECKPOINT_HEADER, ContextEventStore
+from .token_estimation import estimate_tokens
 from .tools_inspections import query_tool_inspections
 from .tools_repairs import query_old_tool_repairs
 from .tools_lifecycle import trace_tool_lifecycle
@@ -67,6 +68,7 @@ import threading
 import functools
 from contextvars import ContextVar
 from copy import deepcopy
+from dataclasses import replace
 
 try:  # langchain-core >= 0.3.30
     from langchain_core.callbacks import UsageMetadataCallbackHandler
@@ -822,6 +824,59 @@ def _call_covers(args: dict, scope: dict) -> bool:
             return False
     return True
 
+
+# 供应商报上下文超长的说法；命中时整理历史后重试一次
+_CONTEXT_OVERFLOW_ERRORS = ("maximum context length", "context_length_exceeded", "context length", "prompt is too long")
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# 整理材料里单条回答最多保留的字数
+_CHECKPOINT_ANSWER_CHARS = 4000
+
+
+def _context_overflow(error) -> bool:
+    return isinstance(error, ContextBudgetExceeded) or any(
+        marker in str(error).lower() for marker in _CONTEXT_OVERFLOW_ERRORS
+    )
+
+
+def _unsupported_numbers(summary: str, material: str) -> list[str]:
+    """摘要里在材料中找不到的数字；个位整数（序号、栏目编号）不查。"""
+    def numbers(text):
+        return {item.replace(",", "") for item in _NUMBER.findall(text)}
+    known = numbers(material)
+    return sorted(item for item in numbers(summary) - known if not (item.isdigit() and int(item) < 10))
+
+
+def _history_turns(history):
+    """把回放的历史按轮切开：[(回答序号, 消息列表)]，早前摘要那一组的序号为 None。"""
+    groups = []
+    for message in history:
+        sequence = message.response_metadata.get("turn_sequence")
+        if sequence is not None or not groups:
+            groups.append((sequence, [message]))
+        else:
+            groups[-1][1].append(message)
+    return groups
+
+
+def _checkpoint_material(groups) -> str:
+    parts = []
+    for sequence, messages in groups:
+        if sequence is None:
+            parts.append("【之前的摘要】\n" + messages[0].content.removeprefix(CHECKPOINT_HEADER))
+            continue
+        lines = []
+        for message in messages:
+            if isinstance(message, HumanMessage):
+                lines.append(f"【用户】{message.content}")
+            elif isinstance(message, ToolMessage):
+                lines.append(f"【查询结果】{message.content}")
+            elif isinstance(message, AIMessage):
+                lines.extend(f"【查询】{call['name']} {json.dumps(call['args'], ensure_ascii=False)}" for call in message.tool_calls)
+                if message.content:
+                    lines.append(f"【助手】{message.content[:_CHECKPOINT_ANSWER_CHARS]}")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
 class ToolAssistant:
     """刀具管理智能助手"""
 
@@ -1155,12 +1210,152 @@ class ToolAssistant:
 
     def _memory_messages(self, snapshot: MemorySnapshot | None, context: dict = None):
         """回放已提交历史，查询槽位只加入当前轮输入。"""
+        return self._replayed_history(snapshot, context)[0]
+
+    def _replayed_history(self, snapshot, context=None):
+        """（回放的历史消息, 最近一次实测用量锚点）；按已保存的整理记录精简或摘要。"""
         if not snapshot or snapshot.backend == "ablate":
-            return []
-        messages, stats, _ = self.memory.protocol_history(snapshot, (context or {}).get("project_id"))
+            return [], None
+        messages, stats, anchor = self.memory.protocol_history(snapshot, (context or {}).get("project_id"))
+        stats = dict(stats)
+        compaction = stats.pop("compaction")
         if usage := context_usage.get():
             usage.history = stats
-        return [mark_context_message(message, memory=message.content) for message in messages]
+            usage.compaction = {**compaction, "auto": snapshot.backend == "legacy", "manual": False}
+        return [mark_context_message(message, memory=message.content) for message in messages], anchor
+
+    def _first_request_tokens(self, history, enriched_input, anchor) -> int:
+        """本轮第一次模型调用的输入量：按全部工具估算，有实测锚点时按“实测 / 估算”比例校正，与用量圆环一致。"""
+        policy = self._llm.policy
+        messages = [SystemMessage(content=SYSTEM_PROMPT), *history, HumanMessage(content=enriched_input)]
+        prepared, _, _ = encode_messages(messages, policy)
+        count = estimate_request_tokens(prepared, {"tools": [convert_to_openai_tool(item) for item in TOOLS]},
+                                        policy.tool_protocol_tokens)
+        if anchor and anchor.get("prompt_tokens") and anchor.get("request_estimate"):
+            count = int(count * min(1.5, max(0.5, anchor["prompt_tokens"] / anchor["request_estimate"])))
+        return count
+
+    def _compaction_check(self, snapshot, working_context, enriched_input):
+        """（是否到了触发线, 回放的历史, 本轮第一次调用的预计输入量）；不能整理时预计量为 None。"""
+        history, anchor = self._replayed_history(snapshot, working_context)
+        if not history or snapshot.backend != "legacy":
+            return False, history, None
+        self._ensure_llm_runtime()
+        if not isinstance(self._llm, GuardedChatModel):
+            return False, history, None
+        before = self._first_request_tokens(history, enriched_input, anchor)
+        return before > self._llm.policy.trigger_tokens, history, before
+
+    def _compact_history(self, snapshot, working_context, enriched_input, force=False):
+        """历史用到触发线时整理早前对话，返回（快照, 回放的历史）。
+
+        最近约 retain_ratio 个窗口的完整轮次保留原文；更早的轮次先精简大查询结果，
+        仍超线再整理成摘要。force 用于供应商报超长后的重试，不看触发线。
+        """
+        due, history, before = self._compaction_check(snapshot, working_context, enriched_input)
+        if before is None or not (due or force):
+            return snapshot, history
+        policy = self._llm.policy
+        turns = [item for item in _history_turns(history) if item[0] is not None]
+        kept, boundary = 0, None
+        for sequence, messages in reversed(turns):
+            kept += estimate_request_tokens(messages)
+            if kept > policy.context_tokens * policy.retain_ratio:
+                boundary = sequence
+                break
+        if boundary is None and force and turns:
+            boundary = turns[-1][0]
+        summarized, pruned = ContextEventStore.compaction_bounds(snapshot.context_events)
+        if boundary is None or boundary <= summarized:
+            return snapshot, history
+        project_id = working_context.get("project_id", "")
+
+        def trial(payload):
+            turn = ContextEventStore.compaction_turn(snapshot.scope_key, snapshot.generation, project_id, payload)
+            candidate = replace(snapshot, context_events=[*snapshot.context_events, turn])
+            trial_history, trial_anchor = self._replayed_history(candidate, working_context)
+            return trial_history, self._first_request_tokens(trial_history, enriched_input, trial_anchor)
+
+        payload = {"mode": "prune", "through_sequence": boundary, "before": before}
+        if boundary > pruned:
+            pruned_history, after = trial(payload)
+            if after > policy.trigger_tokens or force:
+                payload = None
+                material = [item for item in _history_turns(pruned_history) if item[0] is None or item[0] <= boundary]
+        else:
+            payload = None
+            material = [item for item in _history_turns(history) if item[0] is None or item[0] <= boundary]
+        if payload is None:
+            summary = self._write_checkpoint(material, snapshot)
+            payload = {"mode": "checkpoint", "through_sequence": boundary, "summary": summary, "before": before}
+            _, after = trial(payload)
+        payload["after"] = after
+        saved = self.memory.append_compaction(snapshot, project_id, payload)
+        if saved is None:
+            # 对话已被重置：不改历史，本轮按原样继续，保存时会因 generation 变化而拒绝
+            return snapshot, self._replayed_history(snapshot, working_context)[0]
+        logger.info("AI 历史已整理 mode=%s through=%s before=%s after=%s",
+                    payload["mode"], boundary, before, after)
+        return saved, self._replayed_history(saved, working_context)[0]
+
+    def _write_checkpoint(self, material_turns, snapshot) -> str:
+        """用模型把早前对话写成摘要，摘要里的数字要能在材料里找到；两次都对不上时改用问答节选。"""
+        policy = self._llm.policy
+        material = _checkpoint_material(material_turns)
+        # 材料超过一次调用的容量时，从最早的轮次开始舍弃
+        limit = policy.input_budget - estimate_tokens(CHECKPOINT_PROMPT) - 2048
+        dropped = 0
+        while estimate_tokens(material) > limit and dropped < len(material_turns) - 1:
+            dropped += 1
+            material = f"（更早的 {dropped} 轮内容过长，未纳入摘要）\n\n" + _checkpoint_material(material_turns[dropped:])
+        usage = ContextUsage()
+        token = context_usage.set(usage)
+        summary = None
+        try:
+            messages = [SystemMessage(content=CHECKPOINT_PROMPT), HumanMessage(content=material)]
+            for attempt in range(2):
+                text = self._llm.invoke(messages).content
+                if not isinstance(text, str) or not text.strip():
+                    break
+                missing = _unsupported_numbers(text, material)
+                if not missing:
+                    summary = text
+                    break
+                logger.warning("AI 历史摘要含材料里没有的数字（第%s次）：%s", attempt + 1, missing[:10])
+                if attempt == 0:
+                    messages += [AIMessage(content=text), HumanMessage(
+                        content=f"以下数字在材料里找不到：{'、'.join(missing)}。请删除或改成材料中的原值，重新输出完整摘要。"
+                    )]
+        except Exception as error:
+            logger.warning("AI 历史摘要生成失败，改用问答节选：%s", error)
+        finally:
+            context_usage.reset(token)
+        if current := context_usage.get():
+            current.add_provider_usage(usage.provider_usage)
+        return summary or self._excerpt_checkpoint(material_turns, snapshot)
+
+    def _excerpt_checkpoint(self, material_turns, snapshot) -> str:
+        """模型摘要不可用时的退路：之前的摘要加每轮问题和回答开头，数字都是原文。"""
+        stored = {answer.sequence: (question, answer) for question, answer in self.memory._complete_turns(snapshot.messages)}
+        lines = []
+        for sequence, messages in material_turns:
+            if sequence is None:
+                lines.append(messages[0].content.removeprefix(CHECKPOINT_HEADER))
+            elif sequence in stored:
+                question, answer = stored[sequence]
+                lines.append(f"- 问：{question.content}\n  答：{answer.content[:300]}")
+        return "（自动节选，未经整理）\n" + "\n".join(lines)
+
+    def _compact_after_overflow(self, error, snapshot, working_context, enriched_input):
+        """供应商或预算报上下文超长时强制整理一次；整理不出空间时返回 None，由调用方照常报错。"""
+        if not _context_overflow(error) or snapshot.backend != "legacy":
+            return None
+        compacted, history = self._compact_history(snapshot, working_context, enriched_input, force=True)
+        if compacted is snapshot:
+            return None
+        if usage := context_usage.get():
+            usage.clear_overflow()
+        return compacted, history
 
     def _extract_explicit_memory_slots(self, query: str) -> dict:
         # 被否定的实体不是本轮设置值；允许“取消滚刀限制，改查刮刀”设置新刀型。
@@ -3129,8 +3324,6 @@ class ToolAssistant:
         ))
         token = context_usage.set(usage)
         try:
-            history_messages = self._memory_messages(memory_snapshot, working_context)
-            history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
             logger.info("AI query user_id=%s query_chars=%s", user_id, len(user_query))
             needs_tools = self._model_needs_tools(merged_query, working_context)
             if working_context.get('require_project') and not working_context.get('project_id') and needs_tools:
@@ -3162,6 +3355,11 @@ class ToolAssistant:
                 payload["memory"] = self._memory_diagnostics(stored_snapshot, working_context)
                 return payload
 
+            # 调模型之前：历史用到触发线就先整理
+            memory_snapshot, history_messages = self._compact_history(memory_snapshot, working_context, enriched_input)
+            working_context["memory_snapshot"] = memory_snapshot
+            history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
+
             if not needs_tools:
                 answer, chat_usage = self._direct_chat(merged_query, working_context)
                 stored_snapshot = self._store_turn_and_summarize(
@@ -3185,11 +3383,23 @@ class ToolAssistant:
                 project_id=working_context.get("project_id", ""),
                 model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
             )
-            result = self._invoke_with_retry(
-                {"input": enriched_input, "chat_history": history_messages},
-                config=config,
-                executor=executor,
-            )
+            try:
+                result = self._invoke_with_retry(
+                    {"input": enriched_input, "chat_history": history_messages},
+                    config=config,
+                    executor=executor,
+                )
+            except Exception as error:
+                compacted = self._compact_after_overflow(error, memory_snapshot, working_context, enriched_input)
+                if compacted is None:
+                    raise
+                memory_snapshot, history_messages = compacted
+                history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
+                result = self._invoke_with_retry(
+                    {"input": enriched_input, "chat_history": history_messages},
+                    config=config,
+                    executor=executor,
+                )
 
             # 验证：需要查数据的问题必须有工具调用记录
             retry_count = 0
@@ -3259,8 +3469,6 @@ class ToolAssistant:
                 raise RuntimeError("当前无法确定查询项目，请先明确项目；存在多个项目时需要从指定项目入口查询")
             ctx_msg = self._build_context_message(working_context)
             enriched_input = f"{ctx_msg}\n\n{user_query}" if ctx_msg else user_query
-            history_messages = self._memory_messages(memory_snapshot, working_context)
-            history_evidence = self._history_evidence_covers(history_messages, working_context, original_query)
             usage.inputs[enriched_input] = {"system": ctx_msg or "", "question": user_query}
             memory_info = await sync_to_async(self.memory.context_info)(memory_snapshot, include_recent=(
                 memory_snapshot.backend != "ablate"
@@ -3269,6 +3477,19 @@ class ToolAssistant:
             final_result = None
             model_selects_tools = self._route_mode_for_context(working_context) == "agent"
             direct = await sync_to_async(self._direct_route)(user_query, working_context) if not model_selects_tools else None
+            if not direct:
+                # 调模型之前：历史用到触发线就先整理，页面显示“正在整理早前对话”
+                due, history_messages, _ = await sync_to_async(self._compaction_check)(
+                    memory_snapshot, working_context, enriched_input,
+                )
+                if due:
+                    yield {"type": "status", "stage": "compacting"}
+                    memory_snapshot, history_messages = await sync_to_async(self._compact_history)(
+                        memory_snapshot, working_context, enriched_input,
+                    )
+                    yield {"type": "status", "stage": "done"}
+                working_context["memory_snapshot"] = memory_snapshot
+                history_evidence = self._history_evidence_covers(history_messages, working_context, original_query)
 
             if direct:
                 answer = await self._polish_direct_answer_async(user_query, direct["answer"])
@@ -3299,47 +3520,63 @@ class ToolAssistant:
                     project_id=working_context.get("project_id", ""),
                     model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
                 )
-                root_id = None
-                final_result = None
-                successful_tools = 0
-                unresolved_tools = []
-                tool_inputs = {}
-                model_round = 0
                 tool_names = {item.name for item in TOOLS}
-                async with aclosing(executor.astream_events(
-                    {"input": enriched_input, "chat_history": history_messages}, version="v2",
-                )) as events:
-                    async for event in events:
-                        kind = event.get("event")
-                        if kind == "on_chain_start" and root_id is None and not event.get('parent_ids'):
-                            root_id = event.get('run_id')
-                        elif kind == 'on_chat_model_start':
-                            model_round += 1
-                        elif kind == 'on_tool_start' and event.get('name') in tool_names:
-                            if event.get('run_id'):
-                                tool_inputs[event['run_id']] = (
-                                    event['name'], event.get('data', {}).get('input'), model_round or None,
-                                )
-                        elif kind == 'on_tool_end' and event.get('name') in tool_names:
-                            started = tool_inputs.pop(event.get('run_id'), None)
-                            arguments, batch = (started[1], started[2]) if started and started[0] == event['name'] else (None, None)
-                            if not self._tool_observation_succeeded(event.get('data', {}).get('output')):
-                                if not self._tool_argument_error(event.get('data', {}).get('output')):
-                                    raise RuntimeError("数据查询失败，无法给出完整分析，请稍后重试")
-                                unresolved_tools.append(self._tool_argument_failure(
-                                    event['name'], arguments, event.get('data', {}).get('output'), batch,
-                                ))
-                            else:
-                                self._resolve_tool_argument_failure(unresolved_tools, event['name'], arguments, batch)
-                                successful_tools += 1
-                        elif kind == 'on_chain_end' and root_id is not None and event.get('run_id') == root_id:
-                            final_result = event.get('data', {}).get('output')
-                        elif kind == "on_chat_model_stream" and (successful_tools or history_evidence) and not unresolved_tools:
-                            chunk = event.get('data', {}).get("chunk")
-                            text = getattr(chunk, 'content', None)
-                            if isinstance(text, str) and text:
-                                full_answer.append(text)
-                                yield {"type": "chunk", "content": text}
+                for attempt in (1, 2):
+                    root_id = None
+                    final_result = None
+                    successful_tools = 0
+                    unresolved_tools = []
+                    tool_inputs = {}
+                    model_round = 0
+                    try:
+                        async with aclosing(executor.astream_events(
+                            {"input": enriched_input, "chat_history": history_messages}, version="v2",
+                        )) as events:
+                            async for event in events:
+                                kind = event.get("event")
+                                if kind == "on_chain_start" and root_id is None and not event.get('parent_ids'):
+                                    root_id = event.get('run_id')
+                                elif kind == 'on_chat_model_start':
+                                    model_round += 1
+                                elif kind == 'on_tool_start' and event.get('name') in tool_names:
+                                    if event.get('run_id'):
+                                        tool_inputs[event['run_id']] = (
+                                            event['name'], event.get('data', {}).get('input'), model_round or None,
+                                        )
+                                elif kind == 'on_tool_end' and event.get('name') in tool_names:
+                                    started = tool_inputs.pop(event.get('run_id'), None)
+                                    arguments, batch = (started[1], started[2]) if started and started[0] == event['name'] else (None, None)
+                                    if not self._tool_observation_succeeded(event.get('data', {}).get('output')):
+                                        if not self._tool_argument_error(event.get('data', {}).get('output')):
+                                            raise RuntimeError("数据查询失败，无法给出完整分析，请稍后重试")
+                                        unresolved_tools.append(self._tool_argument_failure(
+                                            event['name'], arguments, event.get('data', {}).get('output'), batch,
+                                        ))
+                                    else:
+                                        self._resolve_tool_argument_failure(unresolved_tools, event['name'], arguments, batch)
+                                        successful_tools += 1
+                                elif kind == 'on_chain_end' and root_id is not None and event.get('run_id') == root_id:
+                                    final_result = event.get('data', {}).get('output')
+                                elif kind == "on_chat_model_stream" and (successful_tools or history_evidence) and not unresolved_tools:
+                                    chunk = event.get('data', {}).get("chunk")
+                                    text = getattr(chunk, 'content', None)
+                                    if isinstance(text, str) and text:
+                                        full_answer.append(text)
+                                        yield {"type": "chunk", "content": text}
+                        break
+                    except Exception as error:
+                        # 页面还没收到回答文字时，超长可以整理历史后重试一次
+                        if attempt == 2 or full_answer or not _context_overflow(error):
+                            raise
+                        yield {"type": "status", "stage": "compacting"}
+                        compacted = await sync_to_async(self._compact_after_overflow)(
+                            error, memory_snapshot, working_context, enriched_input,
+                        )
+                        yield {"type": "status", "stage": "done"}
+                        if compacted is None:
+                            raise error
+                        memory_snapshot, history_messages = compacted
+                        history_evidence = self._history_evidence_covers(history_messages, working_context, original_query)
                 if not isinstance(final_result, dict) or not (successful_tools or history_evidence) or unresolved_tools:
                     raise RuntimeError("未取得完整的工具查询结果，请重试")
                 answer = self._validated_agent_answer(final_result, history_evidence)

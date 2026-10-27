@@ -130,6 +130,8 @@ class ContextUsage:
     calls: list = field(default_factory=list)
     current: dict | None = None
     measured_peak: dict | None = None
+    # 历史整理状态，由回放历史时填写；没有时按“未整理”输出
+    compaction: dict | None = None
 
     def record_response(self, message, messages, options, provider, model):
         self.page_requests += sum(
@@ -156,11 +158,21 @@ class ContextUsage:
             self.measured_peak = {"used": measured, "actual": prompt is not None, "parts": self.current}
         if prompt is None:
             return
+        self.add_provider_usage(dict(prompt_tokens=prompt, completion_tokens=completion, cache_hit_tokens=cache))
+
+    def add_provider_usage(self, usage):
+        """累加接口计费用量；整理历史的摘要调用也计入本轮。"""
+        if not usage:
+            return
         if self.provider_usage is None:
             self.provider_usage = dict(prompt_tokens=None, completion_tokens=None, cache_hit_tokens=None)
-        for key, value in (("prompt_tokens", prompt), ("completion_tokens", completion), ("cache_hit_tokens", cache)):
+        for key, value in usage.items():
             if value is not None:
                 self.provider_usage[key] = (self.provider_usage[key] or 0) + value
+
+    def clear_overflow(self):
+        """超限后整理历史重试：失败的那次不再算作本轮峰值。"""
+        self.exceeded, self.peak, self.measured_peak, self.current = False, None, None, None
 
     def event(self):
         if not self.calls:
@@ -200,8 +212,8 @@ class ContextUsage:
             "trigger_tokens": policy.trigger_tokens, "hard_input_limit": policy.input_budget,
             "provider_usage": self.provider_usage,
             "history": self.history,
-            "compaction": {"state": "none", "checkpoints": 0, "pruned_results": 0,
-                           "last_at": None, "last_before": None, "last_after": None},
+            "compaction": self.compaction or {"state": "none", "checkpoints": 0, "pruned_results": 0,
+                                              "last_at": None, "last_before": None, "last_after": None},
             "paged_lists": peak["paged_lists"] if kind == "turn" and peak else 0,
             "page_requests": self.page_requests if kind == "turn" else 0,
             "exceeded": self.exceeded, "model_calls": self.model_calls,

@@ -13,7 +13,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from django.db import transaction
@@ -334,6 +334,18 @@ class MemoryService:
         """返回全部完整轮次，阶段 B 再处理压缩。"""
         turns = self._complete_turns(snapshot.messages)
         return [item for turn in turns for item in turn]
+
+    def append_compaction(self, snapshot: MemorySnapshot, project_id, payload) -> MemorySnapshot | None:
+        """追加一次整理记录；对话已被重置（generation 变了）时不写，返回 None。"""
+        if snapshot.backend != "legacy":
+            return None
+        turn = ContextEventStore.compaction_turn(snapshot.scope_key, snapshot.generation, project_id, payload)
+        with self._legacy_transaction() as connection:
+            scope = self._legacy_scope(connection, self.legacy_session_id(snapshot.scope_key))
+            if scope["generation"] != snapshot.generation:
+                return None
+            ContextEventStore.append_compaction(connection, turn)
+        return replace(snapshot, context_events=[*snapshot.context_events, turn])
 
     def protocol_history(self, snapshot, project_id=None):
         return ContextEventStore.replay(

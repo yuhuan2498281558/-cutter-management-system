@@ -14,7 +14,42 @@ from langchain_core.messages import (
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text, UniqueConstraint, select
 from sqlalchemy.schema import CreateTable
 
+from .token_estimation import estimate_tokens
+
 logger = logging.getLogger(__name__)
+
+# 早前结果不小于这个估算量才精简，小结果原样保留
+PRUNE_MIN_TOKENS = 1000
+PRUNED_MAX_CHARS = 2000
+PRUNED_HEADER = "【早前查询结果已精简】明细已移出上下文，需要明细时用相同参数重新查询。保留的汇总：\n"
+CHECKPOINT_HEADER = "【早前对话摘要】以下是更早几轮对话的整理，数字照抄自当时的查询结果；需要明细或最新数据时重新查询。\n\n"
+CHECKPOINT_REPLY = "好的，我会结合这份摘要和后面的对话原文继续回答。"
+
+
+def _reduce(value, depth=0):
+    if isinstance(value, dict):
+        return {key: _reduce(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        if len(value) <= 3 and depth < 3 and all(not isinstance(item, (dict, list)) for item in value):
+            return value
+        return f"（{len(value)} 条明细已移出上下文）"
+    return value
+
+
+def prune_tool_content(content):
+    """早前的大查询结果只留口径和汇总：标量字段照抄，列表换成条数。"""
+    try:
+        data = json.loads(content)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        body = json.dumps(_reduce(data), ensure_ascii=False)
+        if len(body) > PRUNED_MAX_CHARS:
+            body = json.dumps({key: item for key, item in data.items()
+                               if not isinstance(item, (dict, list))}, ensure_ascii=False)
+    else:
+        body = str(content)
+    return PRUNED_HEADER + body[:PRUNED_MAX_CHARS]
 
 
 class ContextEventStore:
@@ -62,6 +97,36 @@ class ContextEventStore:
         ) for seq, (kind, payload) in enumerate(entries)])
 
     @classmethod
+    def compaction_turn(cls, scope_key, generation, project_id, payload):
+        """一次整理记录（mode 为 prune 或 checkpoint），形状与 load() 返回的轮次相同。"""
+        return {"project_id": str(project_id or ""), "events": [dict(
+            schema_version=1, event_id=uuid4().hex, scope_key=scope_key, generation=generation,
+            turn_id=uuid4().hex, seq=0, kind="compaction", project_id=str(project_id or ""),
+            payload=json.dumps(payload, ensure_ascii=False),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )]}
+
+    @classmethod
+    def append_compaction(cls, connection, turn):
+        connection.execute(cls.table.insert(), turn["events"])
+
+    @staticmethod
+    def compactions(events):
+        """按时间排好的整理记录，附带记录时间 at。"""
+        found = [
+            {**json.loads(event["payload"]), "at": event["created_at"]}
+            for turn in events for event in turn["events"] if event["kind"] == "compaction"
+        ]
+        return sorted(found, key=lambda item: item["at"])
+
+    @classmethod
+    def compaction_bounds(cls, events):
+        """（摘要覆盖到的回答序号, 精简覆盖到的回答序号），没有为 0。"""
+        found = cls.compactions(events)
+        summarized = max((item["through_sequence"] for item in found if item["mode"] == "checkpoint"), default=0)
+        return summarized, max((item["through_sequence"] for item in found), default=0)
+
+    @classmethod
     def load(cls, connection, scope_key, generation):
         rows = connection.execute(select(cls.table).where(
             cls.table.c.scope_key == scope_key, cls.table.c.generation == generation,
@@ -79,17 +144,27 @@ class ContextEventStore:
             statement = statement.where(cls.table.c.scope_key == scope_key)
         connection.execute(statement)
 
-    @staticmethod
-    def replay(turns, events, project_id):
+    @classmethod
+    def replay(cls, turns, events, project_id):
         committed = {}
         for turn in events:
             for event in turn["events"]:
                 if event["kind"] == "turn_commit":
                     committed[tuple(json.loads(event["payload"])["sequences"])] = turn
+        compactions = cls.compactions(events)
+        checkpoints = [item for item in compactions if item["mode"] == "checkpoint"]
+        summarized_through, pruned_through = cls.compaction_bounds(events)
         messages, anchors, used_ids = [], [], set()
-        stats = dict(turns=0, tool_results=0, legacy_qa_turns=0, other_project_turns=0, tokens=0)
+        if checkpoints:
+            messages += [HumanMessage(content=CHECKPOINT_HEADER + checkpoints[-1]["summary"]),
+                         AIMessage(content=CHECKPOINT_REPLY)]
+        stats = dict(turns=0, tool_results=0, legacy_qa_turns=0, other_project_turns=0, tokens=0,
+                     summarized_turns=0, pruned_results=0)
         for question, answer in turns:
             stats["turns"] += 1
+            if answer.sequence <= summarized_through:
+                stats["summarized_turns"] += 1
+                continue
             turn = committed.get((question.sequence, answer.sequence))
             saved_project = turn["project_id"] if turn else question.metadata.get("project_id", "")
             other_project = bool(saved_project) and str(saved_project) != str(project_id or "")
@@ -133,6 +208,20 @@ class ContextEventStore:
                 else:
                     stats["legacy_qa_turns"] += 1
                 replayed = [HumanMessage(content=text), AIMessage(content=answer.content)]
+            if answer.sequence <= pruned_through:
+                for index, message in enumerate(replayed):
+                    if isinstance(message, ToolMessage) and estimate_tokens(message.content) >= PRUNE_MIN_TOKENS:
+                        replayed[index] = message.model_copy(update={"content": prune_tool_content(message.content)})
+                        stats["pruned_results"] += 1
+            # 不发给模型，整理时据此按轮切分历史
+            replayed[0].response_metadata["turn_sequence"] = answer.sequence
             stats["tool_results"] += sum(isinstance(message, ToolMessage) for message in replayed)
             messages.extend(replayed)
+        last = compactions[-1] if compactions else {}
+        stats["compaction"] = {
+            "state": "checkpoint" if checkpoints else "pruned" if compactions else "none",
+            "checkpoints": len(checkpoints), "pruned_results": stats["pruned_results"],
+            "last_at": last.get("at"), "last_before": last.get("before"), "last_after": last.get("after"),
+            "through_sequence": summarized_through or None,
+        }
         return messages, stats, anchors[-1] if anchors else None
