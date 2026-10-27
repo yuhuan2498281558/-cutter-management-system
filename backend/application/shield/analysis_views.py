@@ -40,6 +40,12 @@ from .analysis_metrics import (
     ANALYSIS_REQUEST, scoped_queryset, blade_track_range,
 )
 from .analysis_strata import opening_strata
+from .cutter_position_scope import normalize_cutter_position_no
+from .mileage import (
+    BASIS as MILEAGE_BASIS, REFERENCE_PENETRATION_MM, REFERENCE_PENETRATION_RANGE_MM, RING_WIDTH_MM,
+    RingRevolutions, group_by_trajectory, kilometres, position_coverage,
+)
+from .trajectory import get_tool_trajectory
 
 
 class _AnalysisCache:
@@ -521,6 +527,105 @@ def _brand_contract(action, openings, params):
             for field, values, counts in (('abnormal_rate_series', abnormal_values, wear_counts), ('normal_rate_series', normal_values, wear_counts), ('lifespan_series', lives, life_counts)):
                 base[field].append({'manufacturer': name, 'data': values, 'count_data': counts, 'abnormal_count_data': abnormal_counts})
     return base
+
+
+def _life_mileage(openings, params):
+    """已拆段按拆除环归入筛选范围；在役刀具取范围内最后一次开仓时各刀位装着的刀。"""
+    supply = list(_build_detail_queryset(openings, params, only_replaced=True, include_manufacturer=False).select_related('warehouse'))
+    segments = confirmed_service_segments(supply)
+    selected = set(_get_query_values(params, 'manufacturer', 'manufacturers', 'manufacturers[]'))
+    removals = {row.id: row for row in supply}
+    installs = {row.id: row for row in scoped_queryset(ToolChangeDetail.objects.filter(
+        id__in=[row['installation_detail_id'] for row in segments if row['paired']],
+    ))}
+    modern = set(scoped_queryset(NewToolRecord.objects.filter(tool_change_detail_id__in=list(installs)))
+                 .values_list('tool_change_detail_id', flat=True))
+    through = {}
+    for opening in openings.values('project_id', 'shield_model_id', 'ring_no'):
+        key = (opening['project_id'], opening['shield_model_id'])
+        through[key] = max(through.get(key, 0), int(opening['ring_no']))
+    revolutions = RingRevolutions(scoped_queryset(ShieldTunnelingData.objects.filter(
+        project_id__in={key[0] for key in through}, shield_machine_id__in={key[1] for key in through},
+    )).values_list('project_id', 'shield_machine_id', 'ring_no', 'penetration', 'point_count'))
+
+    rows, excluded, totals = [], defaultdict(int), [0.0, 0.0]
+    for segment in segments:
+        if selected and segment['manufacturer'] not in selected:
+            continue
+        if not segment['paired']:
+            excluded[segment['reason']] += 1
+            continue
+        removed, installed = removals[segment['detail_id']], installs.get(segment['installation_detail_id'])
+        if installed is None or (normalize_cutter_position_no(installed.cutter_position_no), installed.tool_parent_type) != (
+                normalize_cutter_position_no(removed.cutter_position_no), removed.tool_parent_type):
+            excluded['安装与拆除不在同一刀位'] += 1
+            continue
+        radius = get_tool_trajectory(removed.cutter_position_no, removed.tool_parent_type)['radius_mm']
+        if radius is None:
+            excluded['刀位轨迹半径未核实'] += 1
+            continue
+        total, estimated = revolutions.span(removed.warehouse.project_id, removed.warehouse.shield_model_id,
+                                            int(segment['installation_ring_no']), int(segment['ring_no']))
+        totals[0] += total
+        totals[1] += estimated
+        km = kilometres(radius, total)
+        wear = removed.blade_wear_amount
+        rows.append({
+            'detail_id': removed.id, 'installation_detail_id': installed.id,
+            'cutter_position_no': removed.cutter_position_no, 'tool_parent_type': removed.tool_parent_type,
+            'radius_mm': radius, 'manufacturer': segment['manufacturer'],
+            'installation_ring_no': segment['installation_ring_no'], 'ring_no': segment['ring_no'],
+            'service_rings': segment['service_rings'], 'revolutions': round(total, 1), 'km': round(km, 2),
+            'estimated_share': round(estimated / total, 3) if total else None,
+            'wear_state': segment['wear_state'], 'blade_wear_amount': wear,
+            'wear_per_100km': round(wear / km * 100, 3) if wear is not None and km > 0 else None,
+            'price': float(installed.price) if installed.id in modern and installed.price is not None else None,
+        })
+
+    history = scoped_queryset(WarehouseOpeningBasicInfo.objects.filter(
+        summary_status='CONFIRMED', ring_no__regex=_RING_NUMERIC_REGEX,
+        project_id__in={key[0] for key in through}, shield_model_id__in={key[1] for key in through},
+    ))
+    current = {}
+    for detail in sorted(_build_detail_queryset(history, params, only_replaced=True, include_manufacturer=False)
+                         .select_related('warehouse'), key=lambda row: (int(row.warehouse.ring_no), row.warehouse.open_time, row.id)):
+        key = (detail.warehouse.project_id, detail.warehouse.shield_model_id)
+        if key in through and int(detail.warehouse.ring_no) <= through[key]:
+            current[(key, detail.tool_parent_type, normalize_cutter_position_no(detail.cutter_position_no))] = detail
+    in_service = []
+    for (key, _, _), detail in current.items():
+        radius = get_tool_trajectory(detail.cutter_position_no, detail.tool_parent_type)['radius_mm']
+        if radius is None or (selected and (detail.manufacturer or '') not in selected):
+            continue
+        total, estimated = revolutions.span(*key, int(detail.warehouse.ring_no), through[key])
+        totals[0] += total
+        totals[1] += estimated
+        in_service.append({
+            'in_service': True, 'detail_id': detail.id,
+            'cutter_position_no': detail.cutter_position_no, 'tool_parent_type': detail.tool_parent_type,
+            'radius_mm': radius, 'manufacturer': detail.manufacturer or '',
+            'installation_ring_no': detail.warehouse.ring_no, 'through_ring_no': str(through[key]),
+            'revolutions': round(total, 1), 'km': round(kilometres(radius, total), 2),
+            'estimated_share': round(estimated / total, 3) if total else None,
+        })
+    in_service.sort(key=lambda row: (row['tool_parent_type'], row['radius_mm'], row['cutter_position_no']))
+
+    return {
+        'groups': group_by_trajectory(rows, in_service),
+        'segments': rows,
+        'in_service': in_service,
+        'positions': position_coverage(rows, in_service),
+        'excluded': [{'reason': reason, 'count': count} for reason, count in sorted(excluded.items(), key=lambda item: -item[1])],
+        'revolution_basis': {
+            'ring_width_mm': RING_WIDTH_MM,
+            'reference_penetration_mm': REFERENCE_PENETRATION_MM,
+            'reference_revolutions_per_ring': round(RING_WIDTH_MM / REFERENCE_PENETRATION_MM, 1),
+            'reference_penetration_range_mm': list(REFERENCE_PENETRATION_RANGE_MM),
+            'tunneling_ring_count': len(revolutions.measured),
+            'estimated_share': round(totals[1] / totals[0], 3) if totals[0] else None,
+        },
+        'basis': MILEAGE_BASIS,
+    }
 
 
 def _wear_details(openings, params):
@@ -1601,6 +1706,19 @@ class AnalysisViewSet(viewsets.ViewSet):
           lifespan_series       - [{manufacturer, data: [avg_rings|null, ...]}]
         """
         return self.analysis_success(request, _brand_contract('brand_performance_trend', _build_opening_queryset(request.query_params), request.query_params))
+
+    @action(detail=False, methods=['get'], url_path='life_mileage')
+    def life_mileage(self, request):
+        """
+        寿命与厂家：按刀位轨迹半径和每环刀盘转数推算里程，按刀型、轨迹分带比较各厂家
+        返回：
+          groups      - [{tool_parent_type, bands: [{radius_min, radius_max, cells, trajectories}]}]
+          segments    - 已拆段：里程、来源中估算的比例、拆除时磨损、安装登记价
+          in_service  - 范围内最后一次开仓时各刀位装着的刀及已走里程
+          positions   - 每个刀位的已核实覆盖累计里程
+          excluded    - 未计入里程的已拆刀及原因
+        """
+        return self.analysis_success(request, _life_mileage(_build_opening_queryset(request.query_params), request.query_params))
 
     # ─────────────────────────────────────────────────────────────
     # 磨损分析
