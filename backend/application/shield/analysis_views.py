@@ -2,7 +2,7 @@
 """
 盾构刀具数据分析接口
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
 from itertools import product
 
 from rest_framework import viewsets
@@ -548,21 +548,31 @@ def _life_mileage(openings, params):
         project_id__in={key[0] for key in through}, shield_machine_id__in={key[1] for key in through},
     )).values_list('project_id', 'shield_machine_id', 'ring_no', 'penetration', 'point_count'))
 
-    rows, excluded, totals = [], defaultdict(int), [0.0, 0.0]
+    rows, excluded_rows, totals = [], [], [0.0, 0.0]
+
+    def exclude(segment, reason):
+        excluded_rows.append({
+            'detail_id': segment['detail_id'], 'opening_id': segment['opening_id'],
+            'warehouse_id': segment['warehouse_id'], 'ring_no': segment['ring_no'],
+            'cutter_position_no': normalize_cutter_position_no(segment['cutter_position_no']),
+            'tool_parent_type': segment['tool_parent_type'], 'old_tool_number': segment['old_tool_number'],
+            'manufacturer': segment['manufacturer'], 'reason': reason,
+        })
+
     for segment in segments:
         if selected and segment['manufacturer'] not in selected:
             continue
         if not segment['paired']:
-            excluded[segment['reason']] += 1
+            exclude(segment, segment['reason'])
             continue
         removed, installed = removals[segment['detail_id']], installs.get(segment['installation_detail_id'])
         if installed is None or (normalize_cutter_position_no(installed.cutter_position_no), installed.tool_parent_type) != (
                 normalize_cutter_position_no(removed.cutter_position_no), removed.tool_parent_type):
-            excluded['安装与拆除不在同一刀位'] += 1
+            exclude(segment, '安装与拆除不在同一刀位')
             continue
         radius = get_tool_trajectory(removed.cutter_position_no, removed.tool_parent_type)['radius_mm']
         if radius is None:
-            excluded['刀位轨迹半径未核实'] += 1
+            exclude(segment, '刀位轨迹半径未核实')
             continue
         total, estimated = revolutions.span(removed.warehouse.project_id, removed.warehouse.shield_model_id,
                                             int(segment['installation_ring_no']), int(segment['ring_no']))
@@ -615,7 +625,9 @@ def _life_mileage(openings, params):
         'segments': rows,
         'in_service': in_service,
         'positions': position_coverage(rows, in_service),
-        'excluded': [{'reason': reason, 'count': count} for reason, count in sorted(excluded.items(), key=lambda item: -item[1])],
+        'excluded': [{'reason': reason, 'count': count} for reason, count in sorted(
+            Counter(row['reason'] for row in excluded_rows).items(), key=lambda item: -item[1])],
+        'excluded_rows': excluded_rows,
         'revolution_basis': {
             'ring_width_mm': RING_WIDTH_MM,
             'reference_penetration_mm': REFERENCE_PENETRATION_MM,

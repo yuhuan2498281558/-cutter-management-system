@@ -107,7 +107,7 @@ class LifeMileageApiTests(TestCase):
         self.assertEqual(data['groups'][0]['bands'][0]['trajectories'][0]['positions'], ['Y3'])
 
     def test_mismatched_positions_and_unconfirmed_pairs_are_excluded_with_a_reason(self):
-        self.pair(100, 200, position='1', removed_position='2')
+        _, mismatched = self.pair(100, 200, position='1', removed_position='2')
         installed = self.detail(self.opening(100), '3', is_replaced=True, manufacturer='A')
         removed = self.detail(self.opening(200), '3', is_replaced=True)
         OldToolRecord.objects.create(tool_change_detail=removed, confirmed_tool_instance=self.install(installed))
@@ -115,6 +115,9 @@ class LifeMileageApiTests(TestCase):
         self.assertEqual(data['segments'], [])
         reasons = {item['reason']: item['count'] for item in data['excluded']}
         self.assertEqual((reasons['安装与拆除不在同一刀位'], reasons['厂家反馈未确认']), (1, 1))
+        self.assertEqual(len(data['excluded_rows']), sum(reasons.values()))
+        [row] = [row for row in data['excluded_rows'] if row['reason'] == '安装与拆除不在同一刀位']
+        self.assertEqual((row['cutter_position_no'], row['ring_no'], row['opening_id']), ('2', '200', mismatched.warehouse_id))
 
     def test_ring_scope_follows_removal_and_manufacturer_filter_applies_to_both_lists(self):
         self.pair(100, 200, manufacturer='A')
