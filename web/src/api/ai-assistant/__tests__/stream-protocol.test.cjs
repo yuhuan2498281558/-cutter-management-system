@@ -111,6 +111,16 @@ test('business failures in HTTP 200 reject history/reset/chat and do not masquer
   await assert.rejects(h.api.reset(), /数据库操作失败/);
   await assert.rejects(h.api.history(), /数据库操作失败/);
   await assert.rejects(h.api.chat({ query: 'test' }), /数据库操作失败/);
+  await assert.rejects(h.api.compact(), /数据库操作失败/);
+});
+
+test('compaction status and the saved turn sequences reach the page', async () => {
+  const h = setup({ payload: 'data: {"type":"status","stage":"compacting"}\n\ndata: {"type":"status","stage":"done"}\n\ndata: {"type":"memory","message_count":4,"turn_sequences":[9,10]}\n\ndata: {"type":"done"}\n\n' });
+  h.callbacks.onStatus = stage => h.events.push(['status', stage]);
+  await h.run();
+  assert.deepEqual(h.events.map(event => event[0]), ['status', 'status', 'memory', 'done']);
+  assert.deepEqual(h.events.slice(0, 2).map(event => event[1]), ['compacting', 'done']);
+  assert.deepEqual(Array.from(h.events[2][1].turnSequences), [9, 10]);
 });
 
 test('authoritative answer is delivered separately from transient chunks before done', async () => {
@@ -159,7 +169,7 @@ test('an expired login on the stream uses the shared redirect to the login page,
 });
 
 test('an expired login on history, reset or chat also uses the shared redirect, and the request still fails', async () => {
-  for (const call of ['history', 'reset', 'chat']) {
+  for (const call of ['history', 'reset', 'chat', 'compact']) {
     const h = setup({ axiosStatus: 401 });
     await assert.rejects(h.api[call]({ query: 'test' }), /status code 401/);
     assert.deepEqual(h.redirects, ['登录授权过期，请重新登录'], call);

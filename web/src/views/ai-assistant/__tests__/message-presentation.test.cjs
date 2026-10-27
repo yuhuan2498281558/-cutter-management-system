@@ -229,7 +229,7 @@ test('the message list marks stopped and failed answers as cut off', () => {
 
 async function renderMessageList(props, prepare = () => {}) {
   const { renderToString } = require('@vue/server-renderer');
-  const bindings = loadComponent('ChatMessageList.vue', props, 'welcomeChips, containerRef, handleScroll, elapsedSec, canRetry, handleCopy, isNearBottom, scrollToBottom, expandedTraces, toggleQueryTrace, describeQueryTrace, queryTraceTags');
+  const bindings = loadComponent('ChatMessageList.vue', props, 'welcomeChips, containerRef, handleScroll, elapsedSec, canRetry, handleCopy, isNearBottom, scrollToBottom, expandedTraces, toggleQueryTrace, describeQueryTrace, queryTraceTags, compactionDividerAfter, STATUS_TEXT');
   prepare(bindings);
   const template = require('@vue/compiler-sfc').parse(fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8')).descriptor.template.content;
   const app = vue.createSSRApp({ template, setup: () => ({ ...props, ...bindings }) });
@@ -278,4 +278,21 @@ test('the 本次查询 row appears under finished answers that carry traces and 
   for (const message of [{ ...traced, queryTraces: [] }, { ...traced, queryTraces: undefined }, { ...traced, streaming: true }]) {
     assert.equal((await renderMessageList({ messages: [message] })).includes('本次查询'), false);
   }
+});
+
+test('a divider follows the last message the summary covers, and compaction progress replaces the generating label', async () => {
+  const messages = [
+    { id: 'history-7', role: 'user', content: '旧问题', time: '', sequence: 7 },
+    { id: 'history-8', role: 'assistant', content: '旧回答', time: '', sequence: 8 },
+    { id: 'message-1', role: 'user', content: '新问题', time: '' },
+    { id: 'message-2', role: 'assistant', content: '', time: '', streaming: true, status: 'compacting' },
+  ];
+  const html = await renderMessageList({ messages, compactedThrough: 8, isGenerating: true });
+  const divider = html.indexOf('以上对话已整理成摘要');
+  assert.ok(divider > html.indexOf('旧回答') && divider < html.indexOf('新问题'), 'divider sits between the summarised and the newer messages');
+  assert.match(html, /正在整理早前对话 · 0s/);
+  const plain = await renderMessageList({ messages: messages.slice(0, 2), compactedThrough: 8 });
+  assert.equal(plain.includes('以上对话已整理成摘要'), false, 'no divider when nothing follows the summary');
+  const never = await renderMessageList({ messages, compactedThrough: null, isGenerating: true });
+  assert.equal(never.includes('以上对话已整理成摘要'), false);
 });

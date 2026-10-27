@@ -376,6 +376,8 @@ class ContextEventTests(SimpleTestCase):
         self.assertFalse(any(event["type"] == "chunk" for event in events))
         events = [event async for event in self.assistant.chat_stream("查询120到150环换刀情况", self.options)]
         self.assertEqual(events[-1]["type"], "done", events)
+        memory = next(event for event in events if event["type"] == "memory")
+        self.assertEqual(memory["turn_sequences"], [item.sequence for item in self.snapshot().messages[-2:]])
 
     def test_load_reads_without_holding_the_write_lock(self):
         self.ask()

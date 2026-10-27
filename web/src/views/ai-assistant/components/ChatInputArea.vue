@@ -181,7 +181,7 @@
 
         <div class="composer-footer-right button-group">
           <span v-if="useTemplateSlot && activeParamHint" class="quick-hint">{{ activeParamHint }}</span>
-          <ContextMeter :info="meterInfo" />
+          <ContextMeter :info="meterInfo" :busy="disabled" @compact="emit('compact')" />
           <el-button
             v-if="generating"
             type="danger"
@@ -232,6 +232,8 @@ const emit = defineEmits<{
   // 模型路径选中的数据类型有变化，页面在模型路径发送时带上
   (e: 'sources-change', sources: FocusSource[]): void;
   (e: 'abort'): void;
+  // 在用量面板里点了"整理早前对话"
+  (e: 'compact'): void;
 }>();
 
 // 与后端 views.py _validate_body 的上限一致

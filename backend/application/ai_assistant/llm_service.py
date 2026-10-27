@@ -2869,6 +2869,8 @@ class ToolAssistant:
             "message_count": getattr(snapshot, "message_count", None) if getattr(snapshot, "message_count", None) is not None else len(snapshot.messages),
             "summary_revision": snapshot.summary_revision,
             "slot_names": sorted(snapshot.slots.keys()),
+            # 最后保存的问答两行的序号，页面据此定位“以上对话已整理成摘要”的分隔线
+            "turn_sequences": [item.sequence for item in snapshot.messages[-2:]],
             "active_slots": {key: value for key, value in active_slots.items() if key in {"ring_range", "tool_type", "cutter_position_no"}},
             **({"context_mode": context["resolved_context_mode"]} if context and "resolved_context_mode" in context else {}),
         }

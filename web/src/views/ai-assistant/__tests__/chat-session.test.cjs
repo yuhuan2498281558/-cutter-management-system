@@ -10,9 +10,9 @@ const vue = require('vue');
 
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 function setup(supportsFocusSources = true) {
-  const history = deferred(), reset = deferred(), streams = [], notices = [], frames = new Map();
+  const history = deferred(), reset = deferred(), compact = deferred(), streams = [], notices = [], frames = new Map();
   let mounted, unmounted, nextFrame = 0, clock = 0;
-  const api = { history: () => history.promise, reset: () => reset.promise, chatStream: (data, callbacks, signal) => { streams.push({ data, callbacks, signal }); return Promise.resolve(); } };
+  const api = { history: () => history.promise, reset: () => reset.promise, compact: () => compact.promise, chatStream: (data, callbacks, signal) => { streams.push({ data, callbacks, signal }); return Promise.resolve(); } };
   const context = { exports: {}, AbortController, window: { requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; }, cancelAnimationFrame(id) { frames.delete(id); } } };
   context.require = name => {
     if (name === 'vue') return { ...vue, onMounted: callback => { mounted = callback; }, onUnmounted: callback => { unmounted = callback; } };
@@ -22,9 +22,9 @@ function setup(supportsFocusSources = true) {
     if (name.endsWith('.vue') || name === '@element-plus/icons-vue') return {};
     throw new Error(`Unexpected import: ${name}`);
   };
-  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, routeMode, focusSources };';
+  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, routeMode, focusSources, handleCompact, compacting, contextInfo };';
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, context);
-  return { ...context.exports.page, api, history, reset, streams, notices, frames, mount: () => mounted(), unmount: () => unmounted(), frame() { const callbacks = [...frames.values()]; frames.clear(); clock += 16; callbacks.forEach(callback => callback(clock)); } };
+  return { ...context.exports.page, api, history, reset, compact, streams, notices, frames, mount: () => mounted(), unmount: () => unmounted(), frame() { const callbacks = [...frames.values()]; frames.clear(); clock += 16; callbacks.forEach(callback => callback(clock)); } };
 }
 const historyResponse = { data: { messages: [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }], memory: { message_count: 2, slot_names: ['ring_range'] } } };
 
@@ -203,4 +203,39 @@ test('late meta or traces from a stopped stream do not touch the next answer', (
   old.onMeta({ route: 'llm' }); old.onQueryTraces([{ sourceLabel: '地层', scope: null }]);
   assert.equal(h.messages.value[1].queryTraces, undefined);
   assert.equal(h.messages.value[3].queryTraces, undefined);
+});
+
+test('saved sequences come from history and, for a new turn, from the memory event', async () => {
+  const h = setup(), loaded = h.mount();
+  h.history.resolve({ data: { messages: [{ role: 'user', content: '旧问题', sequence: 7 }, { role: 'assistant', content: '旧回答', sequence: 8 }] } });
+  await loaded;
+  h.sendQuery('新问题');
+  h.streams[0].callbacks.onMemory({ message_count: 4, turnSequences: [9, 10] });
+  assert.deepEqual(Array.from(h.messages.value, message => message.sequence), [7, 8, 9, 10]);
+  assert.equal(h.memoryInfo.value.turnSequences, undefined);
+});
+
+test('a compacting status shows while generating and clears on the next status', () => {
+  const h = setup(); h.sendQuery('问题'); const callbacks = h.streams[0].callbacks;
+  callbacks.onStatus('compacting');
+  assert.equal(h.messages.value[1].status, 'compacting');
+  callbacks.onStatus('done');
+  assert.equal(h.messages.value[1].status, undefined);
+});
+
+test('manual compaction updates the meter, blocks sending meanwhile and reports failure', async () => {
+  const h = setup();
+  const running = h.handleCompact();
+  assert.equal(h.compacting.value, true);
+  h.sendQuery('整理中的问题');
+  assert.equal(h.streams.length, 0);
+  h.compact.resolve({ data: { context: { kind: 'baseline', used: 12000 } } });
+  await running;
+  assert.equal(h.contextInfo.value.used, 12000);
+  assert.equal(h.compacting.value, false);
+  assert.deepEqual(h.notices, [['success', '已整理早前对话']]);
+  const failing = setup(), failed = failing.handleCompact();
+  failing.compact.reject(new Error('没有可整理的早前对话'));
+  await failed;
+  assert.deepEqual(failing.notices, [['error', '整理失败：没有可整理的早前对话']]);
 });

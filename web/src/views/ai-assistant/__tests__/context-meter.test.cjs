@@ -12,15 +12,16 @@ const componentPath = path.resolve(__dirname, '../components/ContextMeter.vue');
 
 function loadMeter(info) {
   const props = vue.reactive({ info });
-  const context = { exports: {}, defineProps: () => props };
+  const emitted = [];
+  const context = { exports: {}, defineProps: () => props, defineEmits: () => name => emitted.push(name) };
   context.require = name => {
     if (name === 'vue') return vue;
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(componentPath, 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]
-    + '\nexports.meter = { formatTokens, usedPercent, level, tooltipLines, rows, barRows, triggerShare, pagingNote, compactNote, autoCompaction, historyNote, billingLine };';
+    + '\nexports.meter = { formatTokens, usedPercent, level, tooltipLines, rows, barRows, triggerShare, pagingNote, compactNote, autoCompaction, historyNote, billingLine, compactionLine, canCompact, requestCompact, panelOpen };';
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, context);
-  return { props, ...context.exports.meter };
+  return { props, emitted, ...context.exports.meter };
 }
 
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -116,4 +117,22 @@ test('provider billing, older or other-project turns, paging and compaction coun
   assert.equal(bare.pagingNote.value, '');
   assert.equal(bare.compactNote.value, '');
   assert.equal(loadMeter({ ...turn(20000), kind: 'baseline', provider_usage: { prompt_tokens: 1, completion_tokens: 1, cache_hit_tokens: 0 } }).billingLine.value, '');
+});
+
+test('the compact button appears only when the backend offers it and there is history to compact', () => {
+  const manual = { ...turn(0).compaction, manual: true };
+  assert.equal(loadMeter(turn(20000)).canCompact.value, false);
+  assert.equal(loadMeter(turn(20000, { compaction: manual, history: { ...turn(0).history, turns: 1 } })).canCompact.value, false);
+  const m = loadMeter(turn(20000, { compaction: manual }));
+  assert.equal(m.canCompact.value, true);
+  m.panelOpen.value = true;
+  m.requestCompact();
+  assert.equal(m.panelOpen.value, false);
+  assert.deepEqual(m.emitted, ['compact']);
+});
+
+test('the last compaction is reported as before and after sizes only once it happened', () => {
+  assert.equal(loadMeter(turn(20000)).compactionLine.value, '');
+  const done = loadMeter(turn(20000, { compaction: { ...turn(0).compaction, checkpoints: 1, last_before: 210000, last_after: 41000 } }));
+  assert.equal(done.compactionLine.value, '早前对话已整理：210k → 41k');
 });

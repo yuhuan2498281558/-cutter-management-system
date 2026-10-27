@@ -49,6 +49,18 @@ history 接口 baseline 为下一问起步预测：`最后一次实际 prompt_to
 
 baseline 只使用配置和纯消息编码/估算，不初始化模型客户端、不调用有副作用的 prepare、不请求供应商。供应商别名仍按最近返回的实际模型名记录；同一别名在供应商侧重新映射，只有下一次响应才能得知。直接聊天和不同工具组的 system/schema 与默认全工具 baseline 不同时也会完整估算。
 
+### 阶段 B 前端已按以下约定实现（2026-10-27）
+
+后端没提供的字段，页面不显示对应内容；阶段 B 后端按这里实现即可接上。
+
+- `compaction.auto: true`：后端到触发线会自动整理。面板说明改为“用到 X 时先精简早前的大查询结果……”，接近触发线时圆环提示“到了会自动整理早前对话”。
+- `compaction.manual: true`：提供手动整理接口。历史至少 2 轮时，面板底部显示“整理早前对话”按钮。
+- `compaction.through_sequence`：最近一次摘要覆盖到的最后一条问答行序号（legacy 为 `message_store.id`），没有摘要为 null。页面在这条消息之后画“以上对话已整理成摘要”分隔线；它后面还没有消息时不画。turn、baseline 和手动整理返回的 ContextInfo 都要带。
+- `compaction.last_before / last_after`：最近一次整理前后的上下文估算，两者都有时面板显示“早前对话已整理：210k → 41k”。
+- 流式事件 `{"type": "status", "stage": "compacting"}`：开始整理时发送，生成中的“正在生成”改为“正在整理早前对话”；整理结束发送 `{"type": "status", "stage": "done"}`（任何非 compacting 的值都会清除提示）。
+- `POST /api/ai/compact/`：立即整理当前用户的早前对话，成功返回 `{"code": 2000, "data": {"context": <baseline ContextInfo>}}`；失败按现有格式返回 `msg`，页面显示“整理失败：<msg>”。
+- memory 事件和同步结果的 `memory` 已带 `turn_sequences: [问题序号, 回答序号]`（本次已实现），页面据此给本次会话的新消息补序号。
+
 `compaction` 在阶段 A 固定为 `{"state":"none","checkpoints":0,"pruned_results":0,"last_at":null,"last_before":null,"last_after":null}`。参考本机 dsh-compaction 的工具配对边界与 dsh-compaction-basic 的窗口比例计算；没有引入其压缩、裁剪或检查点执行逻辑。
 
 ## 配置

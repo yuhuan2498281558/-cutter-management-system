@@ -290,10 +290,11 @@ test('the page passes generation and reset state to the input area separately', 
   const find = node => node.tag === 'ChatInputArea' ? node : (node.children || []).map(find).find(Boolean);
   const bindings = Object.fromEntries(find(descriptor.template.ast).props.filter(prop => prop.name === 'bind').map(prop => [prop.arg.content, prop.exp.content]));
   assert.equal(bindings.generating, 'loading');
-  assert.equal(bindings.disabled, 'loading || resetting');
+  assert.equal(bindings.disabled, 'loading || resetting || compacting');
   assert.equal(bindings.loading, undefined);
-  const sourcesHandler = find(descriptor.template.ast).props.find(prop => prop.name === 'on' && prop.arg.content === 'sources-change');
-  assert.equal(sourcesHandler.exp.content, 'focusSources = $event');
+  const handler = name => find(descriptor.template.ast).props.find(prop => prop.name === 'on' && prop.arg.content === name).exp.content;
+  assert.equal(handler('sources-change'), 'focusSources = $event');
+  assert.equal(handler('compact'), 'handleCompact');
 });
 
 const DRAFT = '统计120环到180环刮刀S3L的更换次数';

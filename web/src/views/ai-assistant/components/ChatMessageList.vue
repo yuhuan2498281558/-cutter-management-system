@@ -34,11 +34,8 @@
         </div>
       </div>
 
-      <div
-        v-for="(msg, index) in messages"
-        :key="msg.id"
-        :class="['message-item', msg.role]"
-      >
+      <template v-for="(msg, index) in messages" :key="msg.id">
+      <div :class="['message-item', msg.role]">
         <div class="message-avatar">
           <el-icon v-if="msg.role === 'user'" :size="18"><User /></el-icon>
           <el-icon v-else :size="18"><ChatDotRound /></el-icon>
@@ -72,7 +69,7 @@
             </ul>
           </div>
           <div class="message-meta">
-            <span v-if="msg.streaming" class="message-time generating">正在生成 · {{ elapsedSec }}s</span>
+            <span v-if="msg.streaming" class="message-time generating">{{ STATUS_TEXT[msg.status ?? ''] ?? '正在生成' }} · {{ elapsedSec }}s</span>
             <span v-else-if="msg.time" class="message-time">{{ msg.time }}</span>
             <span v-if="msg.aborted" class="aborted-tag">已停止，回答不完整</span>
             <button
@@ -98,6 +95,10 @@
           </div>
         </div>
       </div>
+      <div v-if="msg.id === compactionDividerAfter" class="compaction-divider">
+        <span>以上对话已整理成摘要</span>
+      </div>
+      </template>
       </div>
     </div>
 
@@ -117,7 +118,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound, User, DocumentCopy, ArrowDown, RefreshRight, Loading } from '@element-plus/icons-vue';
 import { Message } from '../types';
@@ -127,6 +128,8 @@ import AnalysisMessage from './AnalysisMessage.vue';
 
 const props = defineProps<{
   messages: Message[];
+  // 最近一次摘要覆盖到的最后一条消息序号，没有整理过为 null
+  compactedThrough?: number | null;
   isGenerating?: boolean;
   hasMoreHistory?: boolean;
   historyLoading?: boolean;
@@ -157,6 +160,17 @@ const welcomeChips = WELCOME_REFS
     return item ? { label: item.label, query: item.query } : null;
   })
   .filter((item): item is { label: string; query: string } => item !== null);
+
+const STATUS_TEXT: Record<string, string> = { compacting: '正在整理早前对话' };
+
+// 分隔线画在摘要覆盖到的最后一条已加载消息之后；它后面还没有消息时不画
+const compactionDividerAfter = computed(() => {
+  const through = props.compactedThrough;
+  if (through === null || through === undefined) return null;
+  const covered = props.messages.filter((msg) => msg.sequence !== undefined && msg.sequence <= through);
+  const last = covered[covered.length - 1];
+  return last && last !== props.messages[props.messages.length - 1] ? last.id : null;
+});
 
 const containerRef = ref<HTMLElement>();
 const isNearBottom = ref(true);
@@ -282,6 +296,21 @@ defineExpose({
 .history-actions {
   padding: 0 0 12px;
   text-align: center;
+}
+
+.compaction-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: #94a3b8;
+
+  &::before,
+  &::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dashed #dcdfe6;
+  }
 }
 
 .chat-message-list-wrapper {

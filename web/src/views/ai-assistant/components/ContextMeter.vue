@@ -45,6 +45,7 @@
           </li>
         </ul>
         <p v-if="billingLine" class="panel-billing mono">{{ billingLine }}</p>
+        <p v-if="compactionLine" class="panel-billing mono">{{ compactionLine }}</p>
       </template>
       <p v-else-if="info?.kind === 'rule'" class="panel-empty">直连查库不调用模型，不占模型上下文。</p>
       <p v-else class="panel-empty">还没有用量数据，发一次模型分析后显示。</p>
@@ -59,6 +60,9 @@
           <li v-else>超过 {{ formatTokens(hardLimit) }} 本问不生成回答，请缩小环号范围或重置对话</li>
         </ul>
       </div>
+      <div v-if="canCompact" class="panel-actions">
+        <el-button size="small" :disabled="busy" @click="requestCompact">整理早前对话</el-button>
+      </div>
     </div>
   </el-popover>
 </template>
@@ -67,7 +71,9 @@
 import { computed, ref } from 'vue';
 import { ContextInfo } from '../types';
 
-const props = defineProps<{ info?: ContextInfo | null }>();
+// busy：生成、重置或整理中，不能再点整理
+const props = defineProps<{ info?: ContextInfo | null; busy?: boolean }>();
+const emit = defineEmits<{ (e: 'compact'): void }>();
 
 const CIRCUMFERENCE = 2 * Math.PI * 8;
 const panelOpen = ref(false);
@@ -171,6 +177,19 @@ const historyNote = computed(() => {
   if (history.legacy_qa_turns) parts.push(`${history.legacy_qa_turns} 轮是改版前的记录`);
   return parts.length ? `（${parts.join('、')}，只带问答文字）` : '';
 });
+
+const compactionLine = computed(() => {
+  const compaction = props.info?.compaction;
+  if (!compaction?.last_before || !compaction.last_after) return '';
+  return `早前对话已整理：${formatTokens(compaction.last_before)} → ${formatTokens(compaction.last_after)}`;
+});
+
+// 后端支持手动整理、并且至少有两轮历史时才给按钮
+const canCompact = computed(() => props.info?.compaction?.manual === true && (props.info.history?.turns ?? 0) >= 2);
+const requestCompact = () => {
+  panelOpen.value = false;
+  emit('compact');
+};
 
 const pagingNote = computed(() => {
   const info = props.info;
@@ -354,6 +373,13 @@ const compactNote = computed(() => (props.info?.compacted_results ? `（本轮 $
   .panel-empty {
     margin: 4px 0 10px;
     color: var(--dv-text-secondary);
+  }
+
+  .panel-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 8px;
+    border-top: 1px solid var(--dv-border);
   }
 
   .panel-rules {

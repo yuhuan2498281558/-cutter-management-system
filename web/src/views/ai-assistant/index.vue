@@ -8,7 +8,7 @@
             刀小智 - 智能助手
           </span>
           <div class="header-actions">
-            <el-button size="small" @click="handleReset" :loading="resetting">
+            <el-button size="small" @click="handleReset" :loading="resetting" :disabled="compacting">
               <el-icon><RefreshRight /></el-icon>
               重置对话
             </el-button>
@@ -21,6 +21,7 @@
         <ChatMessageList
           ref="chatListRef"
           :messages="messages"
+          :compacted-through="contextInfo?.compaction?.through_sequence ?? null"
           :is-generating="loading"
           :has-more-history="hasMoreHistory"
           :history-loading="historyLoading"
@@ -34,9 +35,10 @@
         <ChatInputArea
           v-model:route-mode="routeMode"
           :generating="loading"
-          :disabled="loading || resetting"
+          :disabled="loading || resetting || compacting"
           :context-info="contextInfo"
           @send="sendQuery"
+          @compact="handleCompact"
           @sources-change="focusSources = $event"
           @abort="handleAbort"
         />
@@ -60,6 +62,7 @@ const api = useAiAssistantApi();
 const messages = ref<Message[]>([]);
 const loading = ref(false);
 const resetting = ref(false);
+const compacting = ref(false);
 const historyLoading = ref(false);
 const hasMoreHistory = ref(false);
 const nextHistoryCursor = ref<number>();
@@ -118,7 +121,7 @@ const handleAbort = () => {
 
 // 页面刷新后从后端记忆回填历史对话；只读接口，失败时静默降级为空对话
 const loadHistory = async (older = false) => {
-  if (disposed || historyLoading.value || loading.value || resetting.value) return;
+  if (disposed || historyLoading.value || loading.value || resetting.value || compacting.value) return;
   if (older && (!hasMoreHistory.value || nextHistoryCursor.value === undefined)) return;
   const version = operationVersion;
   historyLoading.value = true;
@@ -134,6 +137,7 @@ const loadHistory = async (older = false) => {
         role: item.role,
         content: item.content,
         time: '',
+        sequence: item.sequence,
       }));
       if (older) {
         const scrollPosition = chatListRef.value?.captureScrollPosition();
@@ -169,7 +173,7 @@ const loadHistory = async (older = false) => {
 onMounted(() => loadHistory());
 
 const sendQuery = (query: string) => {
-  if (!query.trim() || loading.value || resetting.value || disposed) return;
+  if (!query.trim() || loading.value || resetting.value || compacting.value || disposed) return;
   messages.value.push({ id: nextMessageId(), role: 'user', content: query, time: getCurrentTime() });
   runStream(query);
 };
@@ -298,9 +302,19 @@ const runStream = async (query: string) => {
         hasVisibleContent = prefixLength > 0;
         enqueueText(text.slice(message.content.length));
       },
-      onMemory: (info) => {
+      onMemory: ({ turnSequences, ...info }) => {
         if (!isCurrent()) return;
         memoryInfo.value = { ...memoryInfo.value, ...info };
+        // 补上刚保存的问答两行序号，分隔线才能落到本次会话的消息上
+        const index = messages.value.findIndex((message) => message.id === assistantMsg.id);
+        const question = messages.value[index - 1];
+        if (index > 0 && turnSequences?.length === 2 && question.role === 'user') {
+          [question.sequence, messages.value[index].sequence] = turnSequences;
+        }
+      },
+      onStatus: (stage) => {
+        const message = currentMessage();
+        if (isCurrent() && message) message.status = stage === 'compacting' ? stage : undefined;
       },
       onMeta: (info) => {
         if (isCurrent() && info.route) answerRoute = info.route;
@@ -343,8 +357,25 @@ const runStream = async (query: string) => {
   );
 };
 
+// 手动把早前对话整理成摘要；只在后端声明支持（compaction.manual）时显示按钮
+const handleCompact = async () => {
+  if (compacting.value || loading.value || resetting.value || disposed) return;
+  const version = operationVersion;
+  compacting.value = true;
+  try {
+    const response = await api.compact();
+    if (disposed || version !== operationVersion) return;
+    if (response.data?.context) contextInfo.value = response.data.context;
+    ElMessage.success('已整理早前对话');
+  } catch (error: any) {
+    if (!disposed && version === operationVersion) ElMessage.error('整理失败：' + (error.message || '未知错误'));
+  } finally {
+    if (!disposed) compacting.value = false;
+  }
+};
+
 const handleReset = async () => {
-  if (resetting.value || disposed) return;
+  if (resetting.value || compacting.value || disposed) return;
   const version = ++operationVersion;
   try {
     resetting.value = true;

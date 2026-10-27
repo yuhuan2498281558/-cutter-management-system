@@ -12,6 +12,10 @@ export interface Message {
   aborted?: boolean;
   // 模型路径回答用到的数据查询，显示在回答下方的"本次查询"
   queryTraces?: QueryTrace[];
+  // 后端保存的序号：历史接口直接给，本次会话的问答在保存后由 memory 事件补上
+  sequence?: number;
+  // 生成中的进度，如 compacting（正在整理早前对话）
+  status?: string;
 }
 
 export interface AnalysisSection {
@@ -83,6 +87,8 @@ export interface MemoryMetadata {
   scope?: string;
   activeSlots?: Partial<Record<QuerySlot, string | number | number[]>>;
   contextMode?: Exclude<ContextMode, 'auto'>;
+  // 本轮保存的问答两行的序号
+  turnSequences?: number[];
 }
 
 // 后端发来的上下文用量：turn 是本轮最大一次模型调用，baseline 是下一问起步，rule 是直连查库。
@@ -122,10 +128,13 @@ export interface ContextInfo {
   hard_input_limit?: number;
   provider_usage?: { prompt_tokens: number | null; completion_tokens: number | null; cache_hit_tokens: number | null } | null;
   history?: { turns: number; tool_results: number; legacy_qa_turns: number; other_project_turns: number; tokens: number };
-  // auto 为 true 表示后端会在触发线自动压缩（B 阶段起提供）
+  // B 阶段起提供：auto 为后端在触发线自动整理，manual 为可以手动整理，
+  // through_sequence 为最近一次摘要覆盖到的最后一条消息序号
   compaction?: {
     state: string;
     auto?: boolean;
+    manual?: boolean;
+    through_sequence?: number | null;
     checkpoints: number;
     pruned_results: number;
     last_at: string | null;

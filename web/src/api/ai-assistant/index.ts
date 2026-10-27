@@ -76,6 +76,8 @@ export interface ChatStreamCallbacks {
 	onQueryTraces?: (traces: QueryTrace[]) => void;
 	// 本轮上下文用量（估算），在 done 或 error 之前回调
 	onContext?: (info: Record<string, any>) => void;
+	// 回答之外的进度：compacting 表示正在整理早前对话，其他值表示整理结束
+	onStatus?: (stage: string) => void;
 }
 
 // 只保留类别名和查询范围，工具名和参数原文不交给页面
@@ -169,9 +171,12 @@ export function useAiAssistantApi() {
 							slots: evt.slot_names,
 							activeSlots: evt.active_slots,
 							contextMode: evt.context_mode,
+							turnSequences: Array.isArray(evt.turn_sequences) ? evt.turn_sequences : undefined,
 						});
 					} else if (evt.type === 'meta') {
 						callbacks.onMeta?.({ route: typeof evt.route === 'string' ? evt.route : undefined });
+					} else if (evt.type === 'status') {
+						if (typeof evt.stage === 'string') callbacks.onStatus?.(evt.stage);
 					} else if (evt.type === 'context') {
 						if (evt.context && typeof evt.context === 'object') callbacks.onContext?.(evt.context);
 					} else if (evt.type === 'done') {
@@ -230,6 +235,10 @@ export function useAiAssistantApi() {
 		// 重置对话
 		reset: () => {
 			return aiService.post('/api/ai/reset/').then(unwrapResponse);
+		},
+		// 立即把早前对话整理成摘要，返回整理后的下一问起步用量
+		compact: () => {
+			return aiService.post('/api/ai/compact/').then(unwrapResponse);
 		},
 	};
 }
