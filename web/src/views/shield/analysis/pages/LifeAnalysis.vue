@@ -1,7 +1,9 @@
 <template>
   <div ref="pageRef" class="life-page">
-    <AnalysisActions :target="actionsTarget" :generated-at="result?.meta?.generated_at" :refresh="loadData" :refreshing="loading"
-      :exports="[{ label: '导出寿命与厂家 PDF', disabled: !ready, run: exportPdf }]" />
+    <AnalysisActions :target="actionsTarget" :generated-at="result?.meta?.generated_at" :refresh="refreshAll" :refreshing="loading || !!brandRef?.loading" :exports="[
+      { label: '寿命与厂家 PDF', disabled: !ready, run: exportPdf },
+      { label: '厂家对照 PDF', disabled: !brandRef?.ready, run: () => brandRef?.exportPdf() },
+    ]" />
 
     <section class="life-summary-section">
       <ScopeSummary :meta="result?.meta">
@@ -68,6 +70,8 @@
       </ChartCard>
     </section>
 
+    <ManufacturerComparison ref="brandRef" :filter="filter" />
+
     <ChartCard class="analysis-detail-card" chart-height="auto" :loading="loading" :error="error" :is-empty="detailEmpty" @retry="loadData">
       <template #heading>
         <el-tabs v-model="detailTab" class="detail-tabs">
@@ -122,9 +126,12 @@
       </div>
       <div v-show="detailTab === 'excluded'">
         <div class="life-excluded-section">
-          <el-table :data="result?.excluded ?? []" border size="small" class="life-detail-table">
+          <el-table :data="result?.excluded_rows ?? []" border size="small" :max-height="460" class="life-detail-table">
+            <el-table-column label="拆除开仓" min-width="140" fixed><template #default="{ row }"><el-button link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环 · {{ row.warehouse_id }}</el-button></template></el-table-column>
+            <el-table-column prop="cutter_position_no" label="刀位" width="80" />
+            <el-table-column label="换下旧刀编号" min-width="140"><template #default="{ row }">{{ row.old_tool_number || '未记录' }}</template></el-table-column>
+            <el-table-column label="原安装厂家" min-width="140"><template #default="{ row }">{{ row.manufacturer || '待核实' }}</template></el-table-column>
             <el-table-column prop="reason" label="未计入原因" min-width="220" />
-            <el-table-column prop="count" label="已拆刀（把）" width="120" align="right" />
           </el-table>
         </div>
       </div>
@@ -134,10 +141,12 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, nextTick, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import * as echarts from 'echarts';
 import InfoTip from '/@/components/InfoTip.vue';
 import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
+import ManufacturerComparison from '../components/ManufacturerComparison.vue';
 import ReviewList from '../components/ReviewList.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getLifeMileage } from '../api';
@@ -166,13 +175,20 @@ const DETAIL_BASIS: Record<string, string> = {
   segments: '按拆除环归入筛选范围；厂家是这把刀安装时登记的厂家。',
   positions: '累计里程 = 该刀位已拆段里程之和 + 在役刀具已走里程；初装刀具没有安装记录，不计入。',
   service: SERVICE_BASIS,
-  excluded: '系统未能确认安装与拆除配对，或安装与拆除不在同一刀位、刀位半径未核实的已拆刀。',
+  excluded: '系统未能确认安装与拆除配对，或安装与拆除不在同一刀位、刀位半径未核实的已拆刀；补齐旧刀身份和厂家反馈后会计入。',
 };
 
+const router = useRouter();
 const pageRef = ref<HTMLElement | null>(null);
 const { data: result, loading, error, ready, load: loadData } = useAnalysisQuery(
   () => props.filter, async filter => requireAnalysisV2<LifeMileageData>((await getLifeMileage(filter)).data),
 );
+// 厂家对比是独立的一块，标题行的刷新和导出也管它
+const brandRef = ref<{ load: () => Promise<void>; loading: boolean; ready: boolean; exportPdf: () => void } | null>(null);
+function refreshAll() { return Promise.all([loadData(), brandRef.value?.load()]); }
+function openOpening(row: { opening_id: number; warehouse_id: string }) {
+  if (row.opening_id) router.push({ path: '/shield/toolChangeDetail', query: { warehouse_id: String(row.opening_id), warehouse_code: row.warehouse_id, mode: 'view' } });
+}
 
 const groups = computed(() => result.value?.groups ?? []);
 const toolType = ref('DISC');

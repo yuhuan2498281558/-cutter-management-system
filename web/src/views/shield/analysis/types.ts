@@ -406,6 +406,10 @@ export interface LifeMileageData {
   in_service: MileageInService[];
   positions: MileagePosition[];
   excluded: { reason: string; count: number }[];
+  excluded_rows: {
+    detail_id: number; opening_id: number; warehouse_id: string; ring_no: string; cutter_position_no: string;
+    tool_parent_type: string; old_tool_number: string; manufacturer: string; reason: string;
+  }[];
   revolution_basis: {
     ring_width_mm: number;
     reference_penetration_mm: number;

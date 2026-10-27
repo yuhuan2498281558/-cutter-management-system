@@ -42,6 +42,7 @@ const data = () => ({
     { tool_parent_type: 'SCRAPER', cutter_position_no: 'S1L', radius_mm: 3430, removed_count: 1, removed_km: 150, in_service_km: 0, covered_km: 150 },
   ],
   excluded: [{ reason: '厂家反馈未确认', count: 232 }, { reason: '旧刀身份未确认', count: 122 }],
+  excluded_rows: [{ detail_id: 7, opening_id: 31, warehouse_id: 'W-31', ring_no: '317', cutter_position_no: '12', tool_parent_type: 'DISC', old_tool_number: 'OLD-7', manufacturer: '甲厂', reason: '厂家反馈未确认' }],
   revolution_basis: { ring_width_mm: 2000, reference_penetration_mm: 16.67, reference_revolutions_per_ring: 120, reference_penetration_range_mm: [14, 21], tunneling_ring_count: 1, estimated_share: 1 },
   basis: { mileage: '里程口径', revolutions: '圈数口径', life: '寿命口径' },
 });
@@ -140,4 +141,28 @@ test('cell texts: medians from five segments, listed values below, nothing for a
   assert.deepEqual(plain(options.cellView(summary(3, { unclassified_count: 1, classified_count: 2 }), 'abnormal')), { main: '1/2', sub: '未分类 1', tip: '非正常拆除段数 / 拆除时磨损已分类的段数' });
   assert.equal(options.radiusText(6770.8), 'R6770.8 mm');
   assert.equal(options.wearStateLabel(null), '未分类');
+});
+
+test('the action area refreshes mileage and the manufacturer comparison, and exports either', async t => {
+  const r = create(t); await r.mount();
+  const actions = () => r.nodes().find(node => node.type?.name === 'AnalysisActions').props;
+  assert.deepEqual(plain(actions().exports.map(item => [item.label, item.disabled])), [['寿命与厂家 PDF', false], ['厂家对照 PDF', true]]);
+  assert.equal(actions().refresh, r.state.refreshAll);
+  const loads = [];
+  r.state.brandRef.value = { load: async () => loads.push('brand'), loading: false, ready: true, exportPdf: () => loads.push('brand-pdf') };
+  assert.deepEqual(plain(actions().exports.map(item => item.disabled)), [false, false]);
+  r.requests.length = 0; await r.state.refreshAll();
+  assert.deepEqual(r.requests.map(call => call.url.split('/').at(-2)), ['life_mileage']);
+  actions().exports[1].run();
+  assert.deepEqual(loads, ['brand', 'brand-pdf']);
+  assert.ok(r.nodes().some(node => node.type?.name === 'ManufacturerComparison'));
+});
+
+test('removed tools left out are listed one by one and open their opening read-only', async t => {
+  const r = create(t); await r.mount();
+  r.state.detailTab.value = 'excluded';
+  const table = r.nodes().filter(node => node.type?.name === 'el-table').find(node => node.props.data?.[0]?.old_tool_number === 'OLD-7');
+  assert.ok(table);
+  r.state.openOpening(table.props.data[0]);
+  assert.deepEqual(plain(r.routes[0]), { path: '/shield/toolChangeDetail', query: { warehouse_id: '31', warehouse_code: 'W-31', mode: 'view' } });
 });
