@@ -92,7 +92,14 @@ class DataCatalogTests(TestCase):
         self.assertEqual(coverage['openings']['count'], 2)
         self.assertEqual((coverage['openings']['ring_min'], coverage['openings']['ring_max']), (2, 10))
         self.assertEqual(coverage['openings']['summary_status_counts'], {'CONFIRMED': 1, 'DRAFT': 1})
-        self.assertEqual(coverage['tool_change_observations'], {'observation_count': 2, 'replacement_count': 1})
+        observations = coverage['tool_change_observations']
+        self.assertEqual((observations['observation_count'], observations['replacement_count']), (2, 1))
+        self.assertEqual((observations['ring_min'], observations['ring_max']), (2, 10))
+        self.assertTrue(observations['time_min'])
+        self.assertEqual(coverage['old_tool_repairs']['ring_min'], 2)
+        self.assertTrue(coverage['old_tool_repairs']['time_max'])
+        self.assertEqual(coverage['opening_readings'], {'count': 0, 'total': 2})
+        self.assertEqual(coverage['tunneling_revolutions'], {'counter_ring_count': 0, 'integrated_ring_count': 0})
         self.assertEqual(coverage['old_tool_repairs']['status_counts'], {'CLOSED': 1})
         self.assertEqual(coverage['mobile_tasks']['status_counts'], {'COMPLETED': 1, 'PENDING': 1})
         self.assertEqual(coverage['stratum'], {'ring_count': 2, 'ring_min': 2, 'ring_max': 10,

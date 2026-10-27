@@ -78,3 +78,15 @@ class RepairToolTests(TestCase):
                 self.assertIn('error', self.query(**params))
         self.assertIn('CONFIRMED', self.query(inspection_status='DONE')['error'])
         self.assertIn('error', json.loads(query_old_tool_repairs('null')))
+
+    def test_components_filter_before_limit_and_positions_use_full_population(self):
+        self.record(10, bearing_failure_reasons=['FATIGUE_DAMAGE'])
+        self.record(20, bearing_failure_reasons=['SEAL_FAILURE'], ring_damage=['CHIP'])
+        self.record(30, position='2', ring_damage=['CHIP'])
+        self.record(40, position='3')
+        data = self.query(components=['轴承', '刀圈'], list_limit=1)
+        self.assertEqual(data['scope']['record_count'], 3)
+        self.assertEqual(data['records'][0]['old_tool_number'], 'OLD-30')
+        self.assertEqual(data['position_counts'][0], {'cutter_position_no': '1', 'count': 2,
+                         'records': [{'old_tool_number': 'OLD-20', 'ring_no': 20}, {'old_tool_number': 'OLD-10', 'ring_no': 10}]})
+        self.assertEqual(self.query(components=['轴承'], list_limit=1)['scope']['record_count'], 2)

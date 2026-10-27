@@ -29,6 +29,7 @@ _NEW_TOOLS = {
     'tool_query_tool_cost_catalog': ('query_tool_cost_catalog', {'cost_type': 'UNKNOWN'}),
     'tool_query_registered_amounts': ('query_registered_amounts', {'group_by': 'price'}),
     'tool_query_data_catalog': ('query_data_catalog', {'unexpected': True}),
+    'tool_query_tool_mileage': ('query_tool_mileage', {'manufacturers': [' ']}),
 }
 
 
@@ -48,7 +49,7 @@ def _assistant():
 class IntegrationContractsTests(SimpleTestCase):
     def test_tool_list_groups_and_signatures(self):
         names = {tool.name for tool in service.TOOLS}
-        self.assertEqual(len(service.TOOLS), 21)
+        self.assertEqual(len(service.TOOLS), 22)
         self.assertTrue(set(_NEW_TOOLS) <= names)
         self.assertTrue(names.isdisjoint({'tool_calculate_tool_performance', 'tool_compare_manufacturer_performance'}))
         for group in service.TOOL_GROUPS.values():
@@ -115,7 +116,7 @@ class IntegrationContractsTests(SimpleTestCase):
         for query in ('综合返修、报价和掘进参数给出风险分析', '结合检查、地层、厂家和费用分析'):
             self.assertEqual(assistant._tool_group_for_query(query), 'all')
             assistant._get_executor_for_query(query, project_id='TEST')
-            self.assertEqual(len(assistant._create_executor.call_args.args[0]), 21)
+            self.assertEqual(len(assistant._create_executor.call_args.args[0]), 22)
 
 
 class IntegrationRoutingTests(SimpleTestCase):
@@ -187,6 +188,11 @@ class IntegrationRoutingTests(SimpleTestCase):
             'scrapped_count': 2, 'scrap_suggestion_count': 3, 'records': [{'old_tool_number': f'OLD-{i}'} for i in range(25)]})
         answer = self.ask('已经报废了多少把刀')['answer']
         self.assertLess(answer.index('已报废：2'), answer.index('报废建议：3'))
+        self.assertNotIn('返修明细', answer)
+        self.calls['query_old_tool_repairs'].return_value = _json({'scope': {'record_count': 25},
+            'scrapped_count': 2, 'scrap_suggestion_count': 3,
+            'records': [{'old_tool_number': f'OLD-{i}', 'disposition': 'SCRAP'} for i in range(25)]})
+        answer = self.ask('列出报废旧刀名单')['answer']
         self.assertIn('共 25 条，显示前 20 条', answer)
         self.assertNotIn('OLD-20', answer)
 
@@ -236,20 +242,16 @@ class IntegrationRoutingTests(SimpleTestCase):
         for label in ('建议身份', '推断', '在役'):
             self.assertIn(f'| {label} | 暂无 |', answer)
 
-    def test_component_list_fetches_remaining_windows_before_filtering(self):
+    def test_component_list_filters_before_limiting(self):
         def result(params):
-            bounds = json.loads(params).get('ring_range')
+            self.assertEqual(json.loads(params)['components'], ['轴承'])
             record = {'ring_no': 2, 'old_tool_number': 'BEARING-1', 'failure_reasons': [{'component': '轴承', 'label': '疲劳损坏'}]}
-            if bounds == [1, 1]:
-                return _json({'scope': {'record_count': 1, 'data_ring_range': [1, 1]}, 'records': [{'ring_no': 1}]})
-            if bounds == [2, 2]:
-                return _json({'scope': {'record_count': 1, 'data_ring_range': [2, 2]}, 'records': [record]})
-            return _json({'scope': {'record_count': 2, 'data_ring_range': [1, 2]}, 'records': [{'ring_no': 1}]})
+            return _json({'scope': {'record_count': 1, 'data_ring_range': [2, 2]}, 'records': [record]})
         self.calls['query_old_tool_repairs'].side_effect = result
         answer = self.ask('轴承失效的旧刀有哪些')['answer']
         self.assertIn('BEARING-1', answer)
         self.assertNotIn('不能视为全量名单', answer)
-        self.assertEqual(self.calls['query_old_tool_repairs'].call_count, 3)
+        self.assertEqual(self.calls['query_old_tool_repairs'].call_count, 1)
 
 
 class IntegrationRequestTests(SimpleTestCase):
@@ -329,7 +331,8 @@ class IntegrationRequestTests(SimpleTestCase):
     def test_efficiency_minutes_and_weighted_average(self):
         answer = _assistant()._format_opening_efficiency_answer(_json({'recent_records': [
             {'ring_no': 10, 'opening_duration': 2, 'tool_change_duration_hours': 1, 'tool_change_total': 5, 'tool_change_replaced': 2},
-            {'ring_no': 20, 'opening_duration': 4, 'tool_change_duration_hours': 2, 'tool_change_total': 15, 'tool_change_replaced': 8}]}))
+            {'ring_no': 20, 'opening_duration': 4, 'tool_change_duration_hours': 2, 'tool_change_total': 15, 'tool_change_replaced': 8}],
+            'efficiency_all': {'opening_count': 2, 'check_minutes_per_tool': 18, 'replace_minutes_per_tool': 18}}))
         self.assertIn('平均检查一把刀约 18.0 分钟；平均更换一把刀约 18.0 分钟', answer)
         self.assertIn('检查效率（分钟/把）', answer)
         self.assertIn('更换效率（分钟/把）', answer)

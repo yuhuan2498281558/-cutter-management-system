@@ -69,8 +69,10 @@ def query_tool_cost_catalog(params_str: str) -> str:
                 })
             by_model.append(item)
         warnings = []
-        if len(records) > limit:
-            warnings.append(f'报价明细仅列前{limit}条，型号价格范围和条数按全部匹配报价统计。')
+        manufacturer_prices = defaultdict(lambda: {'NEW_TOOL': [], 'REPAIR': []})
+        for row in records:
+            manufacturer_prices[(row.tool_info.tool_type_name, row.manufacturer)][row.cost_type].append(
+                {'brand': row.brand, 'unit_price_yuan': _money(row.unit_price)})
         if not records:
             warnings.append('没有找到符合条件的报价。')
         missing_count = sum(row.unit_price is None for row in records)
@@ -81,6 +83,9 @@ def query_tool_cost_catalog(params_str: str) -> str:
                       'list_limit': limit, 'quote_count': len(records), 'returned_quote_count': min(limit, len(records)),
                       'model_count': len(by_model)},
             'by_model': by_model,
+            'by_manufacturer': [{'tool_model': model, 'manufacturer': manufacturer,
+                                 'new_tool_prices': prices['NEW_TOOL'], 'repair_prices': prices['REPAIR']}
+                                for (model, manufacturer), prices in sorted(manufacturer_prices.items())],
             'quotes': [{
                 'tool_model': row.tool_info.tool_type_name, 'tool_type': row.tool_info.tool_parent_type,
                 'cost_type': row.cost_type, 'brand': row.brand, 'manufacturer': row.manufacturer,

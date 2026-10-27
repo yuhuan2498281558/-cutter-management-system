@@ -42,9 +42,12 @@ def query_old_tool_repairs(params_str: str) -> str:
         params = json.loads(params_str)
         _validate_detail_params(params)
         allowed = {'project_id', 'shield_machine_id', 'ring_range', 'tool_type', 'cutter_position_no',
-                   'inspection_status', 'disposition', 'list_limit'}
+                   'inspection_status', 'disposition', 'list_limit', 'components'}
         if params.keys() - allowed:
             raise ValueError('不支持的参数；可用参数：' + '、'.join(sorted(allowed)))
+        if 'components' in params and (not isinstance(params['components'], list)
+                or any(c not in ('轴承', '刀圈', '刀毂') for c in params['components'])):
+            raise ValueError('components 必须是轴承、刀圈、刀毂的列表')
         for field, choices in (('inspection_status', OldToolRecord.INSPECTION_STATUS_CHOICES),
                                ('disposition', OLD_TOOL_DISPOSITION_CHOICES)):
             if field in params and (not isinstance(params[field], str) or params[field] not in dict(choices)):
@@ -59,6 +62,9 @@ def query_old_tool_repairs(params_str: str) -> str:
         if field in params:
             query = query.filter(**{field: params[field]})
     records = list(query.select_related('tool_change_detail__warehouse'))
+    # 先按部件筛全部记录再截取明细。
+    if params.get('components'):
+        records = [r for r in records if any(f['component'] in params['components'] for f in _failure_reasons(r))]
     rows = {row.pk: row for row in details.filter(pk__in=[r.tool_change_detail_id for r in records])}
     records.sort(key=lambda r: (-rows[r.tool_change_detail_id]._tool_ring,
                                cutter_position_sort_key(r.tool_change_detail.cutter_position_no), r.pk))
@@ -68,7 +74,9 @@ def query_old_tool_repairs(params_str: str) -> str:
     statuses = Counter(r.inspection_status for r in records)
     disposition = defaultdict(Counter)
     reasons = Counter()
+    positions = defaultdict(list)
     for record in records:
+        positions[normalize_cutter_position_no(record.tool_change_detail.cutter_position_no)].append(record)
         disposition[record.inspection_status][record.disposition or '未登记'] += 1
         for reason in _failure_reasons(record):
             reasons[(reason['component'], reason['reason'], reason['label'])] += 1
@@ -92,6 +100,10 @@ def query_old_tool_repairs(params_str: str) -> str:
         },
         'failure_reasons': [{'component': c, 'reason': r, 'label': label, 'record_count': count}
                             for (c, r, label), count in sorted(reasons.items())],
+        'position_counts': [{'cutter_position_no': code, 'count': len(items),
+                             'records': [{'old_tool_number': r.old_tool_number,
+                                          'ring_no': rows[r.tool_change_detail_id]._tool_ring} for r in items]}
+                            for code, items in sorted(positions.items(), key=lambda pair: (-len(pair[1]), cutter_position_sort_key(pair[0])))],
         'photo_count': sum(photos.values()),
         'records': [{'ring_no': rows[r.tool_change_detail_id]._tool_ring,
                      'cutter_position_no': normalize_cutter_position_no(r.tool_change_detail.cutter_position_no),

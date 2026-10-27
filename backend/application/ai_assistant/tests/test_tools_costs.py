@@ -48,6 +48,8 @@ class ToolCostCatalogTests(TestCase):
         self.assertEqual(len(result['quotes']), 1)
         self.assertEqual(result['scope']['quote_count'], 3)
         self.assertEqual(result['by_model'][0]['new_tool_price_max_yuan'], 300)
+        self.assertEqual(len(result['by_manufacturer']), 2)
+        self.assertEqual(sum(len(r['new_tool_prices']) + len(r['repair_prices']) for r in result['by_manufacturer']), 3)
         filtered = self.query(tool_type='SCRAPER', brand='甲牌', manufacturer='甲厂', cost_type='NEW_TOOL')
         self.assertEqual(filtered['scope']['quote_count'], 1)
         self.assertEqual(filtered['by_model'][0]['repair_quote_count'], 0)

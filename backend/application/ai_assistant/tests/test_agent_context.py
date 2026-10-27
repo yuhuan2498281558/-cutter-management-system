@@ -20,7 +20,7 @@ _PAGED = {
     'query_old_tool_repairs', 'query_tool_cost_catalog', 'query_data_catalog',
     'query_opening_records', 'query_tunneling_summary', 'query_tunneling_trend',
     'recommend_tools', 'query_registered_amounts', 'query_stratum_area',
-    'compare_manufacturer_service',
+    'compare_manufacturer_service', 'query_tool_mileage',
 }
 
 

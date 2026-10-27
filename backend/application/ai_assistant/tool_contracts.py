@@ -121,6 +121,7 @@ class PerformanceQuery(BaseModel):
 
 
 class RecommendationQuery(ToolQuery, _PagingQuery):
+    sort_by: Literal["service", "price_per_ring"] = "service"
     stratum_types: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(default_factory=list, max_length=50)
     max_unit_price: float = Field(default=0, ge=0, allow_inf_nan=False, strict=True)
     top_n: Annotated[StrictInt, Field(ge=1, le=50)] = 5
@@ -158,6 +159,7 @@ class InspectionQuery(PositionFilterQuery, _PagingQuery):
 
 
 class RepairQuery(PositionFilterQuery, _PagingQuery):
+    components: list[Literal["轴承", "刀圈", "刀毂"]] = Field(default_factory=list)
     shield_machine_id: PositiveInt | None = None
     inspection_status: Literal["PENDING_VENDOR_FEEDBACK", "CONFIRMED", "CLOSED"] | None = None
     disposition: Literal["SCRAP", "REPAIRABLE"] | None = None
@@ -173,6 +175,12 @@ class ManufacturerServiceQuery(ToolQuery, _PagingQuery):
     shield_machine_id: PositiveInt | None = None
     manufacturers: list[Nonblank] = Field(default_factory=list)
     min_samples: PositiveInt = 3
+
+
+class ToolMileageQuery(ToolQuery, _PagingQuery):
+    shield_machine_id: PositiveInt | None = None
+    manufacturers: list[Nonblank] = Field(default_factory=list)
+    cutter_position_no: Nonblank | None = None
 
 
 class StratumAreaQuery(RingQuery, _PagingQuery):

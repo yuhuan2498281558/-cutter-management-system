@@ -26,7 +26,7 @@ def _opening(ring=487, **fields):
             'tool_change_duration_hours': 4, 'tool_change_total': 20,
             'tool_change_replaced': 2, 'abnormal_rate': '20%',
             'rings_between_openings': 30, 'wear_distribution': {'偏磨': 2},
-            'top_replaced_positions': ['S1L'], **fields}
+            'top_replaced_positions': [{'cutter_position_no': 'S1L', 'count': 2}], **fields}
 
 
 class RoutingRefreshTests(SimpleTestCase):
@@ -152,6 +152,9 @@ class RoutingRefreshTests(SimpleTestCase):
         self.assertEqual(self.params('query_cutter_position_stats')['sort_by'], 'abnormal')
         self.ask('分析刀盘不同刀位的磨损分布情况')
         self.assertTrue(self.params('query_cutter_position_stats')['include_all'])
+        for phrase in ('全部有效刀位', '所有有效刀位', '所有刀位'):
+            self.ask(f'列出{phrase}的更换次数和磨损情况')
+            self.assertTrue(self.params('query_cutter_position_stats')['include_all'])
 
     def test_group_service_keeps_type_after_context_preparation(self):
         for name, kind in [('滚刀', 'DISC'), ('刮刀', 'SCRAPER')]:
@@ -161,8 +164,10 @@ class RoutingRefreshTests(SimpleTestCase):
                 self.assertEqual(self.params('recommend_tools')['tool_type'], kind)
                 self.assertEqual(self.params('recommend_tools')['top_n'], 50)
                 self.assertEqual(self.params('query_tool_change_trend')['tool_type'], kind)
-                self.assertIn('各型号已拆下刀具的服役环数', result['answer'])
-                self.assertIn('这是已经拆下的刀从安装到拆下经过的环数，按型号统计；不是在役刀具的剩余寿命预测。', result['answer'])
+                self.assertIn(f'## {name}服役环数', result['answer'])
+                self.assertIn('总环数 ÷ 段数', result['answer'])
+                self.assertIn('更换最多的环段：100–149 环 8 次', result['answer'])
+                self.assertNotIn('价格参考', result['answer'])
 
     def test_abnormal_ranking_uses_observations_and_lists_types(self):
         self.tools['query_cutter_position_stats'].return_value = _json({'total_records': 20, 'sort_by': 'abnormal', 'top_positions': [
@@ -279,7 +284,8 @@ class RoutingRefreshTests(SimpleTestCase):
 
     def test_fifteen_openings_and_efficiencies_show_fifteen_rows(self):
         records = [_opening(i) for i in range(1, 16)]
-        self.tools['query_opening_records'].return_value = _json({'total_openings': 15, 'recent_records': records})
+        self.tools['query_opening_records'].return_value = _json({'total_openings': 15, 'recent_records': records,
+            'efficiency_recent': {'opening_count': 15, 'check_minutes_per_tool': 30, 'replace_minutes_per_tool': 120}})
         result = self.ask('查询最近15次开仓记录')
         self.assertIn('最近 **15** 次', result['answer'])
         tables = result['answer'].split('### 现场明细')
@@ -294,7 +300,8 @@ class RoutingRefreshTests(SimpleTestCase):
                    _opening(20, opening_duration=30, tool_change_duration_hours=6, tool_change_total=18, tool_change_replaced=3),
                    _opening(30, opening_duration=0, tool_change_duration_hours=0, tool_change_total=20, tool_change_replaced=4),
                    _opening(40, opening_duration=0, tool_change_duration_hours=None, tool_change_total=0, tool_change_replaced=40)]
-        answer = self.assistant._format_opening_efficiency_answer(_json({'recent_records': records}))
+        answer = self.assistant._format_opening_efficiency_answer(_json({'recent_records': records,
+            'efficiency_all': {'opening_count': 4, 'check_minutes_per_tool': 60, 'replace_minutes_per_tool': 60}}))
         self.assertIn('平均检查一把刀约 60.0 分钟；平均更换一把刀约 60.0 分钟', answer)
         self.assertIn('1 次开仓缺少换刀总时长', answer)
         self.assertIn('| 30 | 0.0 | 0.0 | 20 | 4 | 0.0 | 0.0 |', answer)

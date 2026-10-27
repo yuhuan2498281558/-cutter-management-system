@@ -107,6 +107,57 @@ class ToolsRefreshTests(TestCase):
         invalid = json.loads(tools.query_opening_records('{"summary_status":"PENDING"}'))
         self.assertIn('CONFIRMED', invalid['error'])
 
+    def test_opening_full_means_efficiency_and_readings_are_not_display_limited(self):
+        first = self.opening(10, rings_between_openings=10, opening_duration=2, tool_change_duration=1,
+                             checked_tool_count=20, replaced_tool_count=5, right_revolution_reading=100, left_revolution_reading=20)
+        self.opening(20, rings_between_openings=10, opening_duration=4, tool_change_duration=2,
+                     checked_tool_count=40, replaced_tool_count=10, right_revolution_reading=300, left_revolution_reading=30)
+        last = self.opening(50, rings_between_openings=30, opening_duration=9, tool_change_duration=3,
+                            checked_tool_count=90, replaced_tool_count=15, right_revolution_reading=10, left_revolution_reading=40)
+        self.opening(30, machine=self.other_machine, right_revolution_reading=999, left_revolution_reading=999)
+        for position in ('1', '2', '3', '4'):
+            self.detail(first, position, is_replaced=True)
+            self.detail(last, position, is_replaced=True)
+            self.detail(last, '0' + position, is_replaced=True)
+        data = self.call(tools.query_opening_records, shield_machine_id=self.machine.pk, limit=1)
+        self.assertEqual((data['avg_rings_between_openings'], data['recent_avg_rings_between_openings']), (16.7, 30))
+        self.assertEqual((data['avg_opening_duration_hours'], data['recent_avg_opening_duration_hours']), (5, 9))
+        self.assertEqual(data['efficiency_all'], {'opening_count': 3, 'check_denominator': 150,
+                         'check_minutes_per_tool': 6, 'replace_denominator': 30, 'replace_minutes_per_tool': 12})
+        self.assertIsNone(data['recent_records'][0]['revolutions_since_previous'])
+        self.assertEqual(len(data['recent_records'][0]['top_replaced_positions']), 4)
+        self.assertTrue(data['recent_records'][0]['top_positions_tied'])
+        selected = self.call(tools.query_opening_records, shield_machine_id=self.machine.pk, ring_range=[20, 20])
+        self.assertEqual(selected['recent_records'][0]['revolutions_since_previous'], 210)
+        first_data = self.call(tools.query_opening_records, ring_range=[10, 10])['recent_records'][0]
+        self.assertTrue(first_data['positions_all_once'])
+        self.assertEqual(first_data['top_replaced_positions'], [])
+
+    def test_tunneling_speed_and_complete_ring_revolution_counts(self):
+        self.tunnel(5, advance_speed=30, counter_revolutions=90, integrated_revolutions=80)
+        self.tunnel('05', advance_speed=60, counter_revolutions=None, integrated_revolutions=20)
+        self.tunnel(6, advance_speed=None, counter_revolutions=100)
+        self.tunnel(7, project=self.other_project, counter_revolutions=999)
+        data = self.call(tools.query_tunneling_summary)
+        self.assertEqual(data['metrics']['advance_speed'], {'avg': 45, 'min': 30, 'max': 60})
+        self.assertEqual((data['counter_ring_count'], data['integrated_ring_count']), (1, 1))
+
+    def test_recommendation_price_sort_and_weighted_service_use_all_models(self):
+        first, second = self.info('甲型号'), self.info('乙型号')
+        for position, info, end in [('1', first, 20), ('2', second, 40), ('3', second, 40)]:
+            _, instance = self.install(self.opening(10), info, position)
+            self.remove(self.opening(end), instance, position)
+        for info, price, vendor in [(first, 50, '甲厂'), (first, 80, '乙厂'), (second, 300, '甲厂')]:
+            ToolCost.objects.create(tool_info=info, cost_type='NEW_TOOL', unit_price=price, manufacturer=vendor)
+        default = self.call(tools.recommend_tools, min_samples=1)
+        ordered = self.call(tools.recommend_tools, min_samples=1, sort_by='price_per_ring', top_n=1)
+        self.assertEqual(default['recommendations'][0]['tool_type_name'], '乙型号')
+        row = ordered['recommendations'][0]
+        self.assertEqual(row['tool_type_name'], '甲型号')
+        self.assertEqual([q['price_per_ring_yuan'] for q in row['manufacturer_prices']], [5, 8])
+        self.assertEqual(ordered['service_summary'], {'completed_service_count': 3, 'total_service_rings': 70, 'avg_service_rings': 23.3})
+        self.assertEqual(len(ordered['service_by_model']), 2)
+
     def test_missing_opening_fields_keep_zero_and_null_distinct(self):
         self.opening(10, summary_status='DRAFT', opening_duration=0, checked_tool_count=0,
                      summary_confirmed_at=self.time, summary_withdrawn_at=self.time)

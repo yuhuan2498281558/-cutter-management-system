@@ -19,7 +19,8 @@ def _manufacturer_result(name, segments):
             'min_service_rings': min(rings), 'max_service_rings': max(rings),
             'classified_count': denominator, 'abnormal_count': classified['abnormal'],
             'abnormal_rate_pct': round(classified['abnormal'] / denominator * 100, 1) if denominator else None,
-            'abnormal_type_counts': {key: value for key, value in sorted(wear.items()) if is_abnormal_wear(key)}}
+            'abnormal_type_counts': {key: value for key, value in sorted(wear.items()) if is_abnormal_wear(key)},
+            'abnormal_types': {key: value for key, value in sorted(wear.items()) if is_abnormal_wear(key)}}
 
 
 def compare_manufacturer_service(params_str: str) -> str:

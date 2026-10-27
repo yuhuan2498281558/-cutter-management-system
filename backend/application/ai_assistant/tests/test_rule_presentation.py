@@ -3,6 +3,7 @@ import json
 from django.test import SimpleTestCase
 
 from application.ai_assistant.llm_service import ToolAssistant, _with_analysis_payload
+from application.ai_assistant.answer_reporting import render_report, requested_sections
 
 
 class RulePresentationTests(SimpleTestCase):
@@ -56,15 +57,19 @@ class RulePresentationTests(SimpleTestCase):
             'ring_no': str(ring), 'open_time': '2025-01-19 08:30',
             'abnormal_rate': '50.0%', 'detail_record_count': 122,
             'detail_checked_count': 100, 'detail_replaced_count': 50,
-            'top_replaced_positions': ['S1L'], 'wear_distribution': {'崩口': 50},
+            'top_replaced_positions': [{'cutter_position_no': 'S1L', 'count': 2}], 'wear_distribution': {'崩口': 50},
         } for ring in [487, 443, 400]]
         answer = self.assistant._format_opening_answer(json.dumps({'total_openings': 3, 'recent_records': records}))
         self.assertEqual(answer.count('建议结合'), 1)
         self.assertIn('**487、443、400**', answer)
         self.assertEqual(answer.count('2025-01-19 08:30'), 3)
         for ring in [487, 443, 400]:
-            self.assertIn(f'| {ring} | 122 | 100 | 50 | 50.0% | 高频刀位：S1L；主要磨损：崩口 50次 |', answer)
+            self.assertIn(f'| {ring} | 122 | 100 | 50 | 50.0% | 更换较多的刀位：S1L（2）；主要磨损：崩口 50次 |', answer)
         self.assertNotIn('现场记录与核对提示', answer)
+        records[0]['revolutions_since_previous'] = 1200
+        answer = self.assistant._format_opening_answer(json.dumps({'total_openings': 3, 'recent_records': records}))
+        self.assertIn('刀盘圈数（距上次读数）', answer)
+        self.assertIn('| 1200 |', answer)
 
     def test_table_cell_escapes_delimiters_without_losing_zero(self):
         rows = self.assistant._answer_table(['刀位', '次数'], [['A|B\\C\n备注', 0]])
@@ -73,3 +78,57 @@ class RulePresentationTests(SimpleTestCase):
     def test_table_cell_rounds_float_tails(self):
         rows = self.assistant._answer_table(['参数', '平均值', '最大值'], [['总推力', 11918.614430000001, 12787.1351]])
         self.assertEqual(rows[-1], '| 总推力 | 11918.614 | 12787.135 |')
+
+    def test_narrow_change_opening_manufacturer_and_repair_reports(self):
+        query = '统计换刀更换率，并列出主要更换刀位'
+        answer = self.assistant._format_tool_change_answer(json.dumps({'total_records': 10, 'replaced_count': 2,
+            'wear_distribution': [{'wear_condition': '偏磨', 'count': 3}],
+            'top_replaced_positions': [{'cutter_position_no': '1', 'replacement_count': 2}]}), sections=requested_sections('tool_change', query))
+        self.assertIn('实际更换 **2** 次', answer)
+        self.assertIn('| 1 | 2 |', answer)
+        self.assertNotIn('磨损分布', answer)
+        data = {'total_openings': 15, 'avg_rings_between_openings': 32.5, 'avg_opening_duration_hours': 7.5,
+                'recent_avg_rings_between_openings': 34, 'recent_avg_opening_duration_hours': 7.7,
+                'recent_records': [{'ring_no': 487, 'last_ring_no': 443, 'rings_between_openings': 44, 'revolutions_since_previous': 100}]}
+        for query in ('统计平均多少环开一次仓，并列出最近开仓间隔', '列出最近10次开仓中已分类异常率较高的开仓'):
+            answer = render_report('opening', data, self.assistant._answer_table, {'sections': requested_sections('opening', query)})
+            self.assertIn('最近 1 次：平均间隔 34 环，平均开仓时长 7.7 小时。', answer)
+            self.assertIn('全部 15 次：平均间隔 32.5 环，平均开仓时长 7.5 小时。', answer)
+            self.assertIn('刀盘圈数（距上次读数）', answer)
+            self.assertNotIn('数据核对', answer)
+        data['efficiency_all'] = {'opening_count': 15, 'check_minutes_per_tool': 3.1, 'replace_minutes_per_tool': 3.8}
+        data['efficiency_recent'] = {'opening_count': 1, 'check_minutes_per_tool': 5, 'replace_minutes_per_tool': 10}
+        for recent, count, minutes in ((False, 15, '3.1'), (True, 1, '5.0')):
+            answer = self.assistant._format_opening_efficiency_answer(json.dumps(data), recent)
+            self.assertIn(f"按{'最近' if recent else '全部'} {count} 次开仓统计", answer)
+            self.assertIn(f'平均检查一把刀约 {minutes} 分钟', answer)
+        manufacturer = {'service_by_install_manufacturer': [{'manufacturer': '甲厂', 'confirmed_segment_count': 5,
+                         'avg_service_rings': 10, 'classified_count': 5, 'abnormal_rate_pct': 20, 'abnormal_types': {'偏磨': 1}}],
+                        'supply_by_new_manufacturer': [{'manufacturer': '甲厂', 'install_count': 10, 'registered_amount_yuan': 1000}]}
+        answers = [render_report('manufacturer_service', manufacturer, self.assistant._answer_table, {'question': q})
+                   for q in ('对比各厂家刀具的使用寿命和异常磨损率', '分析主要厂家的异常磨损类型')]
+        self.assertIn('平均服役环数', answers[0])
+        self.assertIn('各厂家异常类型分布', answers[1])
+        self.assertNotEqual(*answers)
+        for answer in answers:
+            self.assertNotIn('供货次数', answer)
+        repairs = {'scrapped_count': 2, 'scrap_suggestion_count': 3, 'registered_repair_amount': {'confirmed_yuan': 10, 'pending_yuan': 99},
+                   'failure_reasons': [{'component': c, 'label': '损坏', 'record_count': 1} for c in ('轴承', '刀圈', '刀毂')],
+                   'records': [{'old_tool_number': 'SCRAP-1', 'disposition': 'SCRAP'}, {'old_tool_number': 'REPAIR-1', 'disposition': 'REPAIRABLE'}]}
+        for query in ('统计旧刀返修进度，列出待厂家反馈、已确认、已归档的数量', '统计已经报废了多少把刀，还有待厂家确认的报废建议', '统计已确认的返修登记了多少钱'):
+            answer = render_report('old_tool_repairs', repairs, self.assistant._answer_table, {'question': query})
+            self.assertNotIn('返修明细', answer)
+            if '已确认的返修' in query:
+                self.assertNotIn('99', answer)
+        answer = render_report('old_tool_repairs', repairs, self.assistant._answer_table, {'question': '列出报废旧刀名单'})
+        self.assertIn('SCRAP-1', answer)
+        self.assertNotIn('REPAIR-1', answer)
+        answer = render_report('old_tool_repairs', repairs, self.assistant._answer_table, {'question': '统计旧刀的部件失效原因，列出轴承、刀圈等损坏数量'})
+        for component in ('轴承', '刀圈', '刀毂'):
+            self.assertIn(component, answer)
+        self.assertIn('原因计数不等于刀数', answer)
+        inspections = {'attention_not_replaced': {'record_count': 1, 'records': [{'ring_no': 10, 'cutter_position_no': 'S1L'}]}}
+        answer = render_report('tool_inspections', inspections, self.assistant._answer_table, {'question': '统计需关注未更换的数量'})
+        self.assertNotIn('需关注未更换明细', answer)
+        answer = render_report('tool_inspections', inspections, self.assistant._answer_table, {'question': '列出需关注未更换的名单'})
+        self.assertIn('需关注未更换明细', answer)

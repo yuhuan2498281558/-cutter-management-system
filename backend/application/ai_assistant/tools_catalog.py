@@ -5,7 +5,7 @@ from django.db.models import Count, IntegerField, Max, Min
 from django.db.models.functions import Cast
 
 from application.ai_assistant.tools import (
-    STRATUM_TYPE_NAMES, _active_detail_query, _analysis_payload, _build_json,
+    STRATUM_TYPE_NAMES, _active_detail_query, _analysis_payload, _build_json, _tunneling_revolution_counts,
 )
 from application.ai_assistant.tools_stratum_area import (
     _area_summary, _legacy_codes, _read_params, _stratum_query, _stratum_rows,
@@ -29,8 +29,8 @@ def _status_counts(query, field):
     return {row[field]: row['count'] for row in query.order_by().values(field).annotate(count=Count('pk')).order_by(field)}
 
 
-def _coverage(query, time_field):
-    rings = query.filter(ring_no__regex=RING_NUMERIC_REGEX).annotate(_ring=Cast('ring_no', IntegerField())).aggregate(
+def _coverage(query, time_field, ring_field='ring_no'):
+    rings = query.filter(**{f'{ring_field}__regex': RING_NUMERIC_REGEX}).annotate(_ring=Cast(ring_field, IntegerField())).aggregate(
         ring_min=Min('_ring'), ring_max=Max('_ring'),
     )
     times = query.aggregate(time_min=Min(time_field), time_max=Max(time_field))
@@ -73,7 +73,8 @@ def query_data_catalog(params_str: str) -> str:
                 'open_time_min': opening_coverage['time_min'], 'open_time_max': opening_coverage['time_max'],
                 'summary_status_counts': _status_counts(openings, 'summary_status'),
             },
-            'tool_change_observations': {'observation_count': details.count(), 'replacement_count': details.filter(is_replaced=True).count()},
+            'tool_change_observations': {'observation_count': details.count(), 'replacement_count': details.filter(is_replaced=True).count(),
+                                         **_coverage(details, 'warehouse__open_time', 'warehouse__ring_no')},
             'tunneling': {'record_count': tunneling.count(), **_coverage(tunneling, 'record_time')},
             'stratum': {
                 'ring_count': area['ring_count_requested'],
@@ -81,7 +82,11 @@ def query_data_catalog(params_str: str) -> str:
                 'longitudinal_area_ring_count': area['ring_count_with_data'], 'cross_section_ring_count': cross['ring_count_with_data'],
             },
             'cost_quotes': {'new_tool_count': quote_counts.get('NEW_TOOL', 0), 'repair_count': quote_counts.get('REPAIR', 0)},
-            'old_tool_repairs': {'status_counts': _status_counts(repairs, 'inspection_status')},
+            'old_tool_repairs': {'status_counts': _status_counts(repairs, 'inspection_status'),
+                                **_coverage(repairs, 'tool_change_detail__warehouse__open_time', 'tool_change_detail__warehouse__ring_no')},
+            'opening_readings': {'count': openings.filter(right_revolution_reading__isnull=False, left_revolution_reading__isnull=False).count(),
+                                 'total': openings.count()},
+            'tunneling_revolutions': _tunneling_revolution_counts(tunneling),
             'mobile_tasks': {'status_counts': _status_counts(tasks, 'status')},
         }
         warnings = []

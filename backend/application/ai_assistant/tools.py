@@ -351,6 +351,7 @@ def _summarize_tunneling_records(query, limit=10):
         "torque": query.aggregate(avg=Avg('torque'), max=Max('torque'), min=Min('torque')),
         "cutterhead_speed": query.aggregate(avg=Avg('cutterhead_speed'), max=Max('cutterhead_speed'), min=Min('cutterhead_speed')),
         "penetration": query.aggregate(avg=Avg('penetration'), max=Max('penetration'), min=Min('penetration')),
+        "advance_speed": query.aggregate(avg=Avg('advance_speed'), max=Max('advance_speed'), min=Min('advance_speed')),
     }
     recent = list(query.order_by('-record_time', '-id').values(
         'ring_no', 'thrust', 'torque', 'cutterhead_speed', 'penetration', 'record_time'
@@ -367,8 +368,17 @@ def _summarize_tunneling_records(query, limit=10):
             query.aggregate(max_ring=Max(Cast('ring_no', IntegerField())))['max_ring'],
         ],
         "metrics": metrics,
+        **_tunneling_revolution_counts(query),
         "recent_records": recent,
     }
+
+
+def _tunneling_revolution_counts(query):
+    rings = query.filter(ring_no__regex=r'^[0-9]{1,9}$').annotate(
+        revolution_ring=Cast('ring_no', IntegerField())).order_by().values('project_id', 'shield_machine_id', 'revolution_ring').annotate(
+        total=Count('pk'), counter=Count('counter_revolutions'), integrated=Count('integrated_revolutions'))
+    return {'counter_ring_count': sum(row['counter'] == row['total'] for row in rings),
+            'integrated_ring_count': sum(row['integrated'] == row['total'] for row in rings)}
 
 
 def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "", threshold_k=1.5) -> dict:
@@ -1009,6 +1019,9 @@ def recommend_tools(params_str: str) -> str:
             if str(code).strip()
         }
         stratum_basis = params.get('stratum_basis', 'label')
+        sort_by = params.get('sort_by', 'service')
+        if sort_by not in {'service', 'price_per_ring'}:
+            return _build_json({'error': 'sort_by 只支持 service 或 price_per_ring'})
         if stratum_basis not in {'label', 'longitudinal_area'}:
             return _build_json({'error': 'stratum_basis 只支持 label 或 longitudinal_area'})
         allowed_codes = STRATUM_TYPE_NAMES if stratum_basis == 'label' else AREA_LABELS
@@ -1052,7 +1065,8 @@ def recommend_tools(params_str: str) -> str:
             "ring_range": parsed_range or "全部",
             "max_unit_price_yuan": max_unit_price,
             "min_samples": min_samples,
-            "rank_metric": "avg_service_rings（平均服役环数），降序",
+            "sort_by": sort_by,
+            "rank_metric": "最低每环报价，升序" if sort_by == 'price_per_ring' else "avg_service_rings（平均服役环数），降序",
             "grouping": "ToolInfo（刀具型号），经 NewToolRecord → ToolInstance 关联",
         }
 
@@ -1245,6 +1259,9 @@ def recommend_tools(params_str: str) -> str:
             }
             avg_rings = entry['avg_service_rings']
             entry['cost_per_ring_yuan'] = round(unit_price / avg_rings, 2) if unit_price is not None and avg_rings else None
+            entry['manufacturer_prices'] = [
+                {**quote, 'price_per_ring_yuan': round(quote['unit_price_yuan'] / avg_rings, 2) if avg_rings else None}
+                for quote in quotes]
             entry['cost_per_ring_range_yuan'] = (
                 [round(unit_price / avg_rings, 2), round(max_price / avg_rings, 2)]
                 if unit_price is not None and max_price is not None and avg_rings else None
@@ -1268,6 +1285,8 @@ def recommend_tools(params_str: str) -> str:
             -x["completed_service_count"],
             str(x["tool_type_name"]),
         ))
+        if sort_by == 'price_per_ring':
+            ranked.sort(key=lambda x: (x['cost_per_ring_yuan'] is None, x['cost_per_ring_yuan'] or 0))
 
         total_ranked = len(ranked)
         for index, entry in enumerate(ranked, start=1):
@@ -1282,7 +1301,7 @@ def recommend_tools(params_str: str) -> str:
                 f"{entry['completed_service_count']} 把已完成服役，平均服役 "
                 f"{entry['avg_service_rings']} 环（{entry['min_service_rings']}~"
                 f"{entry['max_service_rings']} 环）{price_note}；"
-                f"在满足样本量要求的 {total_ranked} 种型号中按平均服役环数由高到低排名第 {index}"
+                f"在满足样本量要求的 {total_ranked} 种型号中按{criteria['rank_metric']}排名第 {index}"
             )
         for entry in insufficient:
             entry["recommendation_reason"] = (
@@ -1292,7 +1311,14 @@ def recommend_tools(params_str: str) -> str:
         insufficient.sort(key=lambda x: (-x["completed_service_count"], str(x["tool_type_name"])))
 
         total_in_service = sum(v["in_service_count"] for v in models_acc.values())
+        service_count = sum(len(v['service_samples']) for v in models_acc.values())
+        total_rings = sum(sum(v['service_samples']) for v in models_acc.values())
         result = {
+            'service_summary': {'completed_service_count': service_count, 'total_service_rings': total_rings,
+                                'avg_service_rings': round(total_rings / service_count, 1) if service_count else None},
+            'service_by_model': [{'tool_type_name': v['tool_type_name'], 'completed_service_count': len(v['service_samples']),
+                                  'avg_service_rings': round(sum(v['service_samples']) / len(v['service_samples']), 1)
+                                  if v['service_samples'] else None} for v in models_acc.values()],
             "criteria": criteria,
             "tool_model_count": len(models_acc),
             "ranked_count": total_ranked,
@@ -1300,7 +1326,7 @@ def recommend_tools(params_str: str) -> str:
             "insufficient_evidence": insufficient[:top_n],
             "warnings": warnings,
             "note": (
-                "recommendations 按所选范围内的平均服役环数由高到低排序。"
+                f"recommendations 按所选范围内的{criteria['rank_metric']}排序。"
                 f"另有 {total_in_service} 把刀仍在役、尚未拆下，属于右删失样本，"
                 "未计入已完成服役样本的平均值；该均值可能存在选择偏差，不能当作总体寿命或其确定下界。"
                 "该结果基于历史服役记录，不构成对在役刀具剩余寿命的预测。"
@@ -1667,21 +1693,36 @@ def query_opening_records(params_str: str) -> str:
         avg_interval = query.aggregate(avg=Avg('rings_between_openings'))['avg']
         avg_duration = query.aggregate(avg=Avg('opening_duration'))['avg']
 
-        # 按环号数字从大到小取最近N条
+        # 先聚合完整筛选集，再截取展示记录。
         recent_qs = list(
             query.order_by('-ring_int', '-open_time', '-id').values(
                 'id', 'ring_no', 'last_ring_no', 'rings_between_openings',
                 'open_time', 'opening_duration', 'geological_conditions',
                 'summary_status', 'checked_tool_count', 'replaced_tool_count',
-                'shield_model_id', 'summary_confirmed_at', 'summary_withdrawn_at', 'tool_change_duration',
-            )[:limit]
+                'project_id', 'shield_model_id', 'summary_confirmed_at', 'summary_withdrawn_at', 'tool_change_duration',
+                'right_revolution_reading', 'left_revolution_reading',
+            )
         )
+        readings = WarehouseOpeningBasicInfo.objects.filter(
+            project_id__in={r['project_id'] for r in recent_qs},
+            right_revolution_reading__isnull=False, left_revolution_reading__isnull=False,
+            ring_no__regex=r'^[0-9]{1,9}$',
+        ).annotate(ring_int=Cast('ring_no', IntegerField())).order_by('ring_int', 'open_time', 'id')
+        previous, increments = {}, {}
+        for reading in readings:
+            key = (reading.project_id, reading.shield_model_id)
+            current = (reading.right_revolution_reading, reading.left_revolution_reading)
+            prior = previous.get(key)
+            steps = [after - before for before, after in zip(prior, current)] if prior else []
+            increments[reading.pk] = sum(steps) if steps and min(steps) >= 0 else None
+            previous[key] = current
 
         # 异常磨损判定统一走 normalize_wear_condition，兼容英文枚举码与中文描述。
         # 为每条开仓记录补充换刀统计
         for r in recent_qs:
+            r['revolutions_since_previous'] = increments.get(r['id'])
             r['summary_missing_fields'] = _opening_summary_missing_fields(r)
-            r['tool_change_duration_hours'] = _round_num(r.pop('tool_change_duration'), 1)
+            r['tool_change_duration_hours'] = r.pop('tool_change_duration')
             for field in ('summary_confirmed_at', 'summary_withdrawn_at'):
                 r[field] = r[field].strftime('%Y-%m-%d %H:%M') if r[field] else None
             if r['open_time']:
@@ -1723,21 +1764,37 @@ def query_opening_records(params_str: str) -> str:
             r['unclassified_wear_count'] = wear_buckets['unknown']
             r['abnormal_rate_denominator'] = classified_c
             r['abnormal_rate'] = f"{abnormal_c/classified_c*100:.1f}%" if classified_c else None
-            # 高频更换刀位（前3）
             top_pos = list(
                 changes.filter(is_replaced=True)
-                .values('cutter_position_no')
-                .annotate(cnt=Count('id'))
-                .order_by('-cnt')[:3]
+                .values('_ai_position')
+                .annotate(count=Count('id'))
+                .order_by('-count', '_ai_position')
             )
-            r['top_replaced_positions'] = [p['cutter_position_no'] for p in top_pos]
+            cutoff = top_pos[min(2, len(top_pos) - 1)]['count'] if top_pos else 0
+            r['top_replaced_positions'] = [{'cutter_position_no': p['_ai_position'], 'count': p['count']}
+                                           for p in top_pos if p['count'] >= max(2, cutoff)]
+            r['replaced_position_count'] = len(top_pos)
+            r['positions_all_once'] = bool(top_pos) and top_pos[0]['count'] == 1
+            r['top_positions_tied'] = sum(p['count'] == cutoff for p in top_pos) > 1
             del r['id']
+
+        efficiency_all = _opening_efficiency(recent_qs)
+        recent_qs = recent_qs[:limit] if limit is not None else recent_qs
+        efficiency_recent = _opening_efficiency(recent_qs)
+        for r in recent_qs:
+            r['tool_change_duration_hours'] = _round_num(r['tool_change_duration_hours'], 1)
+        def recent_mean(field):
+            values = [row[field] for row in recent_qs if row[field] is not None]
+            return round(sum(values) / len(values), 1) if values else None
 
         return _build_json(_enrich_opening_result({
             "INSTRUCTION": "以下是真实数据库数据，回答时必须原样使用这些数字，禁止修改任何环号、比率或刀位编号",
             "total_openings": total,
-            "avg_rings_between_openings": round(avg_interval, 1) if avg_interval else None,
-            "avg_opening_duration_hours": round(avg_duration, 1) if avg_duration else None,
+            "avg_rings_between_openings": _round_num(avg_interval, 1),
+            "avg_opening_duration_hours": _round_num(avg_duration, 1),
+            "recent_avg_rings_between_openings": recent_mean('rings_between_openings'),
+            "recent_avg_opening_duration_hours": recent_mean('opening_duration'),
+            "efficiency_all": efficiency_all, "efficiency_recent": efficiency_recent,
             "recent_records": recent_qs,
             "summary_status_counts": status_counts, "scope": scope,
             "note": "人工汇总与有效刀位现场观测分别列出；确认时间为空不代表汇总未确认。",
@@ -1745,6 +1802,17 @@ def query_opening_records(params_str: str) -> str:
 
     except Exception as e:
         return json.dumps({"error": f"查询失败：{str(e)}"}, ensure_ascii=False)
+
+
+def _opening_efficiency(records):
+    result = {'opening_count': len(records)}
+    for name, duration, count in [('check', 'opening_duration', 'tool_change_total'),
+                                  ('replace', 'tool_change_duration_hours', 'tool_change_replaced')]:
+        valid = [r for r in records if r[duration] is not None and r[count]]
+        denominator = sum(r[count] for r in valid)
+        result[f'{name}_denominator'] = denominator
+        result[f'{name}_minutes_per_tool'] = round(sum(r[duration] for r in valid) * 60 / denominator, 1) if denominator else None
+    return result
 
 
 def query_cutter_position_stats(params_str: str) -> str:
