@@ -295,4 +295,6 @@ test('a divider follows the last message the summary covers, and compaction prog
   assert.equal(plain.includes('以上对话已整理成摘要'), false, 'no divider when nothing follows the summary');
   const never = await renderMessageList({ messages, compactedThrough: null, isGenerating: true });
   assert.equal(never.includes('以上对话已整理成摘要'), false);
+  const revising = await renderMessageList({ messages: [...messages.slice(0, 3), { ...messages[3], status: 'revising' }], isGenerating: true });
+  assert.match(revising, /正在补全回答 · 0s/);
 });

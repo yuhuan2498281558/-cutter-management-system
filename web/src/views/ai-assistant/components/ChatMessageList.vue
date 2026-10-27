@@ -161,7 +161,7 @@ const welcomeChips = WELCOME_REFS
   })
   .filter((item): item is { label: string; query: string } => item !== null);
 
-const STATUS_TEXT: Record<string, string> = { compacting: '正在整理早前对话' };
+const STATUS_TEXT: Record<string, string> = { compacting: '正在整理早前对话', revising: '正在补全回答' };
 
 // 分隔线画在摘要覆盖到的最后一条已加载消息之后；它后面还没有消息时不画
 const compactionDividerAfter = computed(() => {

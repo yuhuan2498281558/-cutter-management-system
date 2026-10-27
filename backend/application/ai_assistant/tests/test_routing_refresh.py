@@ -1,7 +1,7 @@
 """规则与展示契约；领域工具使用桩数据，不初始化模型或写聊天记录。"""
 import json
 from contextlib import ExitStack
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
@@ -9,7 +9,7 @@ from django.utils import timezone
 from application.ai_assistant import llm_service
 from application.ai_assistant.answer_reporting import render_report
 from application.ai_assistant.llm_service import ToolAssistant, _data_coverage
-from application.ai_assistant.memory_service import MemoryService, MemorySnapshot
+from application.ai_assistant.memory_service import MemoryService, MemorySnapshot, StoredMessage
 from application.ai_assistant.views import _build_project_snapshot
 from application.shield.models import (
     ProjectInfo, ShieldMachineBasicInfo, ShieldTunnelingData, StratumBasicInfo,
@@ -127,6 +127,54 @@ class RoutingRefreshTests(SimpleTestCase):
         for tool in self.tools.values():
             tool.assert_not_called()
         self.direct_chat.assert_not_called()
+
+    def test_refresh_recommendation_falls_back_to_cause_first(self):
+        query = '最近滚刀异常磨损的可能原因是什么？对下一阶段备刀有什么建议？'
+        self.assertEqual(self.ask(query)['rule_branch'], 'recent_abnormal_wear_cause')
+        self.assertEqual(self.assistant._followup_query_spec(query)['intent'], 'recent_abnormal_wear_cause')
+        self.tools['recommend_tools'].assert_not_called()
+
+    def test_recommendation_exits_refresh_before_named_manufacturer(self):
+        self.named_manufacturers.return_value = ['磐岳']
+        query = '对比磐岳滚刀的服役寿命，为下一阶段推荐刀具型号'
+        self.assertEqual(self.ask(query)['rule_branch'], 'tool_recommendation')
+        self.tools['compare_manufacturer_service'].assert_not_called()
+        self.named_manufacturers.assert_not_called()
+
+    def chat_pair(self, first, second):
+        assistant = ToolAssistant()
+        snapshot = MemorySnapshot(scope_key='user:followup', backend='legacy')
+        assistant._load_memory = Mock(side_effect=lambda *args: snapshot)
+        assistant._named_manufacturers = Mock(return_value=[])
+
+        def store(user, query, answer, slots, **kwargs):
+            snapshot.messages.extend([StoredMessage(len(snapshot.messages) + 1, 'human', query, 0, kwargs['metadata']),
+                                      StoredMessage(len(snapshot.messages) + 2, 'ai', answer, 0)])
+            snapshot.slots = slots
+            return snapshot
+
+        assistant._store_turn_and_summarize = Mock(side_effect=store)
+        results = [assistant.chat(q, {'user_id': 'followup', 'project_id': 'REFRESH', 'route_mode': 'rule'})
+                   for q in (first, second)]
+        for result in results:
+            self.assertTrue(result['success'], result)
+        return results
+
+    def test_position_followup_keeps_mileage_intent(self):
+        with patch('application.ai_assistant.llm_service.query_tool_mileage', return_value=_json({'types': []})) as query:
+            results = self.chat_pair('S1L 刀位的里程', '那 S2L 呢')
+        self.assertEqual([r['rule_branch'] for r in results], ['tool_mileage', 'tool_mileage'])
+        self.assertEqual([json.loads(c.args[0])['cutter_position_no'] for c in query.call_args_list], ['S1L', 'S2L'])
+        self.tools['query_tool_change_data'].assert_not_called()
+
+    def test_sort_followup_keeps_recommendation_and_type(self):
+        for followup in ('改成按每环报价从低到高排序', '按每环报价从低到高排序'):
+            with self.subTest(followup=followup):
+                results = self.chat_pair('推荐滚刀型号，列出平均服役环数、样本数和新刀报价区间', followup)
+                self.assertEqual([r['rule_branch'] for r in results], ['tool_recommendation', 'tool_recommendation'])
+                params = self.params('recommend_tools')
+                self.assertEqual(params['sort_by'], 'price_per_ring')
+                self.assertEqual(params['tool_type'], 'DISC')
 
     def test_area_requests_use_area_tool(self):
         for query in ('第2199环孤石占多少', '统计当前项目地层分布，列出各地层类型占比', '第一百环地层面积', '软土地基比例', '第100环细砂占多少', '查询下一阶段地层面积'):

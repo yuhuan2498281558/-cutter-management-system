@@ -14,7 +14,7 @@ export interface Message {
   queryTraces?: QueryTrace[];
   // 后端保存的序号：历史接口直接给，本次会话的问答在保存后由 memory 事件补上
   sequence?: number;
-  // 生成中的进度，如 compacting（正在整理早前对话）
+  // 生成中的进度：compacting（正在整理早前对话）、revising（正在补全回答）
   status?: string;
 }
 

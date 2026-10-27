@@ -76,7 +76,7 @@ export interface ChatStreamCallbacks {
 	onQueryTraces?: (traces: QueryTrace[]) => void;
 	// 本轮上下文用量（估算），在 done 或 error 之前回调
 	onContext?: (info: Record<string, any>) => void;
-	// 回答之外的进度：compacting 表示正在整理早前对话，其他值表示整理结束
+	// 回答之外的进度：compacting 正在整理早前对话，revising 正在补全回答，其他值表示这一步结束
 	onStatus?: (stage: string) => void;
 }
 

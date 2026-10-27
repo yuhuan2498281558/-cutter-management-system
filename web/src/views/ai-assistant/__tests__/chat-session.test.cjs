@@ -215,12 +215,14 @@ test('saved sequences come from history and, for a new turn, from the memory eve
   assert.equal(h.memoryInfo.value.turnSequences, undefined);
 });
 
-test('a compacting status shows while generating and clears on the next status', () => {
+test('compacting and revising statuses show while generating and clear on the next status', () => {
   const h = setup(); h.sendQuery('问题'); const callbacks = h.streams[0].callbacks;
-  callbacks.onStatus('compacting');
-  assert.equal(h.messages.value[1].status, 'compacting');
-  callbacks.onStatus('done');
-  assert.equal(h.messages.value[1].status, undefined);
+  for (const stage of ['compacting', 'revising']) {
+    callbacks.onStatus(stage);
+    assert.equal(h.messages.value[1].status, stage);
+    callbacks.onStatus('done');
+    assert.equal(h.messages.value[1].status, undefined);
+  }
 });
 
 test('manual compaction updates the meter, blocks sending meanwhile and reports failure', async () => {

@@ -314,7 +314,7 @@ const runStream = async (query: string) => {
       },
       onStatus: (stage) => {
         const message = currentMessage();
-        if (isCurrent() && message) message.status = stage === 'compacting' ? stage : undefined;
+        if (isCurrent() && message) message.status = stage === 'compacting' || stage === 'revising' ? stage : undefined;
       },
       onMeta: (info) => {
         if (isCurrent() && info.route) answerRoute = info.route;
