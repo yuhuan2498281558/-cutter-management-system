@@ -376,7 +376,7 @@ class RoutingRefreshTests(SimpleTestCase):
         for text in ('5–5 环', '15–487 环', '2026-01-01', '2023-01-01', '掘进数据和换刀数据按环段并列显示，不代表两者有关联或因果。',
                      '掘进数据和换刀数据的环号、年份都不重合，只分别列出。'):
             self.assertIn(text, answer)
-        self.assertNotIn('贯入力首个有效段均值', answer)
+        self.assertNotIn('贯入度首个有效段均值', answer)
 
 
 class CoverageRefreshTests(TestCase):

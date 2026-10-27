@@ -347,7 +347,7 @@ class ToolsRefreshTests(TestCase):
         self.assertEqual((hit['start_time'], hit['end_time']), ('start', 'end'))
         self.assertEqual((hit['value'], hit['average'], hit['ratio']), (14, 11.333, 1.235))
         self.assertNotIn('未发现', ' '.join(result['highlights']))
-        self.assertIn('未标注', ' '.join(result['facts']))
+        self.assertIn('贯入度平均值为 6.667mm/r', ' '.join(result['facts']))
         normal = self.call(tools.query_tunneling_anomaly, threshold_k=1.5)
         self.assertEqual(normal['anomaly_fields'], [])
         self.assertEqual(normal['anomaly_records'], [])

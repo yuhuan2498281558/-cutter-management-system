@@ -14,6 +14,10 @@ def number(value):
         return None
 
 
+# 每转贯入量：第 5 环推进速度 ÷ 贯入度逐点积分的圈数与刀盘计数器吻合
+PENETRATION_UNIT = "mm/r"
+
+
 def display(value, unit=""):
     if value is None or value == "":
         return "暂无"
@@ -322,7 +326,7 @@ def _report_coverage(report, data):
     report.notes.append("掘进数据和换刀数据按环段并列显示，不代表两者有关联或因果。")
 
 
-def render_report(kind, data, table, scope=None, penetration_unit=""):
+def render_report(kind, data, table, scope=None, penetration_unit=PENETRATION_UNIT):
     if kind in {"stratum_area", "opening_stratum", "tool_inspections", "old_tool_repairs", "tool_lifecycle",
                 "manufacturer_service", "tool_cost_catalog", "registered_amounts", "data_catalog"}:
         return _render_refresh_report(kind, data, table, scope)
@@ -403,7 +407,7 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
     if kind in {"tunneling_summary", "tunneling_anomaly"}:
         metrics = data.get("metrics") or {}
         report.text(f"匹配 **{display(data.get('total_records'))}** 条掘进动态记录。")
-        fields = [("thrust", "总推力", "kN"), ("torque", "刀盘扭矩", "kNm"), ("cutterhead_speed", "刀盘转速", "r/min"), ("penetration", "贯入力", penetration_unit or "原始单位未标注")]
+        fields = [("thrust", "总推力", "kN"), ("torque", "刀盘扭矩", "kNm"), ("cutterhead_speed", "刀盘转速", "r/min"), ("penetration", "贯入度", penetration_unit)]
         report.table("参数统计", ["参数", "单位", "平均值", "最小值", "最大值"], [[label, unit, (metrics.get(key) or {}).get("avg"), (metrics.get(key) or {}).get("min"), (metrics.get(key) or {}).get("max")] for key, label, unit in fields])
         if kind == "tunneling_anomaly":
             anomalies = data.get("anomaly_fields") or []
@@ -421,7 +425,7 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
             if not records:
                 report.notes.append("命中记录的环号、段号、时间和数值暂无：工具未提供命中记录或本次没有命中。")
         recent = data.get("recent_records") or []
-        report.table("最近记录", ["环号", "记录时间", "推力（kN）", "扭矩（kNm）", "转速（r/min）", f"贯入力（{penetration_unit or '原始单位未标注'}）"], [[r.get("ring_no"), r.get("record_time"), r.get("thrust"), r.get("torque"), r.get("cutterhead_speed"), r.get("penetration")] for r in recent], limit=max(1, len(recent)), total=data.get("total_records"))
+        report.table("最近记录", ["环号", "记录时间", "推力（kN）", "扭矩（kNm）", "转速（r/min）", f"贯入度（{penetration_unit}）"], [[r.get("ring_no"), r.get("record_time"), r.get("thrust"), r.get("torque"), r.get("cutterhead_speed"), r.get("penetration")] for r in recent], limit=max(1, len(recent)), total=data.get("total_records"))
         return report.finish("各指标按非空值计算；总记录数不等于每项指标的有效样本数。暂无与实测 0 分别展示。", "未提供时序与地层控制分析，不根据均值或最大值直接推断地层、操作原因或设备故障。")
     if kind in {"tunneling_trend", "tunneling_correlation"}:
         segments = data.get("segments") or []
@@ -434,10 +438,10 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
         if kind == "tunneling_correlation":
             _report_coverage(report, data)
         if len(valid) < 2 or data.get("trend") == "数据不足":
-            report.text("贯入力有效分段不足 2 个，无法比较首尾变化。")
+            report.text("贯入度有效分段不足 2 个，无法比较首尾变化。")
         elif kind != "tunneling_correlation" or (comparable is not None and comparable >= 2):
-            report.text(f"贯入力首个有效段均值 {display(valid[0].get('avg_penetration'), penetration_unit)}，末个有效段均值 {display(valid[-1].get('avg_penetration'), penetration_unit)}；仅作首尾描述，不构成统计趋势结论。")
-        report.table("掘进分段明细", ["环段", "采样点数" if time_mode else "记录数", "平均推力（kN）", "平均扭矩（kNm）", "平均转速（r/min）", f"平均贯入力（{penetration_unit or '原始单位未标注'}）", "起止时间"], [
+            report.text(f"贯入度首个有效段均值 {display(valid[0].get('avg_penetration'), penetration_unit)}，末个有效段均值 {display(valid[-1].get('avg_penetration'), penetration_unit)}；仅作首尾描述，不构成统计趋势结论。")
+        report.table("掘进分段明细", ["环段", "采样点数" if time_mode else "记录数", "平均推力（kN）", "平均扭矩（kNm）", "平均转速（r/min）", f"平均贯入度（{penetration_unit}）", "起止时间"], [
             [segment_label(s), s.get("count", s.get("tunneling_count")), s.get("avg_thrust"), s.get("avg_torque"), s.get("avg_cutterhead_speed"), s.get("avg_penetration"), f"{display(s.get('start_time'))} 至 {display(s.get('end_time'))}" if s.get("start_time") or s.get("end_time") else None] for s in segments
         ])
         if time_mode:
@@ -504,7 +508,7 @@ def render_report(kind, data, table, scope=None, penetration_unit=""):
     raise ValueError(f"Unknown report kind: {kind}")
 
 
-def render_abnormal_cause(change, stratum, tunneling, opening, params, table, penetration_unit=""):
+def render_abnormal_cause(change, stratum, tunneling, opening, params, table, penetration_unit=PENETRATION_UNIT):
     """Keep each source's population explicit; no inferred causal explanation."""
     report = Report("异常磨损多源核对", {}, table, params)
     detail_scope = scope_text(params)
@@ -519,7 +523,7 @@ def render_abnormal_cause(change, stratum, tunneling, opening, params, table, pe
     report.table("换刀与磨损", ["观测记录数", "更换次数", "更换率"], [[change.get("total_records"), change.get("replaced_count"), percent(change.get("replacement_rate"), change.get("total_records"))]])
     report.table("磨损记录分布", ["磨损状态", "记录数"], [[w.get("wear_condition") or "未分类", w.get("count")] for w in change.get("wear_distribution") or []])
     report.table("地层关联明细", ["地层", "关联观测数", "更换次数", "更换率"], [[s.get("stratum_name") or s.get("stratum_type"), s.get("total_records"), s.get("replaced_count"), percent(s.get("replacement_rate"), s.get("total_records"))] for s in stratum.get("stratum_analysis") or []])
-    report.table("掘进与换刀分段", ["环段", "掘进记录数", "平均扭矩（kNm）", f"平均贯入力（{penetration_unit or '原始单位未标注'}）", "更换次数", "异常磨损次数"], [[s.get("ring_range"), s.get("tunneling_count"), s.get("avg_torque"), s.get("avg_penetration"), s.get("replacement_count"), s.get("abnormal_wear_count")] for s in tunneling.get("segments") or []])
+    report.table("掘进与换刀分段", ["环段", "掘进记录数", "平均扭矩（kNm）", f"平均贯入度（{penetration_unit}）", "更换次数", "异常磨损次数"], [[s.get("ring_range"), s.get("tunneling_count"), s.get("avg_torque"), s.get("avg_penetration"), s.get("replacement_count"), s.get("abnormal_wear_count")] for s in tunneling.get("segments") or []])
     _report_coverage(report, tunneling)
     records = opening.get("recent_records") or []
     report.table("整仓与现场明细核对", ["开仓环号", "整仓更换数", "数量来源", "现场明细数", "已分类异常率", "高频刀位"], [[r.get("ring_no"), r.get("tool_change_replaced"), "已确认汇总" if r.get("count_source") == "confirmed_summary" else "现场明细（未确认）", r.get("detail_record_count"), r.get("abnormal_rate"), "、".join(map(str, r.get("top_replaced_positions") or [])) or None] for r in records])

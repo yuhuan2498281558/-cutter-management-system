@@ -93,7 +93,7 @@ test('the numbered questions generate their labels and text with the default num
     ['开仓与检查', '异常率较高的开仓', '异常率较高的开仓', '列出最近10次开仓中已分类异常率较高的开仓'],
     ['刀位统计', '更换最多的刀位', '更换最多的刀位', '列出更换次数最多的前10个刀位，并说明刀具类型和主要磨损类型'],
     ['刀位统计', '异常集中的刀位', '异常集中的刀位', '找出异常磨损集中的前10个刀位，并列出异常类型'],
-    ['掘进参数', '掘进参数概览', '掘进参数概览', '查询最近有记录的100环掘进参数概览，列出推力、扭矩、转速和贯入力'],
+    ['掘进参数', '掘进参数概览', '掘进参数概览', '查询最近有记录的100环掘进参数概览，列出推力、扭矩、转速和贯入度'],
     ['掘进参数', '掘进分段变化', '掘进分段变化', '分析最近有记录的100环掘进参数分段变化'],
   ]) {
     const h = loadInput();
@@ -298,7 +298,7 @@ test('the page passes generation and reset state to the input area separately', 
 });
 
 const DRAFT = '统计120环到180环刮刀S3L的更换次数';
-const COVERAGE_CHECK = '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入力和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。';
+const COVERAGE_CHECK = '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入度和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。';
 
 test('switching to the model path or changing data types keeps a draft the user wrote', () => {
   const h = loadInput();

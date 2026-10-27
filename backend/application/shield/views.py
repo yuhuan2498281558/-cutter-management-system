@@ -769,7 +769,7 @@ def _build_tunneling_record(row, project_id, shield_machine_id, ring_no=None):
         thrust=_parse_float(_get_csv_value(row, ['推进油缸总推力(kN)', '推进油缸总推力', '总推力', '推力', 'thrust'])),
         torque=_parse_float(_get_csv_value(row, ['刀盘扭矩(kNm)', '刀盘扭矩', '总扭矩', '扭矩', 'torque'])),
         cutterhead_speed=_parse_float(_get_csv_value(row, ['刀盘转速(r/min)', '刀盘转速', '转速', 'cutterhead_speed'])),
-        penetration=_parse_float(_get_csv_value(row, ['贯入度(mm)', '贯入度', '贯入力', 'penetration'])),
+        penetration=_parse_float(_get_csv_value(row, ['贯入度(mm)', '贯入度', 'penetration'])),
         advance_speed=_parse_float(_get_csv_value(row, ['推进速度(mm/min)', '推进速度', 'advance_speed'])),
         record_time=_parse_record_time(row),
     )

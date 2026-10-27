@@ -57,8 +57,8 @@ const modelPromptTemplates = [
   { title: '异常集中的刀位', query: '找出异常观测数最多的前{n}个刀位，列出每个刀位的现场观测数、异常类型和更换次数，并给出这些刀位最近几次开仓的检查记录。', sources: ['position', 'tool_change', 'inspection'], numKey: 'topN', min: 3, max: 30, defaultValue: 10 },
   { title: '开仓位置地层对照', query: '列出最近{n}次开仓所在位置的地层和仓间经过的地层（按纵断面面积），与每次开仓的异常率、高频刀位并列对照；只做并列，不判断地层是否导致磨损。', sources: ['stratum', 'opening', 'tool_change'], numKey: 'openingLimit', min: 1, max: 20, defaultValue: 5 },
   { title: '地层组成与换刀', query: '统计最近{n}环的纵断面六类面积占比，并与同一范围的换刀次数、更换率和异常率并列列出。', sources: ['stratum', 'tool_change'], numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
-  { title: '掘进与换刀覆盖核对', query: '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入力和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。', sources: ['tunneling', 'tool_change'] },
-  { title: '掘进分段均值偏高筛查', query: '筛查已导入的掘进数据中推力、扭矩、贯入力分段均值偏高的记录，列出环号、时间段和数值，并说明这类数据能说明什么、不能说明什么。', sources: ['tunneling'] },
+  { title: '掘进与换刀覆盖核对', query: '先核对掘进数据和换刀数据各自覆盖的环号和时间；有共同环段时，并列列出推力、扭矩、贯入度和更换次数；没有共同环段时，分别概括两类数据并说明不能对照。', sources: ['tunneling', 'tool_change'] },
+  { title: '掘进分段均值偏高筛查', query: '筛查已导入的掘进数据中推力、扭矩、贯入度分段均值偏高的记录，列出环号、时间段和数值，并说明这类数据能说明什么、不能说明什么。', sources: ['tunneling'] },
   { title: '厂家寿命与异常率', query: '按刀具原安装时的厂家，对比已确认拆下刀具的平均服役环数、已分类异常率和样本量，另列各厂家本次新装的供货次数和登记金额；样本少的厂家单独说明。', sources: ['manufacturer', 'cost'] },
   { title: '型号选型参考', query: '列出{tool}各型号已拆下刀具的平均服役环数、样本数和各厂家新刀报价区间，按每环报价折算排序，作为选型参考，并说明样本量和报价的局限。', sources: ['cost', 'manufacturer', 'tool_change'], toolParam: true },
   { title: '登记金额汇总', query: '汇总新装登记金额、厂家已确认的返修金额和待厂家反馈的返修金额，按厂家和刀型分别列出，并说明这些是登记金额不是实际支出。', sources: ['cost', 'repair'] },
@@ -130,9 +130,9 @@ const quickQuestionGroups = [
   },
   {
     title: '掘进参数',
-    desc: '推力、扭矩、转速、贯入力和分段均值',
+    desc: '推力、扭矩、转速、贯入度和分段均值',
     items: [
-      { label: '掘进参数概览', query: '查询最近有记录的{n}环掘进参数概览，列出推力、扭矩、转速和贯入力', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
+      { label: '掘进参数概览', query: '查询最近有记录的{n}环掘进参数概览，列出推力、扭矩、转速和贯入度', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
       { label: '分段均值偏高筛查', query: '筛查掘进参数分段均值偏高的记录，列出环号、时间段和数值' },
       { label: '掘进分段变化', query: '分析最近有记录的{n}环掘进参数分段变化', numKey: 'ringWindow', min: 20, max: 500, step: 10, defaultValue: 100 },
       { label: '掘进与换刀对照', query: '分析掘进参数与换刀磨损的关联' },

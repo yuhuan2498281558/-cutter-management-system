@@ -388,7 +388,7 @@ def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "", threshold_
         "thrust": ("总推力", "kN"),
         "torque": ("刀盘扭矩", "kNm"),
         "cutterhead_speed": ("刀盘转速", "r/min"),
-        "penetration": ("贯入力", "（单位未标注）"),
+        "penetration": ("贯入度", "mm/r"),
     }
     for key, (label, unit) in metric_names.items():
         stat = data.get("metrics", {}).get(key, {})
@@ -404,14 +404,14 @@ def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "", threshold_
             highlights.append(f"分段均值偏高筛查：{label}最高分段均值超过记录均值的 {threshold_k:g} 倍")
 
     if not highlights:
-        highlights.append("分段均值偏高筛查：按当前阈值未发现推力、扭矩或贯入力均值偏高的记录")
+        highlights.append("分段均值偏高筛查：按当前阈值未发现推力、扭矩或贯入度均值偏高的记录")
 
     data.update(_analysis_payload(
         summary={"total_records": total, "ring_range": data.get("ring_range")},
         facts=facts,
         highlights=highlights,
         warnings=warnings,
-        conclusion_hint=conclusion_hint or "可结合推力、扭矩、转速和贯入力判断该区段掘进负荷与效率变化。",
+        conclusion_hint=conclusion_hint or "可结合推力、扭矩、转速和贯入度判断该区段掘进负荷与效率变化。",
     ))
     return data
 
@@ -2003,7 +2003,7 @@ def query_tunneling_summary(params_str: str) -> str:
         query = _filter_tunneling_query(params)
         result = _enrich_tunneling_analysis(_summarize_tunneling_records(query, limit=limit))
         result.update(scope={**params, 'limit': limit, 'record_count': result['total_records']},
-                      note='均值按已导入的分段记录计算，不是原始采样点总体均值；贯入力单位未标注。')
+                      note='均值按已导入的分段记录计算，不是原始采样点总体均值；贯入度单位 mm/r。')
         return _build_json(result)
     except Exception as e:
         return _build_json({"error": f"掘进概览查询失败：{str(e)}"})
@@ -2061,7 +2061,7 @@ def query_tunneling_trend(params_str: str) -> str:
             "trend": trend,
             "segments": segments,
             "scope": {**params, 'record_count': summary['total_records'], 'interval': interval},
-            "note": "分段均值按导入记录计算；贯入力单位未标注。",
+            "note": "分段均值按导入记录计算；贯入度单位 mm/r。",
         }
         segment_mode = any(s.get("segment_index") for s in segments)
         result.update(_analysis_payload(
@@ -2079,14 +2079,14 @@ def query_tunneling_trend(params_str: str) -> str:
                     if segment_mode else
                     f"按 {interval} 环分段统计，形成 {len(segments)} 个有效区段"
                 ),
-                f"只有 {len(valid_segments)} 个分段有贯入力数据，无法判断趋势。" if trend == '数据不足' else f"贯入力整体趋势为 {trend}",
+                f"只有 {len(valid_segments)} 个分段有贯入度数据，无法判断趋势。" if trend == '数据不足' else f"贯入度整体趋势为 {trend}",
             ],
             highlights=[
-                f"首个有效区段平均贯入力为 {first.get('avg_penetration') if first else None}",
-                f"末个有效区段平均贯入力为 {last.get('avg_penetration') if last else None}",
+                f"首个有效区段平均贯入度为 {first.get('avg_penetration') if first else None}",
+                f"末个有效区段平均贯入度为 {last.get('avg_penetration') if last else None}",
             ],
-            warnings=[] if trend != '数据不足' else ["有贯入力数据的分段少于 2 个，无法判断趋势"],
-            conclusion_hint="贯入力趋势可作为掘进效率变化的参考，需结合推力、扭矩和地层条件共同判断。",
+            warnings=[] if trend != '数据不足' else ["有贯入度数据的分段少于 2 个，无法判断趋势"],
+            conclusion_hint="贯入度趋势可作为掘进效率变化的参考，需结合推力、扭矩和地层条件共同判断。",
         ))
         return _build_json(result)
     except Exception as e:
@@ -2102,7 +2102,7 @@ def query_tunneling_anomaly(params_str: str) -> str:
         threshold_k = float(params.get('threshold_k', 1.5) or 1.5)
         summary.update(threshold_k=threshold_k, anomaly_fields=[], anomaly_records=[],
                        scope={**params, 'threshold_k': threshold_k, 'record_count': summary['total_records']},
-                       note='分段均值偏高筛查：将每条导入记录与这些记录的均值比较；贯入力单位未标注。')
+                       note='分段均值偏高筛查：将每条导入记录与这些记录的均值比较；贯入度单位 mm/r。')
         if summary.get("total_records", 0) == 0:
             return _build_json(_enrich_tunneling_analysis(summary, threshold_k=threshold_k))
 

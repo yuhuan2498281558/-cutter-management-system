@@ -619,8 +619,8 @@ def tool_query_position_stratum_impact(tool_type: str = "", ring_range: list = [
 
 @tool(args_schema=RecordQuery)
 def tool_query_tunneling_summary(ring_range: list = [], limit: int = 10, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
-    """查询掘进动态数据概览：总推力、刀盘扭矩、刀盘转速、贯入力的均值和范围，以及最近记录。
-    limit: 返回最近几条记录，默认10。均值按已导入的分段记录计算，不是原始采样点；贯入力单位未标注。
+    """查询掘进动态数据概览：总推力、刀盘扭矩、刀盘转速、贯入度的均值和范围，以及最近记录。
+    limit: 返回最近几条记录，默认10。均值按已导入的分段记录计算，不是原始采样点；贯入度单位 mm/r（每转贯入量）。
     """
     return agent_view(query_tunneling_summary(_to_json({"ring_range": ring_range, "limit": limit})), page, page_size)
 
@@ -635,7 +635,7 @@ def tool_query_tunneling_trend(ring_range: list = [], interval: int = 50, page: 
 
 @tool(args_schema=AnomalyQuery)
 def tool_query_tunneling_anomaly(ring_range: list = [], threshold_k: float = 1.5, page: int = 1, page_size: int = AGENT_PAGE_SIZE) -> str:
-    """分段均值偏高筛查：找出推力、扭矩、贯入力超过均值 threshold_k 倍的分段记录。
+    """分段均值偏高筛查：找出推力、扭矩、贯入度超过均值 threshold_k 倍的分段记录。
     anomaly_records 列出命中的环号、段号、起止时间和数值。这不是故障诊断，库里没有原始采样点，不能回答瞬时峰值或波动。
     """
     return agent_view(query_tunneling_anomaly(_to_json({"ring_range": ring_range, "threshold_k": threshold_k})), page, page_size)
@@ -996,7 +996,7 @@ class ToolAssistant:
             ("换刀", "更换", "磨损"), ("地层", "岩性", "纵断面", "横断面", "孤石"),
             ("厂家", "厂商", "品牌"), ("刀位", "刀盘"), ("寿命", "追溯", "服役"),
             ("报价", "单价", "登记金额", "费用", "成本", "推荐", "选型"),
-            ("掘进", "推力", "扭矩", "转速", "贯入力"), ("开仓",),
+            ("掘进", "推力", "扭矩", "转速", "贯入度", "贯入力"), ("开仓",),
             ("返修", "报废", "厂家反馈", "失效原因", "轴承", "刀圈损坏"),
             ("需关注", "没换", "未检查", "还没检查", "检查完成", "完成度", "移动任务"),
         ]
@@ -1872,8 +1872,8 @@ class ToolAssistant:
         ring_range = params.get("ring_range") or []
         if len(ring_range) == 2:
             scope.append(f"环号范围：{ring_range[0]}-{ring_range[1]}")
-        if "贯入力" in user_query and "贯入力" not in answer:
-            scope.append("关注指标：贯入力")
+        if ("贯入度" in user_query or "贯入力" in user_query) and "贯入度" not in answer:
+            scope.append("关注指标：贯入度")
         if not scope:
             return answer
         return "分析范围：" + "；".join(scope) + "。\n\n" + answer
