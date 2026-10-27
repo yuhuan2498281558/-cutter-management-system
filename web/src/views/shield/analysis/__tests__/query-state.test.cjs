@@ -101,7 +101,7 @@ test('manufacturer global scope and local reset issue each endpoint once with th
     props: { filter: { project: 1, summary_status: 'CONFIRMED' } },
     request: async config => ({ data: {
       meta: { schema_version: 2, scope: config.params }, manufacturers: ['A', 'B'], stratum_types: [],
-      items: [], service_rows: [], series: [], lifespan_series: [], normal_rate_series: [], abnormal_rate_series: [], time_axis: [],
+      items: [], series: [], lifespan_series: [], normal_rate_series: [], abnormal_rate_series: [], time_axis: [],
     } }),
   });
   await h.mount();
@@ -112,10 +112,9 @@ test('manufacturer global scope and local reset issue each endpoint once with th
   assert.equal(h.state.brandReady.value, false);
   assert.equal(h.requests.length, 0);
   await settle();
-  // 三个厂家接口加筛选项，各一次
-  assert.equal(h.requests.length, 4); assert.equal(new Set(h.requests.map(call => call.url)).size, 4);
-  for (const call of h.requests) assert.deepEqual(call.params, { project: 2, shield_machine: 7, summary_status: 'CONFIRMED',
-    ...(/brand_(price|performance)_trend/.test(call.url) ? { include_details: 'false' } : {}) });
+  // 厂家对比接口和筛选项各一次
+  assert.deepEqual(h.requests.map(call => call.url.split('/').at(-2)).sort(), ['brand_comparison', 'filter_options']);
+  for (const call of h.requests) assert.deepEqual(call.params, { project: 2, shield_machine: 7, summary_status: 'CONFIRMED' });
   assert.equal(h.state.brandReady.value, true);
 });
 test('cost global scope issues each cost endpoint once with the final scope', async t => {

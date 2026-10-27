@@ -4,21 +4,18 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { setup, plain, deferred, settle, compile, descendants } = require('./helpers.cjs');
+const { setup, plain, deferred, settle, descendants } = require('./helpers.cjs');
 
 const meta = scope => ({ schema_version: 2, generated_at: '2026-09-11T00:00:00Z', summary_status: 'CONFIRMED', opening_count: 2, draft_opening_count: 1, excluded_inactive_count: 0, unobserved_count: 0, warnings: [], scope: { project_name: '验收工程', shield_machine_name: '一号机', ...scope } });
-const sourceRows = [
-  { id: 'detail:1', detail_id: 1, opening_id: 11, warehouse_id: 'W-11', ring_no: '100', manufacturer: 'A', source: 'installation', amount: 100, included: true },
-  { id: 'repair:1', detail_id: 1, opening_id: 11, warehouse_id: 'W-11', ring_no: '100', manufacturer: '', source: 'confirmed_repair', amount: 20, included: true, inspection_status: 'CONFIRMED' },
-];
 const brands = [
   { manufacturer: 'A', total_cost: 130, count: 3, installation_count: 2, legacy_replacement_count: 1, avg_cost: 100, priced_count: 1, missing_price_count: 1, avg_lifespan: 80, lifespan_count: 2, paired_count: 2, abnormal_rate: 0.5, wear_recorded_count: 2, abnormal_count: 1 },
   { manufacturer: 'B', total_cost: 0, count: 2, installation_count: 2, legacy_replacement_count: 0, avg_cost: 0, priced_count: 1, avg_lifespan: null, lifespan_count: 0, paired_count: 0, abnormal_rate: null, wear_recorded_count: 0 },
 ];
+const COMPARISON = 'brand_comparison/';
 function fixture(config) {
   if (config.url.endsWith('filter_options/')) return { data: { manufacturers: ['A', 'B', 'C'] } };
-  return { data: { meta: meta(config.params), items: brands, source_rows: sourceRows, unknown_manufacturer_count: 1, pairing_unresolved_count: 1,
-    service_rows: [{ opening_id: 11, warehouse_id: 'W-11', old_tool_number: 'OLD', manufacturer: 'A', service_rings: 80, paired: true }], manufacturers: ['A', 'B'],
+  return { data: { meta: meta(config.params), items: brands, unknown_manufacturer_count: 1, unknown_manufacturer_amount: 20, pairing_unresolved_count: 1,
+    manufacturers: ['A', 'B'],
     time_axis: [{ ring_no: '100', open_time: '2026-01-01' }, { ring_no: '200', open_time: '2026-02-01' }],
     series: [{ manufacturer: 'A', data: [100, null], count_data: [1, 0] }, { manufacturer: 'B', data: [null, 0], count_data: [0, 1] }],
     lifespan_series: [{ manufacturer: 'A', data: [80, null], count_data: [2, 0] }],
@@ -26,10 +23,10 @@ function fixture(config) {
     normal_rate_series: [{ manufacturer: 'A', data: [0.5, null], count_data: [2, 0], abnormal_count_data: [1, 0] }],
   } };
 }
+const emptyComparison = () => ({ meta: meta({}), items: [], time_axis: [], series: [], lifespan_series: [], abnormal_rate_series: [], normal_rate_series: [] });
 function create(t, options = {}) { return setup(t, 'components/ManufacturerComparison.vue', { request: fixture, ...options }); }
 function bindCharts(s) { for (const key of ['relationshipRef', 'brandTrendRef']) s[key].value = { key }; s.renderCharts(); }
 const latest = (result, key) => result.charts.find(chart => chart.element.key === key)?.options.at(-1);
-const BRAND_ENDPOINTS = ['brand_cost/', 'brand_price_trend/', 'brand_performance_trend/'];
 
 test('real GET calls retain inherited scope while local manufacturer selections only narrow it', async t => {
   const r = create(t, { props: { filter: { summary_status: 'CONFIRMED', project: 4, shield_machine: 9, start_ring: '100', end_ring: '200', manufacturers: 'A,B', stratum_types: 'ROCK' } } });
@@ -40,12 +37,15 @@ test('real GET calls retain inherited scope while local manufacturer selections 
   r.state.resetBrandFilter(); await settle(); assert.equal(r.state.buildBrandFilter().manufacturers, 'A,B');
 });
 
-test('the top stratum condition reaches every manufacturer endpoint and clears with the filter', async t => {
-  const r = create(t, { props: { filter: { summary_status: 'CONFIRMED', stratum_type: 'ROCK' } } });
+test('one comparison request carries the page filter unchanged, beside the manufacturer options', async t => {
+  const filter = { summary_status: 'CONFIRMED', project: 4, stratum_type: 'ROCK' };
+  const r = create(t, { props: { filter } });
   await r.mount();
-  for (const endpoint of BRAND_ENDPOINTS) assert.equal(r.requests.find(item => item.url.endsWith(endpoint)).params.stratum_type, 'ROCK', endpoint);
+  // 对照表和两类趋势一次取齐，不再分三个接口各算一遍
+  assert.deepEqual(r.requests.map(call => call.url.split('/').at(-2)).sort(), ['brand_comparison', 'filter_options']);
+  assert.deepEqual(plain(r.requests.find(call => call.url.endsWith(COMPARISON)).params), filter);
   r.props.filter = { summary_status: 'CONFIRMED' }; await settle();
-  for (const endpoint of BRAND_ENDPOINTS) assert.equal(r.requests.filter(item => item.url.endsWith(endpoint)).at(-1).params.stratum_type, undefined, endpoint);
+  assert.equal(r.requests.filter(item => item.url.endsWith(COMPARISON)).at(-1).params.stratum_type, undefined);
 });
 
 test('manufacturer relationships require both sample groups, retain table rows and single-point zero trends', async t => {
@@ -58,12 +58,11 @@ test('manufacturer relationships require both sample groups, retain table rows a
   assert.deepEqual(plain(line.series[1].data), [null, 0]); assert.equal(r.state.hasTrendData.value, true);
   r.state.focusManufacturer('B'); r.state.brandMetric.value = 'service'; r.state.renderCharts();
   assert.equal(r.state.hasTrendData.value, false); assert.equal(r.state.brandSummaryItems.value.length, 2);
-  assert.equal(r.state.unknownManufacturerAmount.value, 20);
 });
 
 test('a failed request blocks export until a retry succeeds; legacy responses never become exportable', async t => {
   let fail = true;
-  const r = create(t, { request: config => { if (fail && config.url.endsWith('brand_price_trend/')) throw new Error('offline'); return fixture(config); } });
+  const r = create(t, { request: config => { if (fail && config.url.endsWith(COMPARISON)) throw new Error('offline'); return fixture(config); } });
   await r.mount(); assert.equal(r.state.brandReady.value, false);
   r.state.exportPdf(); assert.equal(r.exports.length, 0);
   fail = false; await r.state.loadBrandData(); assert.equal(r.state.brandReady.value, true); assert.equal(r.state.brandError.value, '');
@@ -108,7 +107,7 @@ test('manufacturer filters sit on the section heading with labels inside the con
 test('normal and abnormal trend tooltips show their own numerators over recorded closed-old-tool samples', async t => {
   const r = create(t, { request: config => {
     const response = fixture(config);
-    if (config.url.endsWith('brand_performance_trend/')) {
+    if (config.url.endsWith(COMPARISON)) {
       response.data.abnormal_rate_series = [{ manufacturer: 'A', data: [1, null], count_data: [3, 0], abnormal_count_data: [3, 0] }];
       response.data.normal_rate_series = [{ manufacturer: 'A', data: [0, null], count_data: [3, 0], abnormal_count_data: [3, 0] }];
     }
@@ -130,8 +129,8 @@ test('normal and abnormal trend tooltips show their own numerators over recorded
 test('a V2 response missing service fields is an explicit service error, not empty manufacturer charts', async t => {
   const r = create(t, { request: config => {
     const response = fixture(config);
-    if (config.url.endsWith('brand_cost/')) {
-      delete response.data.service_rows;
+    if (config.url.endsWith(COMPARISON)) {
+      delete response.data.lifespan_series;
       response.data.items = response.data.items.map(({ avg_lifespan, lifespan_count, paired_count, ...item }) => item);
     }
     return response;
@@ -149,9 +148,10 @@ test('a V2 response missing service fields is an explicit service error, not emp
 
 test('manufacturer contract requires arrays, finite nullable averages and integer sample counts without coercion', t => {
   const r = create(t);
-  const valid = () => ({ meta: meta({}), items: [{ ...brands[0] }], service_rows: [] });
+  const valid = () => ({ ...emptyComparison(), items: [{ ...brands[0] }] });
   const changes = [
-    data => { delete data.items; }, data => { data.items = {}; }, data => { data.service_rows = null; },
+    data => { delete data.items; }, data => { data.items = {}; }, data => { data.lifespan_series = null; },
+    data => { delete data.series; }, data => { delete data.time_axis; },
     data => { data.items = [null]; }, data => { delete data.items[0].avg_lifespan; }, data => { data.items[0].avg_lifespan = Infinity; },
     data => { data.items[0].avg_cost = '100'; }, data => { data.items[0].avg_cost = NaN; },
     data => { data.items[0].lifespan_count = -1; }, data => { data.items[0].lifespan_count = 0.5; },
@@ -165,12 +165,12 @@ test('manufacturer contract requires arrays, finite nullable averages and intege
   const data = valid(); assert.equal(r.state.requireBrandData(data), data);
 });
 
-test('valid empty service arrays and nullable averages remain honest empty states, not service errors', async t => {
+test('valid empty series and nullable averages remain honest empty states, not service errors', async t => {
   const r = create(t, { request: config => {
     const response = fixture(config);
-    if (config.url.endsWith('brand_cost/')) {
+    if (config.url.endsWith(COMPARISON)) {
       response.data.items = [{ ...brands[1], avg_cost: null, priced_count: 0 }];
-      response.data.service_rows = [];
+      response.data.lifespan_series = [];
     }
     return response;
   } });
@@ -179,14 +179,14 @@ test('valid empty service arrays and nullable averages remain honest empty state
   assert.equal(r.state.relationshipItems.value.length, 0); assert.equal(r.state.brandSummaryItems.value.length, 1);
   const card = r.nodes().find(node => node.props?.title === '安装均价与已拆刀服役环数');
   assert.equal(card.props['is-empty'], true); assert.equal(card.props.error, '');
-  assert.doesNotThrow(() => r.state.requireBrandData({ meta: meta({}), items: [], service_rows: [] }));
+  assert.doesNotThrow(() => r.state.requireBrandData(emptyComparison()));
 });
 
 test('complete eight-manufacturer data displays every relationship point', async t => {
   const names = Array.from({ length: 8 }, (_, index) => `厂家${index + 1}`);
   const r = create(t, { request: config => {
     const response = fixture(config);
-    if (config.url.endsWith('brand_cost/')) {
+    if (config.url.endsWith(COMPARISON)) {
       response.data.items = names.map((manufacturer, index) => ({ ...brands[0], manufacturer, avg_cost: 100 + index, avg_lifespan: 80 + index, paired_count: 58, lifespan_count: 58 }));
     }
     return response;
@@ -194,20 +194,6 @@ test('complete eight-manufacturer data displays every relationship point', async
   await r.mount(); bindCharts(r.state);
   assert.equal(r.state.brandReady.value, true);
   assert.equal(latest(r, 'relationshipRef').series[0].data.length, 8);
-});
-
-test('trend requests omit duplicate detail payloads without changing the global filter', async t => {
-  const r = create(t); await r.mount();
-  const source = fs.readFileSync(path.resolve(__dirname, '../../../../utils/service.ts'), 'utf8');
-  const serializer = source.slice(source.indexOf('paramsSerializer: {') + 'paramsSerializer: '.length, source.indexOf('\n\t});', source.indexOf('paramsSerializer: {'))).trim().replace(/,$/, '');
-  const { value } = compile(`import qs from 'qs'; export const value = ${serializer};`, () => ({ default: require('qs') }));
-  for (const call of r.requests) {
-    const isTrend = /brand_(price|performance)_trend/.test(call.url);
-    assert.equal(call.params.include_details, isTrend ? 'false' : undefined);
-    const query = new URLSearchParams(value.serialize(call.params));
-    assert.equal(query.get('include_details'), isTrend ? 'false' : null);
-  }
-  assert.equal(r.props.filter.include_details, undefined);
 });
 
 test('a chart keeps its options when only the other one changes, and is rebuilt on a new element', async t => {
@@ -228,7 +214,7 @@ test('records outside the manufacturer table show one line only when there are a
   assert.deepEqual(line(r), ['1 条更换记录缺厂家、¥20明确金额厂家未核实，不在本表']);
   const clean = create(t, { request: config => {
     const response = fixture(config);
-    if (config.url.endsWith('brand_cost/')) Object.assign(response.data, { unknown_manufacturer_count: 0, source_rows: sourceRows.filter(row => row.manufacturer) });
+    if (config.url.endsWith(COMPARISON)) Object.assign(response.data, { unknown_manufacturer_count: 0, unknown_manufacturer_amount: 0 });
     return response;
   } });
   await clean.mount();
@@ -238,7 +224,7 @@ test('records outside the manufacturer table show one line only when there are a
 
 test('a slow manufacturer request keeps loading true until it returns', async t => {
   const hold = deferred();
-  const r = create(t, { request: config => /brand_/.test(config.url) ? hold.promise.then(() => fixture(config)) : fixture(config) });
+  const r = create(t, { request: config => config.url.endsWith(COMPARISON) ? hold.promise.then(() => fixture(config)) : fixture(config) });
   const mounted = r.mount(); await settle();
   assert.equal(r.state.brandLoading.value, true);
   hold.resolve(); await mounted; await settle();

@@ -1,6 +1,6 @@
 import { CHART_COLORS, DV_PALETTE, TOOL_TYPE_LABELS, TOOLTIP_STYLE, DEFAULT_GRID } from './chartTheme';
 import { escapeHtml, formatCurrency, formatNumber, formatPercent } from './presentation';
-import type { BrandCostItem, BrandPerfTrendSeries, BrandPriceTrendData, BrandPriceTrendSeries, CostTrendItem, CostTypeBreakdownItem } from '../types';
+import type { BrandComparisonData, BrandCostItem, BrandPerfTrendSeries, BrandPriceTrendSeries, CostTrendItem, CostTypeBreakdownItem } from '../types';
 
 const sourceConfig = [
   { key: 'installation', trend: 'installation_cost', name: '新装登记', color: CHART_COLORS.primary },
@@ -53,7 +53,7 @@ export function buildRelationshipOption(relationshipItems: BrandCostItem[]) {
 }
 
 // 构造厂家指标趋势图配置。
-export function buildBrandTrendOption(trend: BrandPriceTrendSeries[], axis: BrandPriceTrendData['time_axis'], brandMetric: string, trendConfig: { unit: string; ratio: boolean }) {
+export function buildBrandTrendOption(trend: BrandPriceTrendSeries[], axis: BrandComparisonData['time_axis'], brandMetric: string, trendConfig: { unit: string; ratio: boolean }) {
   return {
     tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', formatter: (parameters: any[]) => {
       if (!parameters.length) return '';

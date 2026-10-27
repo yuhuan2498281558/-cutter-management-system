@@ -186,6 +186,8 @@ export interface BrandCostItem {
   total_cost: number;
   count: number;
   opening_count?: number;
+  installation_count?: number;
+  legacy_replacement_count?: number;
   abnormal_count?: number;
   normal_count?: number;
   avg_cost: number | null;
@@ -209,13 +211,6 @@ export interface BrandPriceTrendSeries {
   count_data?: number[];
 }
 
-export interface BrandPriceTrendData {
-  meta?: AnalysisMeta;
-  manufacturers: string[];
-  time_axis: { ring_no: string; open_time: string }[];
-  series: BrandPriceTrendSeries[];
-}
-
 export interface BrandPerfTrendSeries {
   manufacturer: string;
   data: (number | null)[];
@@ -223,13 +218,18 @@ export interface BrandPerfTrendSeries {
   abnormal_count_data?: number[];
 }
 
-export interface BrandPerformanceTrendData {
+/** 厂家对比一次取齐：综合对照表、安装均价趋势（series）和旧刀表现趋势 */
+export interface BrandComparisonData {
   meta?: AnalysisMeta;
+  items: BrandCostItem[];
   manufacturers: string[];
   time_axis: { ring_no: string; open_time: string }[];
+  series: BrandPriceTrendSeries[];
   abnormal_rate_series: BrandPerfTrendSeries[];
   normal_rate_series: BrandPerfTrendSeries[];
   lifespan_series: BrandPerfTrendSeries[];
+  unknown_manufacturer_count?: number;
+  unknown_manufacturer_amount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────

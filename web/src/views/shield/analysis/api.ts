@@ -41,19 +41,9 @@ export function getCostTrend(params: AnalysisFilterParams = {}) {
   return request({ url: API_PREFIX + 'cost_trend/', method: 'get', params });
 }
 
-/** 各厂家成本对比 */
-export function getBrandCost(params: AnalysisFilterParams = {}) {
-  return request({ url: API_PREFIX + 'brand_cost/', method: 'get', params });
-}
-
-/** 各厂家平均单价时序趋势 */
-export function getBrandPriceTrend(params: AnalysisFilterParams = {}) {
-  return request({ url: API_PREFIX + 'brand_price_trend/', method: 'get', params: { ...params, include_details: 'false' } });
-}
-
-/** 各厂家刀具性能时序趋势（异常率 / 正常磨损率） */
-export function getBrandPerformanceTrend(params: AnalysisFilterParams = {}) {
-  return request({ url: API_PREFIX + 'brand_performance_trend/', method: 'get', params: { ...params, include_details: 'false' } });
+/** 厂家对比：综合对照表、安装均价趋势和旧刀表现趋势一次取齐 */
+export function getBrandComparison(params: AnalysisFilterParams = {}) {
+  return request({ url: API_PREFIX + 'brand_comparison/', method: 'get', params });
 }
 
 /** 磨损等级分布 */

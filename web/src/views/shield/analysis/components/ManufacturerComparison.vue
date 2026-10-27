@@ -63,27 +63,22 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import * as echarts from 'echarts';
 import InfoTip from '/@/components/InfoTip.vue';
 import ChartCard from './ChartCard.vue';
-import { getFilterOptions, getBrandCost, getBrandPriceTrend, getBrandPerformanceTrend } from '../api';
+import { getFilterOptions, getBrandComparison } from '../api';
 import { buildRelationshipOption, buildBrandTrendOption, manufacturerColor, serviceValue } from '../utils/costChartOptions';
 import { analysisExportMeta, formatCurrency, formatNumber, formatPercent, requireAnalysisV2 } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
-import type { AnalysisFilter, AnalysisMeta, BrandCostItem, BrandPerformanceTrendData, BrandPriceTrendData, CostSourceRow } from '../types';
+import type { AnalysisFilter, BrandComparisonData } from '../types';
 
-interface BrandItem extends BrandCostItem { installation_count?: number; legacy_replacement_count?: number }
-interface BrandData {
-  meta?: AnalysisMeta; items: BrandItem[]; service_rows?: unknown[]; service_rows_total?: number;
-  service_rows_truncated?: boolean; pairing_unresolved_count?: number; unknown_manufacturer_count?: number;
-  source_rows?: CostSourceRow[];
-}
 interface OptionData { manufacturers: string[] }
 // 防止误读的口径：页面上在 ⓘ 里，PDF 里写在对应小节标题下
 const BRAND_TABLE_BASIS = '厂家表不含未知厂家，不能将表内合计当作工程总计。';
-function requireBrandData(data: BrandData): BrandData {
+function requireBrandData(data: BrandComparisonData): BrandComparisonData {
   requireAnalysisV2(data);
   const nullableNumber = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value));
   const sampleCount = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
-  const valid = Array.isArray(data.items) && Array.isArray(data.service_rows) && data.items.every(item => (
+  const series = [data.series, data.lifespan_series, data.abnormal_rate_series, data.normal_rate_series];
+  const valid = Array.isArray(data.items) && Array.isArray(data.time_axis) && series.every(Array.isArray) && data.items.every(item => (
     item !== null && typeof item === 'object'
     && nullableNumber(item.avg_lifespan) && nullableNumber(item.avg_cost)
     && sampleCount(item.lifespan_count) && sampleCount(item.paired_count) && sampleCount(item.priced_count)
@@ -115,22 +110,17 @@ watch(() => props.filter, () => {
   appliedBrandFilter.value = { manufacturers: [] }; focusedManufacturer.value = '';
 }, { deep: true, flush: 'sync' });
 const { data: brandResult, loading: brandLoading, error: brandError, ready: brandReady, load: loadBrandData } = useAnalysisQuery(
-  buildBrandFilter, async filter => {
-    const [cost, price, performance] = await Promise.all([getBrandCost(filter), getBrandPriceTrend(filter), getBrandPerformanceTrend(filter)]);
-    return { cost: requireBrandData(cost.data), price: requireAnalysisV2<BrandPriceTrendData>(price.data), performance: requireAnalysisV2<BrandPerformanceTrendData>(performance.data) };
-  },
+  buildBrandFilter, async filter => requireBrandData((await getBrandComparison(filter)).data),
 );
 const { data: optionData, loading: optionsLoading, error: optionsError, load: loadOptions } = useAnalysisQuery<OptionData>(
   () => props.filter, async filter => (await getFilterOptions(filter)).data,
 );
-const brandCost = computed(() => brandResult.value?.cost);
-const brandSummaryItems = computed(() => brandCost.value?.items ?? []);
-const unknownManufacturerRows = computed(() => (brandCost.value?.source_rows ?? []).filter(row => !row.manufacturer && row.included));
-const unknownManufacturerAmount = computed(() => unknownManufacturerRows.value.reduce((total, row) => total + (row.amount ?? 0), 0));
+const brandSummaryItems = computed(() => brandResult.value?.items ?? []);
 const unknownManufacturerLine = computed(() => {
-  const count = Number(brandCost.value?.unknown_manufacturer_count) || 0;
-  if (!count && !unknownManufacturerAmount.value) return '';
-  return `${formatNumber(count)} 条更换记录缺厂家、${formatCurrency(unknownManufacturerAmount.value)}明确金额厂家未核实，不在本表`;
+  const count = Number(brandResult.value?.unknown_manufacturer_count) || 0;
+  const amount = Number(brandResult.value?.unknown_manufacturer_amount) || 0;
+  if (!count && !amount) return '';
+  return `${formatNumber(count)} 条更换记录缺厂家、${formatCurrency(amount)}明确金额厂家未核实，不在本表`;
 });
 const manufacturerOptions = computed(() => restrictedSelection(
   [...new Set([...(optionData.value?.manufacturers ?? []), ...brandSummaryItems.value.map(item => item.manufacturer)])],
@@ -161,7 +151,7 @@ const trendConfig = computed(() => ({
 const selectedTrend = computed(() => {
   if (!brandResult.value) return [];
   const data = brandResult.value;
-  const list = brandMetric.value === 'price' ? data.price.series : brandMetric.value === 'service' ? data.performance.lifespan_series : brandMetric.value === 'normal' ? data.performance.normal_rate_series : data.performance.abnormal_rate_series;
+  const list = brandMetric.value === 'price' ? data.series : brandMetric.value === 'service' ? data.lifespan_series : brandMetric.value === 'normal' ? data.normal_rate_series : data.abnormal_rate_series;
   const visible = new Set(visibleBrands.value.map(item => item.manufacturer));
   return list.filter(item => visible.has(item.manufacturer));
 });
@@ -172,7 +162,7 @@ function exportPdf() {
   exportAnalysisPdf('数据分析-厂家对照与服役表现', [
     { title: '厂家对照与指标', selector: '.brand-section', note: BRAND_TABLE_BASIS },
   ], [
-    ...analysisExportMeta(brandCost.value?.meta),
+    ...analysisExportMeta(brandResult.value?.meta),
     { label: '图形展示', value: focusedManufacturer.value || (appliedBrandFilter.value.manufacturers.length ? '选定厂家' : brandFilterForm.limit ? `按明确金额前 ${brandFilterForm.limit} 家；表格保留全部` : '全部厂家') },
     { label: '当前趋势指标', value: trendConfig.value.title },
   ]);
@@ -198,8 +188,7 @@ function updateChart(key: string, element: HTMLElement | null, option: any) {
 function renderCharts() {
   if (!brandReady.value || !brandResult.value) return;
   updateChart('relationship', relationshipRef.value, buildRelationshipOption(relationshipItems.value));
-  const axis = brandMetric.value === 'price' ? brandResult.value.price.time_axis : brandResult.value.performance.time_axis;
-  updateChart('brandTrend', brandTrendRef.value, buildBrandTrendOption(selectedTrend.value, axis, brandMetric.value, trendConfig.value));
+  updateChart('brandTrend', brandTrendRef.value, buildBrandTrendOption(selectedTrend.value, brandResult.value.time_axis, brandMetric.value, trendConfig.value));
 }
 let activeCharts = true, resizeFrame: number | undefined, renderFrame: number | undefined;
 function scheduleRender() {

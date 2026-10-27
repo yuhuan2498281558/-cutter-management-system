@@ -230,7 +230,7 @@ test('cost option builders preserve source order, colors and explicit amounts', 
 test('manufacturer colors stay stable across chart builders, ordering and focused subsets', () => {
   const { buildRelationshipOption, buildBrandTrendOption } = loadCostChartOptions();
   const relationship = buildRelationshipOption(brands);
-  const price = fixture({ url: 'brand_price_trend/', params: {} }).data;
+  const price = fixture({ url: 'brand_comparison/', params: {} }).data;
   const trend = buildBrandTrendOption([...price.series].reverse(), price.time_axis, 'price', { unit: '元', ratio: false });
   assert.deepEqual(plain(relationship.series[0].data.map(item => [item.name, item.itemStyle.color])), [['A', '#c2b8a3'], ['B', '#6f8f6a']]);
   assert.deepEqual(plain(trend.series.map(item => [item.name, item.color])), [['B', '#6f8f6a'], ['A', '#c2b8a3']]);

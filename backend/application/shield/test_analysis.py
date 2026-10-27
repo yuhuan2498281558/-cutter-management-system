@@ -216,7 +216,7 @@ class AnalysisContractTests(TestCase):
 
     def test_track_invalid_bounds_are_rejected_by_every_action(self):
         actions = ('filter_options', 'custom_fields', 'custom_chart', 'overview', 'cost_overview', 'cost_trend',
-                   'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'wear_distribution', 'wear_trend')
+                   'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'brand_comparison', 'life_mileage', 'wear_distribution', 'wear_trend')
         for action in actions:
             view = AnalysisViewSet.as_view({'get': action}, authentication_classes=[], permission_classes=[])
             for params in ({'blade_track_min': '-1'}, {'blade_track_max': 'NaN'}, {'blade_track_max': 'Infinity'},
@@ -481,7 +481,7 @@ class AnalysisContractTests(TestCase):
         user = Users.objects.create(username='analysis-reader', name='分析读取', is_superuser=False)
         user.role.add(role)
         menu = Menu.objects.create(name='分析测试', web_path='/shield/analysis')
-        actions = ('filter_options', 'custom_fields', 'custom_chart', 'overview', 'cost_overview', 'cost_trend', 'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'wear_distribution', 'wear_trend')
+        actions = ('filter_options', 'custom_fields', 'custom_chart', 'overview', 'cost_overview', 'cost_trend', 'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'brand_comparison', 'life_mileage', 'wear_distribution', 'wear_trend')
         for action in actions:
             path = f'/api/shield/analysis/{action}/'
             view = AnalysisViewSet.as_view({'get': action})
@@ -661,6 +661,28 @@ class AnalysisContractTests(TestCase):
             self.assertEqual(full, slim)
             self.assertIn('source_rows', self.query(action, include_details='true'))
         self.assertIn('source_rows', self.query('brand_cost', include_details='false'))
+
+    def test_brand_comparison_pairs_once_and_matches_the_three_brand_endpoints(self):
+        from unittest.mock import patch
+        from . import analysis_views as views
+        installed = self.detail(self.opening(100), is_replaced=True, manufacturer='A', price=100)
+        instance = self.install(installed)
+        removed = self.detail(self.opening(200), is_replaced=True, manufacturer='B', price=200, wear_condition='偏磨')
+        self.install(removed)
+        OldToolRecord.objects.create(tool_change_detail=removed, confirmed_tool_instance=instance,
+                                    inspection_status='CONFIRMED', repair_price=30)
+        self.install(self.detail(self.opening(300), is_replaced=True, manufacturer='', price=40))
+        with patch.object(views, 'confirmed_service_segments', wraps=views.confirmed_service_segments) as paired:
+            combined = self.query('brand_comparison')
+        self.assertEqual(paired.call_count, 1)
+        self.assertNotIn('service_rows', combined); self.assertNotIn('source_rows', combined)
+        self.assertEqual(combined['meta']['service_sample_count'], 1)
+        self.assertEqual((combined['unknown_manufacturer_count'], combined['unknown_manufacturer_amount']), (1, 40))
+        cost, price, performance = (self.query(action) for action in ('brand_cost', 'brand_price_trend', 'brand_performance_trend'))
+        self.assertEqual(combined['items'], cost['items'])
+        self.assertEqual(combined['series'], price['series'])
+        for key in ('manufacturers', 'time_axis', 'abnormal_rate_series', 'normal_rate_series', 'lifespan_series'):
+            self.assertEqual(combined[key], performance[key], key)
 
     def test_suggested_pairing_sources_do_not_trigger_per_row_deferred_queries(self):
         from django.db import connection

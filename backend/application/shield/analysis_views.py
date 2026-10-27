@@ -489,6 +489,7 @@ def _brand_contract(action, openings, params):
         'service_rows': segments, 'service_rows_total': len(segments), 'service_rows_truncated': False,
         'pairing_unresolved_count': sum(not row['paired'] for row in segments),
         'unknown_manufacturer_count': sum(not row.manufacturer for row in supply),
+        'unknown_manufacturer_amount': round(sum(row['amount'] for row in costs if row['included'] and not row['manufacturer']), 2),
         'cost_sources': total_sources,
         'source_rows': costs, 'source_rows_total': len(costs), 'source_rows_truncated': False,
         'service_basis': '按拆除环归集的系统已确认配对服役段；已拆刀样本，不代表总体寿命',
@@ -497,7 +498,7 @@ def _brand_contract(action, openings, params):
         return base
     ordered = list(_with_ring_int(openings).order_by('ring_int', 'id'))
     base.update(manufacturers=names, time_axis=[{'opening_id': op.id, 'ring_no': op.ring_no, 'open_time': _date_text(op.open_time, '%Y-%m-%d')} for op in ordered])
-    if action == 'brand_price_trend':
+    if action in ('brand_price_trend', 'brand_comparison'):
         series = []
         for name in names:
             values, counts, missing = [], [], []
@@ -510,7 +511,7 @@ def _brand_contract(action, openings, params):
                 missing.append(len(modern) - len(priced))
             series.append({'manufacturer': name, 'data': values, 'count_data': counts, 'missing_price_count_data': missing})
         base['series'] = series
-    else:
+    if action in ('brand_performance_trend', 'brand_comparison'):
         for field in ('abnormal_rate_series', 'normal_rate_series', 'lifespan_series'):
             base[field] = []
         for name in names:
@@ -1154,6 +1155,10 @@ class AnalysisViewSet(viewsets.ViewSet):
         if self.action in {'brand_price_trend', 'brand_performance_trend'} and request.query_params.get('include_details') == 'false':
             for key in ('items', 'source_rows', 'service_rows'):
                 data.pop(key, None)
+        if self.action == 'brand_comparison':
+            # 页面只用汇总和序列；逐条明细有一兆多，样本数已记进 meta
+            for key in ('source_rows', 'service_rows'):
+                data.pop(key)
         return success(data)
 
     @action(detail=False, methods=['get'], url_path='brand_stratum_performance')
@@ -1718,6 +1723,19 @@ class AnalysisViewSet(viewsets.ViewSet):
           lifespan_series       - [{manufacturer, data: [avg_rings|null, ...]}]
         """
         return self.analysis_success(request, _brand_contract('brand_performance_trend', _build_opening_queryset(request.query_params), request.query_params))
+
+    @action(detail=False, methods=['get'], url_path='brand_comparison')
+    def brand_comparison(self, request):
+        """
+        寿命与厂家页的厂家对比：一次配对，同时返回综合对照表和两类趋势，不带逐条明细
+        返回：
+          items                       - 同 brand_cost
+          manufacturers / time_axis   - 同两个趋势接口
+          series                      - 安装记录均价，同 brand_price_trend
+          *_rate_series / lifespan_series - 旧刀表现，同 brand_performance_trend
+          unknown_manufacturer_count / unknown_manufacturer_amount - 缺厂家的更换记录数和明确金额
+        """
+        return self.analysis_success(request, _brand_contract('brand_comparison', _build_opening_queryset(request.query_params), request.query_params))
 
     @action(detail=False, methods=['get'], url_path='life_mileage')
     def life_mileage(self, request):
