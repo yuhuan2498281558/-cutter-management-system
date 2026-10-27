@@ -75,6 +75,76 @@ class RulePresentationTests(SimpleTestCase):
         rows = self.assistant._answer_table(['刀位', '次数'], [['A|B\\C\n备注', 0]])
         self.assertEqual(rows[-1], '| A\\|B\\\\C 备注 | 0 |')
 
+    def test_narrow_opening_count_sources_and_relevant_warnings(self):
+        difference = '人工汇总数和明细统计数不同：人工汇总按整仓填写，明细只统计 122 个有效刀位上已检查或已更换的记录。'
+        incomplete = '检查数或更换数不完整或不一致，暂不计算更换率'
+        draft_warning = '开仓汇总尚未确认，当前明细统计可能继续变化'
+        confirmed = {'ring_no': '100', 'count_source': 'confirmed_summary', 'tool_change_total': 20,
+                     'tool_change_replaced': None, 'warnings': [difference, incomplete]}
+        draft = {'ring_no': '200', 'count_source': 'detail_draft', 'tool_change_total': 2,
+                 'tool_change_replaced': 1, 'warnings': [draft_warning]}
+        cases = [([confirmed], '整仓检查、更换数采用确认汇总；异常率以有效刀位已分类观测数为分母。'),
+                 ([draft], '检查、更换数取现场明细（开仓汇总尚未确认）；异常率以有效刀位已分类观测数为分母。'),
+                 ([confirmed, draft], '检查、更换数按各仓的数量来源取值，见"数量来源"列；异常率以有效刀位已分类观测数为分母。')]
+        for records, note in cases:
+            with self.subTest(note=note):
+                data = {'total_openings': len(records), 'recent_records': records}
+                sections = requested_sections('opening', '最近5次草稿开仓的检查数和更换数')
+                answer = render_report('opening', data, self.assistant._answer_table, {'sections': sections})
+                self.assertIn(note, answer)
+                for row in records:
+                    for warning in row['warnings']:
+                        self.assertIn(f"环号 {row['ring_no']}：{warning}", answer)
+                if len(records) == 2:
+                    self.assertIn('| 数量来源 |', answer)
+                    self.assertIn('| 已确认汇总 |', answer)
+                    self.assertIn('| 现场明细（未确认） |', answer)
+                else:
+                    self.assertNotIn('| 数量来源 |', answer)
+        answer = render_report('opening', data, self.assistant._answer_table, {'sections': {'interval'}})
+        for warning in (difference, incomplete, draft_warning):
+            self.assertNotIn(warning, answer)
+        # 几仓共有的提示只写一次，环号并在一起
+        data = {'total_openings': 2, 'recent_records': [confirmed, {**confirmed, 'ring_no': '300', 'warnings': [difference]}]}
+        answer = render_report('opening', data, self.assistant._answer_table, {'sections': requested_sections('opening', '最近2次开仓的检查数和更换数')})
+        self.assertEqual(answer.count(difference), 1)
+        self.assertIn(f"环号 100、300：{difference}", answer)
+
+    def test_repair_status_and_scrap_sections_are_independent(self):
+        data = {'status_counts': {'PENDING_VENDOR_FEEDBACK': 7, 'CONFIRMED': 5, 'CLOSED': 3},
+                'scrapped_count': 2, 'scrap_suggestion_count': 1}
+        for question, show_status in [('旧刀返修待厂家反馈、已确认、已归档和报废各多少', True),
+                                      ('统计已经报废了多少把刀，另列待厂家确认的报废建议', False)]:
+            with self.subTest(question=question):
+                answer = render_report('old_tool_repairs', data, self.assistant._answer_table, {'question': question})
+                self.assertIn('已报废：2 把。', answer)
+                self.assertIn('报废建议：1 把，仍待厂家反馈。', answer)
+                if show_status:
+                    self.assertIn('返修状态：待厂家反馈 7 条；已确认 5 条；已归档 3 条。', answer)
+                else:
+                    self.assertNotIn('返修状态：', answer)
+
+    def test_manufacturer_unconfirmed_and_in_service_sections_keep_their_basis(self):
+        warnings = ['在役数量按当前末次安装统计，不受拆下环段限制。',
+                    '待反馈及无法组成确认配对的数量按整个候选范围统计，无法可靠按原安装厂家筛选。',
+                    '缺确认身份数量也包括安装记录不完整或配对冲突的记录，不能计入平均寿命。']
+        data = {'unconfirmed': {'pending_feedback_count': 7, 'no_confirmed_identity_count': 2, 'in_service_count': 5},
+                'warnings': warnings}
+        for keyword in ('待反馈', '未确认', '缺确认', '身份', '在役', '完整报告'):
+            with self.subTest(keyword=keyword):
+                answer = render_report('manufacturer_service', data, self.assistant._answer_table,
+                                       {'question': f'统计各厂家刀具{keyword}'})
+                self.assertIn('未确认：待厂家反馈 7 条；缺确认身份或配对不完整 2 条。', answer)
+                self.assertIn('当前在役：5 把。', answer)
+                for warning in warnings:
+                    self.assertIn(warning, answer)
+        for question in ('对比各厂家刀具的使用寿命和异常磨损率', '分析主要厂家的异常磨损类型'):
+            answer = render_report('manufacturer_service', data, self.assistant._answer_table, {'question': question})
+            self.assertNotIn('未确认：', answer)
+            self.assertNotIn('当前在役：', answer)
+            for warning in warnings:
+                self.assertNotIn(warning, answer)
+
     def test_table_cell_rounds_float_tails(self):
         rows = self.assistant._answer_table(['参数', '平均值', '最大值'], [['总推力', 11918.614430000001, 12787.1351]])
         self.assertEqual(rows[-1], '| 总推力 | 11918.614 | 12787.135 |')

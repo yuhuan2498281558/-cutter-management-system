@@ -3,7 +3,9 @@
 import json
 from datetime import timedelta
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from application.ai_assistant import tools
@@ -141,6 +143,39 @@ class ToolsRefreshTests(TestCase):
         data = self.call(tools.query_tunneling_summary)
         self.assertEqual(data['metrics']['advance_speed'], {'avg': 45, 'min': 30, 'max': 60})
         self.assertEqual((data['counter_ring_count'], data['integrated_ring_count']), (1, 1))
+
+    def test_opening_queries_stay_constant_with_full_efficiency_and_limited_details(self):
+        query_counts = []
+        previous = 0
+        for total in (5, 15, 30):
+            for index in range(previous + 1, total + 1):
+                opening = self.opening(index, summary_status='CONFIRMED' if index % 2 else 'DRAFT',
+                                       checked_tool_count=8, replaced_tool_count=4,
+                                       opening_duration=2.25, tool_change_duration=0.37)
+                self.detail(opening, '1', is_replaced=True, wear_condition='正常')
+                self.detail(opening, '2', is_checked=False, is_replaced=True, wear_condition='偏磨')
+                self.detail(opening, '3', is_replaced=False, wear_condition='正常')
+                self.detail(opening, '4', is_checked=False, is_replaced=False)
+                self.detail(opening, 'G1R', is_replaced=True)
+            with CaptureQueriesContext(connection) as queries:
+                data = self.call(tools.query_opening_records, limit=5)
+            query_counts.append(len(queries))
+            for name, indices in [('all', range(1, total + 1)), ('recent', range(total - 4, total + 1))]:
+                confirmed = sum(index % 2 for index in indices)
+                drafts = len(indices) - confirmed
+                checked, replaced = 8 * confirmed + 2 * drafts, 4 * confirmed + 2 * drafts
+                self.assertEqual(data[f'efficiency_{name}'], {
+                    'opening_count': len(indices), 'check_denominator': checked, 'replace_denominator': replaced,
+                    'check_minutes_per_tool': round(2.25 * len(indices) * 60 / checked, 1),
+                    'replace_minutes_per_tool': round(0.37 * len(indices) * 60 / replaced, 1),
+                })
+            self.assertEqual([int(row['ring_no']) for row in data['recent_records']], list(range(total, total - 5, -1)))
+            for row in data['recent_records']:
+                self.assertEqual((row['detail_record_count'], row['detail_checked_count'], row['detail_replaced_count']), (4, 2, 2))
+                self.assertEqual(row['wear_distribution'], {'正常': 2, '偏磨': 1})
+                self.assertEqual(row['abnormal_rate'], '33.3%')
+            previous = total
+        self.assertEqual(query_counts, [query_counts[0]] * 3)
 
     def test_recommendation_price_sort_and_weighted_service_use_all_models(self):
         first, second = self.info('甲型号'), self.info('乙型号')

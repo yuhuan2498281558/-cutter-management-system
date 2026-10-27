@@ -10,7 +10,7 @@ from application.ai_assistant.answer_reporting import render_report
 from application.ai_assistant.memory_service import MemorySnapshot, StoredMessage
 from application.ai_assistant.tools_mileage import query_tool_mileage
 from application.ai_assistant.tests import test_tools_refresh as fixtures
-from application.shield.models import ToolChangeDetail
+from application.shield.models import OldToolRecord, ToolChangeDetail
 
 
 class ToolMileageTests(TestCase):
@@ -78,6 +78,28 @@ class ToolMileageTests(TestCase):
         self.assertTrue(any('% 的圈数按参考值估算' in warning for warning in mixed['warnings']))
         for raw in ('null', '{', '{"cutter_position_no":"Y2"}', '{"manufacturers":[1]}'):
             self.assertIn('error', json.loads(query_tool_mileage(raw)))
+
+    def test_position_source_share_uses_its_removed_and_in_service_segments(self):
+        first = self.opening(10, right_revolution_reading=1000, left_revolution_reading=100)
+        last = self.opening(20, right_revolution_reading=2000, left_revolution_reading=300)
+        info = self.info()
+        _, instance = self.install(first, info, 'S1L')
+        changed, _ = self.install(last, info, 'S1L')
+        OldToolRecord.objects.create(tool_change_detail=changed, inspection_status='CONFIRMED', confirmed_tool_instance=instance)
+        self.install(self.opening(15), info, '1')
+        project = self.call(query_tool_mileage)
+        self.assertGreater(project['revolution_basis']['estimated_share'], 0)
+        position = self.call(query_tool_mileage, cutter_position_no='S1L')
+        self.assertEqual(position['revolution_basis']['source_share'],
+                         {'reading': 1, 'counter': 0, 'integrated': 0, 'reference': 0})
+        self.assertEqual(position['revolution_basis']['estimated_share'], 0)
+        self.assertFalse(any('估算' in warning for warning in position['warnings']))
+        self.opening(25)
+        position = self.call(query_tool_mileage, cutter_position_no='S1L')
+        expected_share = round((5 * 2000 / 16.67) / (1200 + 5 * 2000 / 16.67), 3)
+        self.assertEqual(position['revolution_basis']['estimated_share'], expected_share)
+        self.assertEqual(position['revolution_basis']['source_share']['reading'], round(1 - expected_share, 3))
+        self.assertIn('33% 的圈数按参考值估算', position['warnings'])
 
 
 class MileageAndFollowupRoutingTests(TestCase):

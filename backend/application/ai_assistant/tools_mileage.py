@@ -44,6 +44,12 @@ def query_tool_mileage(params_str: str) -> str:
     basis = {key: data['revolution_basis'][key] for key in (
         'source_share', 'estimated_share', 'reference_revolutions_per_ring',
         'reading_opening_count', 'tunneling_ring_count')}
+    if params.get('cutter_position_no'):
+        rows = [row for row in data['segments'] + data['in_service'] if row['cutter_position_no'] == params['cutter_position_no']]
+        totals = {source: sum(row['revolution_sources'][source] for row in rows) for source in basis['source_share']}
+        total = sum(totals.values())
+        basis['source_share'] = {source: round(value / total, 3) if total else None for source, value in totals.items()}
+        basis['estimated_share'] = basis['source_share']['reference']
     warnings = []
     share = basis['estimated_share']
     if share == 1:

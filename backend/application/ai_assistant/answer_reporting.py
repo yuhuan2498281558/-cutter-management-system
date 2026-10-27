@@ -10,7 +10,8 @@ def requested_sections(kind, question):
         'tool_change': {'counts': ('观测', '更换', '换刀'), 'positions': ('刀位',), 'wear': ('磨损',), 'abnormal': ('异常',)},
         'opening': {'interval': ('间隔', '多少环'), 'duration': ('时长',), 'counts': ('检查', '更换'), 'abnormal': ('异常',)},
         'manufacturer_service': {'service': ('寿命', '服役', '异常率', '磨损率'), 'abnormal_types': ('类型',),
-                                 'supply': ('供货', '金额', '登记', '成本', '费用')},
+                                 'supply': ('供货', '金额', '登记', '成本', '费用'),
+                                 'unconfirmed': ('待反馈', '未确认', '缺确认', '身份', '在役')},
         'old_tool_repairs': {'status': ('进度', '反馈', '归档'), 'scrap': ('报废',), 'amount': ('金额', '钱', '费用'),
                              'reasons': ('部件', '轴承', '刀圈', '刀毂', '失效原因')},
     }
@@ -233,7 +234,7 @@ def _render_refresh_report(kind, data, table, scope):
             report.text(f"已报废：{display(data.get('scrapped_count'))} 把。")
             report.text(f"报废建议：{display(data.get('scrap_suggestion_count'))} 把，仍待厂家反馈。")
         counts = data.get('status_counts') or {}
-        if 'status' in sections and not ('scrap' in sections and '进度' not in question):
+        if 'status' in sections:
             report.text("返修状态：" + '；'.join(f"{label} {display(counts.get(key))} 条" for key, label in (
                 ('PENDING_VENDOR_FEEDBACK', '待厂家反馈'), ('CONFIRMED', '已确认'), ('CLOSED', '已归档'))) + "。")
         amounts = data.get('registered_repair_amount') or {}
@@ -276,7 +277,8 @@ def _render_refresh_report(kind, data, table, scope):
                 report.notes.append(f"{row.get('query')} 只返回最近 20 段。")
     elif kind == "manufacturer_service":
         report.lines[0] = '## 厂家服役表现'
-        report.data = {**data, 'warnings': []}
+        report.data = {**data, 'warnings': [warning for warning in data.get('warnings') or []
+                                           if 'unconfirmed' in sections and any(word in warning for word in ('在役', '待反馈', '缺确认身份'))]}
         report.notes = ['只比较原安装厂家的确认拆下服役段，异常率以已分类样本为分母；小样本不代表质量高低。']
         report.text(f"确认配对：{display((data.get('summary') or {}).get('confirmed_segment_count'))} 个。")
         items = data.get('service_by_install_manufacturer') or []
@@ -292,6 +294,10 @@ def _render_refresh_report(kind, data, table, scope):
         if 'supply' in sections:
             _refresh_table(report, "本次新装的供货次数和登记金额", ["本次新装厂家", "供货次数", "登记金额（元）"], [
                 [r.get('manufacturer'), r.get('install_count'), _money_text(r.get('registered_amount_yuan'))] for r in data.get('supply_by_new_manufacturer') or []])
+        if 'unconfirmed' in sections:
+            unconfirmed = data.get('unconfirmed') or {}
+            report.text(f"未确认：待厂家反馈 {display(unconfirmed.get('pending_feedback_count'))} 条；缺确认身份或配对不完整 {display(unconfirmed.get('no_confirmed_identity_count'))} 条。")
+            report.text(f"当前在役：{display(unconfirmed.get('in_service_count'))} 把。")
     elif kind == "tool_cost_catalog":
         report.text(f"匹配 {display(scope.get('model_count'))} 个型号、{display(scope.get('quote_count'))} 条报价。")
         price_types = [(code, prefix, label) for code, prefix, label in (
@@ -452,22 +458,43 @@ def render_report(kind, data, table, scope=None, penetration_unit=PENETRATION_UN
             fields += [('last_ring_no', '上次开仓环号'), ('rings_between_openings', '间隔环数'), ('open_time', '开仓时间')]
         if 'duration' in sections:
             fields += [('opening_duration', '开仓时长（h）')]
-        if sections & {'counts', 'abnormal'}:
+        show_counts = bool(sections & {'counts', 'abnormal'})
+        sources = {r.get('count_source') for r in records}
+        mixed_sources = show_counts and len(sources) > 1
+        if show_counts:
             fields += [('tool_change_total', '检查数'), ('tool_change_replaced', '更换数')]
         headers = [label for _, label in fields]
         if 'abnormal' in sections:
             headers += ['异常数 / 已分类数', '异常率']
         if 'counts' in sections:
             headers += ['更换较多的刀位']
+        if mixed_sources:
+            headers += ['数量来源']
         readings = any(r.get('revolutions_since_previous') is not None for r in records)
         if readings:
             headers += ['刀盘圈数（距上次读数）']
         rows = [[*[r.get(key) for key, _ in fields],
                  *([f"{display(r.get('abnormal_count'))} / {display(r.get('abnormal_rate_denominator'))}", r.get('abnormal_rate')] if 'abnormal' in sections else []),
                  *([opening_positions(r)] if 'counts' in sections else []),
+                 *(['已确认汇总' if r.get('count_source') == 'confirmed_summary' else '现场明细（未确认）'] if mixed_sources else []),
                  *([r.get('revolutions_since_previous')] if readings else [])] for r in records]
         report.table('最近开仓间隔' if sections <= {'interval', 'details'} else '开仓统计', headers, rows, limit=len(rows))
-        return report.finish('整仓检查、更换数采用确认汇总；异常率以有效刀位已分类观测数为分母。' if sections & {'counts', 'abnormal'} else '间隔为本次与上次开仓相隔环数。')
+        note = '间隔为本次与上次开仓相隔环数。'
+        if show_counts:
+            if mixed_sources:
+                note = '检查、更换数按各仓的数量来源取值，见"数量来源"列；异常率以有效刀位已分类观测数为分母。'
+            elif sources == {'confirmed_summary'}:
+                note = '整仓检查、更换数采用确认汇总；异常率以有效刀位已分类观测数为分母。'
+            else:
+                note = '检查、更换数取现场明细（开仓汇总尚未确认）；异常率以有效刀位已分类观测数为分母。'
+            # 同一条提示只写一次，涉及的环号并在前面
+            rings_by_warning = {}
+            for r in records:
+                for warning in r.get('warnings') or []:
+                    if any(word in warning for word in ('尚未确认', '人工汇总', '检查数或更换数')):
+                        rings_by_warning.setdefault(warning, []).append(display(r.get('ring_no')))
+            report.notes.extend(f"环号 {'、'.join(rings)}：{warning}" for warning, rings in rings_by_warning.items())
+        return report.finish(note)
     if kind in {"stratum_area", "opening_stratum", "tool_inspections", "old_tool_repairs", "tool_lifecycle",
                 "manufacturer_service", "tool_cost_catalog", "registered_amounts", "data_catalog"}:
         return _render_refresh_report(kind, data, table, scope)

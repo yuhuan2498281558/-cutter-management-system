@@ -1694,7 +1694,7 @@ def query_opening_records(params_str: str) -> str:
         avg_duration = query.aggregate(avg=Avg('opening_duration'))['avg']
 
         # 先聚合完整筛选集，再截取展示记录。
-        recent_qs = list(
+        all_records = list(
             query.order_by('-ring_int', '-open_time', '-id').values(
                 'id', 'ring_no', 'last_ring_no', 'rings_between_openings',
                 'open_time', 'opening_duration', 'geological_conditions',
@@ -1703,6 +1703,22 @@ def query_opening_records(params_str: str) -> str:
                 'right_revolution_reading', 'left_revolution_reading',
             )
         )
+        details = _active_detail_query(params, checked_only=False)
+        counts = {row['warehouse_id']: row for row in details.filter(warehouse_id__in=query.values('pk')).order_by()
+                  .values('warehouse_id').annotate(detail_record_count=Count('pk'),
+                                                   detail_checked_count=Count('pk', filter=Q(is_checked=True)),
+                                                   detail_replaced_count=Count('pk', filter=Q(is_replaced=True)))}
+        for r in all_records:
+            r.update({field: counts.get(r['id'], {}).get(field, 0) for field in
+                      ('detail_record_count', 'detail_checked_count', 'detail_replaced_count')})
+            confirmed = r['summary_status'] == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED
+            r['count_source'] = 'confirmed_summary' if confirmed else 'detail_draft'
+            r['tool_change_total'] = r['checked_tool_count'] if confirmed else r['detail_checked_count']
+            r['tool_change_replaced'] = r['replaced_tool_count'] if confirmed else r['detail_replaced_count']
+            r['tool_change_duration_hours'] = r['tool_change_duration']
+        efficiency_all = _opening_efficiency(all_records)
+        recent_qs = all_records[:limit]
+        efficiency_recent = _opening_efficiency(recent_qs)
         readings = WarehouseOpeningBasicInfo.objects.filter(
             project_id__in={r['project_id'] for r in recent_qs},
             right_revolution_reading__isnull=False, left_revolution_reading__isnull=False,
@@ -1727,16 +1743,9 @@ def query_opening_records(params_str: str) -> str:
                 r[field] = r[field].strftime('%Y-%m-%d %H:%M') if r[field] else None
             if r['open_time']:
                 r['open_time'] = r['open_time'].strftime('%Y-%m-%d %H:%M')
-            changes = _active_detail_query(params, checked_only=False).filter(warehouse_id=r['id'])
-            r['detail_record_count'] = changes.count()
-            r['detail_checked_count'] = changes.filter(is_checked=True).count()
-            r['detail_replaced_count'] = changes.filter(is_replaced=True).count()
+            changes = details.filter(warehouse_id=r['id'])
             confirmed = r['summary_status'] == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED
-            total_c = r['checked_tool_count'] if confirmed else r['detail_checked_count']
-            replaced_c = r['replaced_tool_count'] if confirmed else r['detail_replaced_count']
-            r['count_source'] = 'confirmed_summary' if confirmed else 'detail_draft'
-            r['tool_change_total'] = total_c
-            r['tool_change_replaced'] = replaced_c
+            total_c, replaced_c = r['tool_change_total'], r['tool_change_replaced']
             valid_counts = total_c is not None and replaced_c is not None and 0 <= replaced_c <= total_c
             r['replacement_rate'] = f"{replaced_c/total_c*100:.1f}%" if valid_counts and total_c else None
             r['warnings'] = []
@@ -1778,9 +1787,6 @@ def query_opening_records(params_str: str) -> str:
             r['top_positions_tied'] = sum(p['count'] == cutoff for p in top_pos) > 1
             del r['id']
 
-        efficiency_all = _opening_efficiency(recent_qs)
-        recent_qs = recent_qs[:limit] if limit is not None else recent_qs
-        efficiency_recent = _opening_efficiency(recent_qs)
         for r in recent_qs:
             r['tool_change_duration_hours'] = _round_num(r['tool_change_duration_hours'], 1)
         def recent_mean(field):
