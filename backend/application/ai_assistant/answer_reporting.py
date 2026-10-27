@@ -134,6 +134,51 @@ def _money_text(value):
     return f"{amount:.2f}" if amount is not None else "暂无"
 
 
+# “各型号内……分别排序”这类按组排序的说法
+GROUPED_SORT = re.compile(r"(?:各|每个|每种|每一)[^，。；\n]{0,8}?(?:内|中|里)|分别")
+
+
+def wants_manufacturer_prices(question):
+    return bool(re.search(r"逐家|各厂家|按厂家|每家", question) and re.search(r"报价|价格|单价", question))
+
+
+def manufacturer_price_order(question, query_spec=None):
+    match = re.search(r"每环(?:报价|价格|单价)[^，。；\n]{0,12}?(从低到高|从高到低|升序|降序)", question)
+    if match:
+        return "desc" if match[1] in ("从高到低", "降序") else "asc"
+    return "asc" if (query_spec or {}).get("sort_by") == "price_per_ring" else None
+
+
+def manufacturer_price_table(recommendations, order, grouped=False):
+    rows, seen, models = [], set(), {}
+    for item in recommendations:
+        index = models.setdefault(item.get("tool_type_name"), len(models))
+        for quote in item.get("manufacturer_prices") or []:
+            key = (item.get("tool_type_name"), quote.get("manufacturer"), quote.get("brand") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((index, item, quote))
+    if not rows:
+        return []
+    def sort_key(row):
+        value = row[2].get("price_per_ring_yuan" if order else "unit_price_yuan")
+        price = (value is None, -(value or 0) if order == "desc" else (value or 0))
+        return price if order and not grouped else (row[0], *price)
+    rows.sort(key=sort_key)
+    lines = ["### 各厂家新刀报价（系统按查询结果生成）", "",
+             "| 型号 | 厂家 | 品牌 | 新刀报价（元） | 平均服役环数（完成服役数） | 每环报价（元/环） |",
+             "| --- | --- | --- | --- | --- | --- |"]
+    for _, item, quote in rows:
+        average = item.get("avg_service_rings")
+        service = f"{display(average) if average is not None else '—'}（{item.get('completed_service_count', 0)}）"
+        cells = [item.get("tool_type_name") or "—", quote.get("manufacturer") or "—", quote.get("brand") or "—",
+                 _money_text(quote.get("unit_price_yuan")), service,
+                 _money_text(quote["price_per_ring_yuan"]) if quote.get("price_per_ring_yuan") is not None else "—"]
+        lines.append("| " + " | ".join(str(c).replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ") for c in cells) + " |")
+    return [*lines, "", "每环报价 = 新刀报价 ÷ 该型号已拆下刀具的平均服役环数；平均服役环数按型号统计，不是该厂家刀具的服役环数。没有服役样本的型号不算每环报价。"]
+
+
 def _ratio_text(items):
     return "、".join(f"{row.get('label', row.get('code'))} {percent(row.get('pct'))}" for row in items or []) or "暂无"
 
@@ -646,6 +691,9 @@ def render_report(kind, data, table, scope=None, penetration_unit=PENETRATION_UN
             price = "暂无新刀报价" if low is None else display(low) if high is None or low == high else f"{display(low)}–{display(high)}"
             prices.append([item.get("tool_type_name"), price, item.get("price_basis")])
         report.table("价格参考", ["型号", "新刀报价区间（元）", "报价依据"], prices, limit=max(1, len(prices)))
+        if wants_manufacturer_prices((scope or {}).get("question", "")):
+            report.lines.extend(["", *manufacturer_price_table(scope.get("manufacturer_price_recommendations", items + insufficient), scope.get("manufacturer_price_order"),
+                                                               grouped=bool(GROUPED_SORT.search(scope.get("question", ""))))])
         report.table("样本不足的返回型号", ["型号", "安装数", "完成服役数"], [[i.get("tool_type_name"), i.get("installed_count"), i.get("completed_service_count")] for i in insufficient], limit=max(1, len(insufficient)))
         if not items:
             report.text("暂无满足排名条件的型号；不据此指定优先采购型号。")

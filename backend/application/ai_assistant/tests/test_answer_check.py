@@ -17,6 +17,14 @@ PRICES = {"manufacturer_prices": [{"manufacturer": "甲厂"}, {"manufacturer": "
 QUESTION = "逐家列出报价，按每环报价从低到高排列"
 GOOD = "| 厂家 | 每环报价 |\n|---|---|\n| 甲厂 | 1 |\n| 乙厂 | 2 |"
 BAD = "| 厂家 | 每环报价 |\n|---|---|\n| 甲厂 | 2 |\n| 甲厂 | 1 |"
+RECOMMENDATIONS = {"recommendations": [{"tool_type_name": "型号A", "avg_service_rings": 10,
+    "completed_service_count": 3, "manufacturer_prices": [
+        {"manufacturer": "甲厂", "brand": "", "unit_price_yuan": 100, "price_per_ring_yuan": 10},
+        {"manufacturer": "乙厂", "brand": "乙牌", "unit_price_yuan": 200, "price_per_ring_yuan": 20}]}],
+    "insufficient_evidence": [{"tool_type_name": "型号B", "completed_service_count": 0,
+        "manufacturer_prices": [{"manufacturer": "丙厂", "unit_price_yuan": 300, "price_per_ring_yuan": None}]},
+        {"tool_type_name": "型号C", "completed_service_count": 2, "avg_service_rings": 20,
+         "manufacturer_prices": [{"manufacturer": "丁厂", "unit_price_yuan": 400, "price_per_ring_yuan": 20}]}]}
 
 
 class AnswerCheckTests(SimpleTestCase):
@@ -78,14 +86,14 @@ class AnswerCheckTests(SimpleTestCase):
         self.assertEqual(self.check("更换次数", "每个刀位只被观测1次，其中4次更换。", data), [])
         self.assertTrue(self.check("继续", "区间1–2", PRICES, {"effective_query": "逐家列出报价"}))
 
-    def assistant(self, answer=BAD, data=PRICES):
+    def assistant(self, answer=BAD, data=PRICES, tool="query", args=None):
         assistant = ToolAssistant()
         snapshot = MemorySnapshot(scope_key="user:1", backend="legacy")
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
         assistant._llm = Mock()
         assistant._llm.invoke.return_value = AIMessage(content=GOOD)
-        result = {"output": answer, "intermediate_steps": [(SimpleNamespace(tool="query", tool_input={}), json.dumps(data))]}
+        result = {"output": answer, "intermediate_steps": [(SimpleNamespace(tool=tool, tool_input=args or {}), json.dumps(data))]}
         assistant._invoke_with_retry = Mock(return_value=result)
 
         async def stream(*args, **kwargs):
@@ -108,6 +116,100 @@ class AnswerCheckTests(SimpleTestCase):
         self.assertEqual(events, [])
         self.assertEqual(trace, {"issues_before": [], "revised": False, "issues_after": []})
         assistant._llm.invoke.assert_not_called()
+
+    def test_review_cases_do_not_raise_false_issues(self):
+        # 金额按表头或数字后的单位换算后再比
+        amount = {"total_registered_cost_yuan": 100000}
+        question = "统计登记金额，合计金额以万元展示"
+        self.assertEqual(self.check(question, "| 项目 | 合计金额（万元） |\n|---|---|\n| 合计 | 10 |", amount), [])
+        self.assertEqual(self.check(question, "| 项目 | 合计金额（万元） |\n|---|---|\n| 合计 | 12 |", amount), ["“合计金额（万元）”写的是 12，查询结果是 10。"])
+        self.assertEqual(self.check(question, "总金额：10万元", amount), [])
+        self.assertEqual(self.check(question, "总金额：12万元", amount), ["“总金额”写的是 12万，查询结果是 10万。"])
+        self.assertEqual(self.check(question, "| 项目 | 合计金额（千元） |\n|---|---|\n| 合计 | 1 |", amount), [])
+        # 要前 N 个时，只要求列出 N 个
+        models = {"tool_model_count": 4, "service_by_model": [{"tool_type_name": name} for name in "ABCD"],
+                  "recommendations": [{"tool_type_name": name} for name in "AB"]}
+        self.assertEqual(self.check("从所有型号中推荐前2个型号", "| 型号 | 样本 |\n|---|---|\n| A | 3 |\n| B | 3 |", models), [])
+        self.assertTrue(self.check("从所有型号中推荐前3个型号", "| 型号 | 样本 |\n|---|---|\n| A | 3 |\n| B | 3 |", models))
+        # "更换过的刀位"是全集的子集，算不准就不查列全
+        positions = {"matched_position_count": 2, "top_positions": [
+            {"cutter_position_no": "S1L", "replacement_count": 1}, {"cutter_position_no": "S2L", "replacement_count": 0}]}
+        self.assertEqual(self.check("列出全部更换过的刀位及更换数", "| 刀位 | 更换数 |\n|---|---|\n| S1L | 1 |", positions), [])
+        # 逐家用文字写清楚也算逐家列出
+        prices = {"manufacturer_prices": [{"manufacturer": "甲厂"}, {"manufacturer": "模拟厂家07·峻泽"}]}
+        question = "请逐家用一句话说明新刀报价，不要表格"
+        self.assertEqual(self.check(question, "甲厂新刀报价100元。模拟厂家07·峻泽新刀报价200元。", prices), [])
+        self.assertEqual(self.check(question, "甲厂新刀报价100元。模拟厂家07·峻泽也有报价。", prices), ["没有逐家列出：模拟厂家07·峻泽。"])
+        # 各组内分别排序时按组检查
+        grouped = "| 型号 | 厂家 | 每环报价 |\n|---|---|---|\n| A | 甲 | 1 |\n| A | 乙 | 2 |\n| B | 甲 | 0.5 |\n| B | 乙 | 1.5 |"
+        question = "各型号内的厂家分别按每环报价从低到高排序"
+        self.assertEqual(self.check(question, grouped, PRICES), [])
+        self.assertTrue(self.check(question, grouped.replace("| 0.5 |", "| 9 |"), PRICES))
+        self.assertTrue(self.check("按每环报价从低到高排序", grouped, PRICES))
+
+    def test_generated_table_only_covers_quote_sources(self):
+        tools = [{"result": {**PRICES, "new_tool_quotes": [{"manufacturer": "丁厂"}],
+                            "service_by_install_manufacturer": [{"manufacturer": "丙厂"}]}}]
+        requirements = answer_requirements(QUESTION, {}, tools, ["manufacturer_prices"])
+        self.assertEqual(check_final_answer(QUESTION, "", requirements, tools), ["没有逐家列出：丙厂。"])
+
+    def test_generated_table_refetches_and_deduplicates_business_params_and_rows(self):
+        assistant = self.assistant()
+        params = {"project_id": "test-project", "tool_type": "DISC", "ring_range": [1, 100], "stratum_types": ["CLAY_SAND"],
+                  "min_samples": 5, "max_unit_price": 500, "sort_by": "service", "top_n": 1}
+        calls = [{"tool": "tool_recommend_tools", "args": {**params, "page": page, "page_size": 1},
+                  "result": json.dumps({"recommendations": RECOMMENDATIONS["recommendations"][:1]})} for page in (1, 2)]
+        calls.append({**calls[0], "args": {**params, "tool_type": "SCRAPER"}})
+        with patch("application.ai_assistant.llm_service.recommend_tools", return_value=json.dumps(RECOMMENDATIONS)) as tool:
+            events, trace = self.revise(assistant, "跨厂家价格区间", calls)
+        self.assertEqual(tool.call_count, 2)
+        self.assertEqual(json.loads(tool.call_args_list[0].args[0]), {**params, "top_n": 50})
+        self.assertEqual([e["type"] for e in events], ["answer"])
+        self.assertEqual(trace, {"generated_tables": ["manufacturer_prices"], "issues_before": [], "revised": False, "issues_after": []})
+        self.assertEqual(events[0]["content"].count("| 型号A |"), 2)
+        self.assertIn("| 型号B | 丙厂 | — | 300.00 | —（0） | — |", events[0]["content"])
+        self.assertIn("| 型号C | 丁厂 | — | 400.00 | 20（2） | 20.00 |", events[0]["content"])
+        assistant._llm.invoke.assert_not_called()
+        with patch("application.ai_assistant.llm_service.recommend_tools") as tool:
+            unbound = [{**calls[0], "args": {"tool_type": "DISC"}}]  # 拿不到项目时不附表，免得查成全部项目
+            for question, tools in (("型号报价区间", calls), (QUESTION, [{**calls[0], "result": '{"error": "failed"}'}]), (QUESTION, []), (QUESTION, unbound)):
+                self.assertEqual(assistant._manufacturer_price_table(question, {}, tools), "")
+            tool.assert_not_called()
+
+    async def test_generated_table_sync_stream_store_without_revision(self):
+        for stream in (False, True):
+            data = {**RECOMMENDATIONS, "criteria": {"project_id": "scoped-project"}}
+            assistant = self.assistant("跨厂家区间100–200", data, "tool_recommend_tools")
+            with patch("application.ai_assistant.llm_service.recommend_tools", return_value=json.dumps(data)) as fetch:
+                if stream:
+                    events = [e async for e in assistant.chat_stream(QUESTION, {"user_id": 1, "route_mode": "agent"})]
+                    answers = [e["content"] for e in events if e["type"] == "answer"]
+                    self.assertEqual(len(answers), 1)
+                    self.assertNotIn("revising", [e.get("stage") for e in events])
+                    answer, trace = answers[0], events[-1]["answer_check"]
+                else:
+                    result = assistant.chat(QUESTION, {"user_id": 1, "route_mode": "agent"})
+                    self.assertTrue(result["success"], result)
+                    answer, trace = result["answer"], result["answer_check"]
+            self.assertEqual(json.loads(fetch.call_args.args[0])["project_id"], "scoped-project")
+            self.assertIn("### 各厂家新刀报价（系统按查询结果生成）", answer)
+            self.assertNotIn("回答核对", answer)
+            self.assertEqual(trace["generated_tables"], ["manufacturer_prices"])
+            self.assertEqual(assistant._store_turn_and_summarize.call_args.args[2], answer)
+            assistant._llm.invoke.assert_not_called()
+
+    def test_other_issue_revision_excludes_table_and_keeps_it_before_note(self):
+        assistant = self.assistant()
+        assistant._llm.invoke.return_value = AIMessage(content="更换数：9")
+        tools = [{"tool": "tool_recommend_tools", "args": {}, "result": json.dumps(RECOMMENDATIONS)},
+                 {"result": {"replaced_count": 4}}]
+        trace = {}
+        with patch("application.ai_assistant.llm_service.recommend_tools", return_value=json.dumps(RECOMMENDATIONS)):
+            events = list(assistant._revise_agent_answer(QUESTION + "，更换数", "更换数：9", {}, tools, trace, project_id="p1"))
+        self.assertEqual([e.get("stage", e["type"]) for e in events], ["revising", "answer", "done"])
+        self.assertNotIn("没有逐家列出", str(trace))
+        self.assertNotIn("系统按查询结果生成", str(assistant._llm.invoke.call_args.args[0]))
+        self.assertLess(events[1]["content"].index("系统按查询结果生成"), events[1]["content"].index("### 回答核对"))
 
     def test_remaining_issues_keep_better_version_and_annotate(self):
         partial = GOOD.replace("乙厂", "甲厂")

@@ -77,6 +77,20 @@ class RoutingRefreshTests(SimpleTestCase):
     def params(self, tool):
         return json.loads(self.tools[tool].call_args.args[0])
 
+    def test_recommendation_vendor_table_is_conditional_and_uses_full_query(self):
+        data = {"recommendations": [{"tool_type_name": "型号A", "avg_service_rings": 10, "completed_service_count": 3,
+                "manufacturer_prices": [{"manufacturer": "甲厂", "unit_price_yuan": 100, "price_per_ring_yuan": 10}]}]}
+        self.tools['recommend_tools'].return_value = _json(data)
+        for question, expected_calls in (("推荐滚刀型号，各厂家报价按每环报价从高到低排列", 2), ("推荐滚刀型号，列出价格区间", 1)):
+            self.tools['recommend_tools'].reset_mock()
+            result = self.ask(question)
+            self.assertEqual(result['rule_branch'], 'tool_recommendation')
+            self.assertEqual(self.tools['recommend_tools'].call_count, expected_calls)
+            self.assertEqual('系统按查询结果生成' in result['answer'], expected_calls == 2)
+            if expected_calls == 2:
+                self.assertEqual(self.params('recommend_tools')['top_n'], 50)
+                self.assertLess(result['answer'].index('### 价格参考'), result['answer'].index('### 各厂家新刀报价'))
+
     def test_first_match_for_corrected_question_families(self):
         cases = [
             ('对比前后阶段换刀频率和异常磨损变化', 'change_trend'),
@@ -166,6 +180,12 @@ class RoutingRefreshTests(SimpleTestCase):
         self.assertEqual([r['rule_branch'] for r in results], ['tool_mileage', 'tool_mileage'])
         self.assertEqual([json.loads(c.args[0])['cutter_position_no'] for c in query.call_args_list], ['S1L', 'S2L'])
         self.tools['query_tool_change_data'].assert_not_called()
+
+    def test_complete_new_question_after_mileage_switches_intent(self):
+        with patch('application.ai_assistant.llm_service.query_tool_mileage', return_value=_json({'types': []})) as query:
+            results = self.chat_pair('查询 S1L 刀位的里程', '按厂家对比刀具性能')
+        self.assertEqual(query.call_count, 1)
+        self.assertNotEqual(results[1]['rule_branch'], 'tool_mileage')
 
     def test_sort_followup_keeps_recommendation_and_type(self):
         for followup in ('改成按每环报价从低到高排序', '按每环报价从低到高排序'):

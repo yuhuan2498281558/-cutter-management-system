@@ -57,7 +57,9 @@ from .tool_contracts import (
 from .memory_service import MemoryService, MemorySnapshot
 from .summary_worker import schedule_summary
 from .answer_reporting import (render_report, render_abnormal_cause, display, number, percent,
-                               requested_sections, opening_positions, opening_means)
+                               requested_sections, opening_positions, opening_means,
+                               wants_manufacturer_prices, manufacturer_price_order, manufacturer_price_table,
+                               GROUPED_SORT)
 from application.shield.stratum_ratios import STRATUM_LABELS
 from asgiref.sync import sync_to_async
 from contextlib import aclosing
@@ -545,7 +547,7 @@ def tool_recommend_tools(
     max_unit_price: 单价上限（元），不限价传 0。
     top_n: 返回条数，默认5。
     sort_by: service 默认按平均服役环数排序；要求每环报价升序时必须传 price_per_ring，由代码按型号最低每环报价排好。
-    逐厂家报价用 manufacturer_prices（manufacturer、unit_price_yuan、price_per_ring_yuan）；不要用跨厂家区间代替逐家金额。
+    要逐家报价时，系统会按 manufacturer_prices 生成完整的逐家报价表附在回答后面；回答里不要再逐家抄写报价，可以引用最低价或个别厂家的价格。
     """
     return agent_view(recommend_tools(_to_json({
         "stratum_types": stratum_types,
@@ -1500,11 +1502,16 @@ class ToolAssistant:
     def _is_control_followup(self, query: str) -> bool:
         if not re.match(r"\s*(?:那|改成|换成|改看|切换到|按|只看|只列|继续|同样|相同)", query):
             return False
-        text = re.sub(r"按(?:最低)?(?:每环报价|平均服役环数|异常观测数|异常数|更换次数|更换数|报价|单价)(?:折算)?(?:从低到高|从高到低|升序|降序)?(?:排序|排列)?", "", query)
+        text = re.sub(r"按(?:最低)?(?:每环报价|平均服役环数|异常观测数|异常数|异常|更换次数|更换数|更换|报价|单价)(?:折算)?(?:从低到高|从高到低|升序|降序)?(?:排序|排列)?", "", query)
         text = re.sub(rf"(?:单价|报价|价格)(?:上限|不超过|不高于|低于|小于)\s*{_QUERY_NUMBER}(?:万)?元?", "", text)
         text = re.sub(rf"(?:最少|至少)(?:完成服役)?样本\s*{_QUERY_NUMBER}把?", "", text)
-        # 排序指标和约束值不是新问题，其余业务指标仍允许切换分析意图。
-        return not re.search(r"换刀|更换|观测|磨损|异常|寿命|服役|里程|报价|价格|金额|费用|成本|地层|占比|检查|返修|反馈|报废|掘进|开仓|推荐|选型|库存|原因|效率|数据|编码|轨迹|数量|样本", text)
+        # 白名单：去掉排序、约束、对象（刀位、刀型、环段、数量）和语气词后什么都不剩，才算只改条件的追问。
+        text = re.sub(rf"(?:最近\s*)?(?:第\s*)?{_QUERY_NUMBER}\s*(?:[-–—~～至到]\s*{_QUERY_NUMBER}\s*)?(?:环|次(?:开仓)?)", "", text)
+        text = re.sub(rf"前\s*{_QUERY_NUMBER}\s*(?:个|名|种|家)?", "", text)
+        text = re.sub(r"(?<![A-Za-z0-9])(?:S\d{1,2}[LR]|80[AB]|Y\d|\d{1,2})(?![A-Za-z0-9])\s*号?", "", text, flags=re.I)
+        text = re.sub(r"全部刀具|所有刀具|滚刀|刮刀|撕裂刀|中心刀", "", text)
+        text = re.sub(r"那|呢|吧|啊|改成|换成|改看|切换到|只看|只列|继续|同样|相同|一下|看看|再|也|的|刀位|环段|[，。,.？?！!、和与及\s]", "", text)
+        return not text
 
     def _effective_followup_query(self, query: str, snapshot: MemorySnapshot, context: dict) -> str:
         """Carry a whitelisted rule intent and controls, never old filter text."""
@@ -2243,7 +2250,13 @@ class ToolAssistant:
             return "RIPPER"
         return ""
 
-    def _format_recommend_tools_answer(self, raw: str, scope: dict = None) -> str:
+    def _format_recommend_tools_answer(self, raw: str, scope: dict = None, question="", query_spec=None) -> str:
+        if wants_manufacturer_prices(question):
+            params = {k: v for k, v in (scope or {}).items() if k not in ("page", "page_size")}
+            data = json.loads(recommend_tools(_to_json({**params, "top_n": 50})))
+            scope = {**(scope or {}), "question": question,
+                     "manufacturer_price_recommendations": data.get("recommendations", []) + data.get("insufficient_evidence", []),
+                     "manufacturer_price_order": manufacturer_price_order(question, query_spec)}
         return render_report("recommendation", json.loads(raw), self._answer_table, scope)
 
     def _format_tool_performance_answer(self, raw: str, scope: dict = None) -> str:
@@ -2853,7 +2866,7 @@ class ToolAssistant:
         if intent == 'tool_recommendation':
             params = self._recommendation_params(user_query, context)
             raw = recommend_tools(_to_json(params))
-            answer = self._format_recommend_tools_answer(raw, params)
+            answer = self._format_recommend_tools_answer(raw, params, user_query, (context or {}).get("query_spec"))
             if "刀位" in user_query:
                 answer += "\n\n关注刀位：暂无，当前型号推荐结果没有返回型号对应的刀位清单。"
             if "消耗" in user_query or "备刀" in user_query:
@@ -3349,18 +3362,49 @@ class ToolAssistant:
             raise RuntimeError('分析达到执行上限，尚未生成完整结论，请缩小范围后重试')
         return answer
 
-    def _revise_agent_answer(self, question, answer, query_spec, tool_results, trace, config=None):
+    def _manufacturer_price_table(self, question, query_spec, tool_results, project_id=""):
+        if not wants_manufacturer_prices(question):
+            return ""
+        recommendations, seen = [], set()
+        for call in tool_results:
+            if call.get("tool") not in ("tool_recommend_tools", "recommend_tools") or not self._tool_observation_succeeded(call["result"]):
+                continue
+            params = {k: v for k, v in call["args"].items() if k not in ("page", "page_size")}
+            observation = getattr(call["result"], "content", call["result"])
+            data = json.loads(observation) if isinstance(observation, str) else observation
+            # 模型调用结束后项目绑定已释放，用本轮绑定的项目重查；拿不到项目时不附表，免得查成全部项目。
+            params["project_id"] = project_id or data.get("criteria", {}).get("project_id") or params.get("project_id")
+            if not params["project_id"]:
+                continue
+            params["top_n"] = 50
+            key = json.dumps(params, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                continue
+            seen.add(key)
+            data = json.loads(recommend_tools(_to_json(params)))
+            recommendations.extend(data.get("recommendations", []) + data.get("insufficient_evidence", []))
+        return "\n".join(manufacturer_price_table(recommendations, manufacturer_price_order(question, query_spec),
+                                                    grouped=bool(GROUPED_SORT.search(question))))
+
+    def _revise_agent_answer(self, question, answer, query_spec, tool_results, trace, config=None, project_id=""):
+        table = self._manufacturer_price_table(question, query_spec, tool_results, project_id)
+        suffix = "\n\n" + table if table else ""
+        if table:
+            trace["generated_tables"] = ["manufacturer_prices"]
         if _flag_enabled("AI_ABLATE_ANSWER_CHECK"):
+            if table:
+                yield {"type": "answer", "content": answer + suffix}
             return
-        requirements = answer_requirements(question, query_spec, tool_results)
-        issues = check_final_answer(question, answer, requirements, tool_results)
+        requirements = answer_requirements(question, query_spec, tool_results, trace.get("generated_tables", ()))
+        issues = check_final_answer(question, answer + suffix, requirements, tool_results)
         trace.update(issues_before=issues, revised=False, issues_after=issues)
         if issues:
             yield {"type": "status", "stage": "revising"}
             instruction = "上一版回答有以下问题，请只改这些地方，其余内容保持不变，数字一律以查询结果为准：\n"
             revision_issues = []
             for issue in issues:
-                hint = "逐家的内容请用带“厂家”列的表格列出，每个厂家一行。" if issue.startswith("没有逐家列出：") else ""
+                table_ok = not re.search(r"不要表格|不用表格|别用表格|无需表格", question)
+                hint = "逐家的内容请用带“厂家”列的表格列出，每个厂家一行。" if issue.startswith("没有逐家列出：") and table_ok else ""
                 if re.search(r"只列出 \d+ 个，查询结果共有 \d+ 个。", issue):
                     hint = "请列全，或在表前写明只列出了前几个。"
                 revision_issues.append("- " + issue + hint)
@@ -3390,14 +3434,17 @@ class ToolAssistant:
             else:
                 if isinstance(candidate, str) and candidate.strip():
                     trace["revised"] = True
-                    after = check_final_answer(question, candidate, requirements, tool_results)
+                    after = check_final_answer(question, candidate + suffix, requirements, tool_results)
                     if len(after) <= len(issues):
                         answer, issues = candidate, after
             trace["issues_after"] = issues
-            if issues:
-                answer += "\n\n### 回答核对\n\n以下几处没有答全或与查询结果不一致，以查询结果为准：\n"
-                answer += "\n".join("- " + issue for issue in issues)
+        answer += suffix
+        if issues:
+            answer += "\n\n### 回答核对\n\n以下几处没有答全或与查询结果不一致，以查询结果为准：\n"
+            answer += "\n".join("- " + issue for issue in issues)
+        if table or trace["issues_before"]:
             yield {"type": "answer", "content": answer}
+        if trace["issues_before"]:
             yield {"type": "status", "stage": "done"}
         logger.info("AI answer_check=%s", json.dumps(trace, ensure_ascii=False))
 
@@ -3555,6 +3602,7 @@ class ToolAssistant:
                              "result": observation} for action, observation in result.get("intermediate_steps", [])]
             for event in self._revise_agent_answer(
                 merged_query, answer, working_context["query_spec"], tool_results, answer_check, config,
+                working_context.get("project_id", ""),
             ):
                 if event["type"] == "answer":
                     answer = event["content"]
@@ -3722,12 +3770,13 @@ class ToolAssistant:
                                  "result": observation} for action, observation in final_result.get("intermediate_steps", [])]
                 revision = self._revise_agent_answer(
                     user_query, answer, working_context["query_spec"], tool_results, answer_check,
+                    project_id=working_context.get("project_id", ""),
                 )
                 while (event := await sync_to_async(next)(revision, None)) is not None:
                     if event["type"] == "answer":
                         answer = event["content"]
                     yield event
-                if not answer_check.get("issues_before") and answer != ''.join(full_answer):
+                if not answer_check.get("issues_before") and not answer_check.get("generated_tables") and answer != ''.join(full_answer):
                     # Model rounds before further tool calls are provisional;
                     # only the executor's final answer is persisted or restored.
                     yield {"type": "answer", "content": answer}

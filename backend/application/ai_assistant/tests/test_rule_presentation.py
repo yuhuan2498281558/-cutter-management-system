@@ -3,12 +3,32 @@ import json
 from django.test import SimpleTestCase
 
 from application.ai_assistant.llm_service import ToolAssistant, _with_analysis_payload
-from application.ai_assistant.answer_reporting import render_report, requested_sections
+from application.ai_assistant.answer_reporting import render_report, requested_sections, manufacturer_price_table, wants_manufacturer_prices, manufacturer_price_order
 
 
 class RulePresentationTests(SimpleTestCase):
     def setUp(self):
         self.assistant = ToolAssistant.__new__(ToolAssistant)
+
+    def test_manufacturer_table_conditions_order_and_format(self):
+        for word in ("逐家", "各厂家", "按厂家", "每家"):
+            for price in ("报价", "价格", "单价"):
+                self.assertTrue(wants_manufacturer_prices(word + price))
+        for question in ("各厂家服役表现", "型号报价区间", "按每环报价排序"):
+            self.assertFalse(wants_manufacturer_prices(question))
+        items = [{"tool_type_name": model, "avg_service_rings": 69.9, "completed_service_count": 323,
+                  "manufacturer_prices": [{"manufacturer": vendor, "unit_price_yuan": price, "price_per_ring_yuan": ring}
+                                          for vendor, price, ring in quotes]}
+                 for model, quotes in (("B", [("甲", 200, 2), ("乙", 100, None)]), ("A", [("丙", 300, 1)]))]
+        for order, expected in ((None, ["乙", "甲", "丙"]), ("asc", ["丙", "甲", "乙"]), ("desc", ["甲", "丙", "乙"])):
+            lines = manufacturer_price_table(items + items, order)
+            self.assertEqual([line.split(" | ")[1] for line in lines[4:-2]], expected)
+            self.assertIn("69.9（323）", "\n".join(lines))
+            self.assertEqual(lines[0], "### 各厂家新刀报价（系统按查询结果生成）")
+        for phrase, order in (("从低到高", "asc"), ("从高到低", "desc")):
+            self.assertEqual(manufacturer_price_order("按每环报价" + phrase), order)
+        self.assertEqual(manufacturer_price_order("各厂家报价", {"sort_by": "price_per_ring"}), "asc")
+        self.assertIsNone(manufacturer_price_order("各厂家报价"))
 
     def test_common_and_recent_summary_use_same_table_and_preserve_zero(self):
         data = {'total_records': 2, 'replaced_count': 0, 'replacement_rate': '0.0%',
