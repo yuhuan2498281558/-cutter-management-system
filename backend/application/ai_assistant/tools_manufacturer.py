@@ -68,7 +68,7 @@ def compare_manufacturer_service(params_str: str) -> str:
     # 在役没有拆下环，不套用拆下环段；按同项目、同机器、同刀位的末次安装判断。
     current_params = {key: value for key, value in params.items() if key != 'ring_range'}
     history = list(_visible_records(_filtered_details(current_params).filter(is_replaced=True)
-                                    .select_related('warehouse'), new_tool_record=('tool_instance',)))
+                                    .select_related('warehouse'), new_tool_record=()))
     latest = {}
     for row in sorted(history, key=lambda r: (r._tool_ring, r.warehouse.open_time, r.pk)):
         key = (row.warehouse.project_id, row.warehouse.shield_model_id, normalize_cutter_position_no(row.cutter_position_no))

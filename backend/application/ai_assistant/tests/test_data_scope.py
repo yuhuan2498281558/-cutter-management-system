@@ -21,8 +21,8 @@ from application.ai_assistant.tools_repairs import query_old_tool_repairs
 from application.shield.analysis_metrics import ANALYSIS_REQUEST, scoped_queryset
 from application.shield.analysis_views import AnalysisViewSet
 from application.shield.models import (
-    CutterPositionInfo, OldToolRecord, ProjectInfo, ShieldMachineBasicInfo,
-    ShieldTunnelingData, StratumBasicInfo, ToolChangeDetail, WarehouseOpeningBasicInfo,
+    CutterPositionInfo, NewToolRecord, OldToolRecord, ProjectInfo, ShieldMachineBasicInfo,
+    ShieldTunnelingData, StratumBasicInfo, ToolChangeDetail, ToolInstance, WarehouseOpeningBasicInfo,
 )
 from dvadmin.system.models import Dept, Menu, MenuButton, Role, RoleMenuButtonPermission, Users
 from dvadmin.utils.filters import DataLevelPermissionMargeFilter
@@ -346,6 +346,31 @@ class DataScopeTests(TestCase):
             ANALYSIS_REQUEST.reset(scope_token)
         self.assertNotIn("98765", result)
         self.assertEqual(json.loads(result)["results"][0]["resolved_by"], "not_found")
+
+    def test_hidden_tool_instance_is_not_reached_through_visible_records(self):
+        # 新刀、旧刀记录都看得到，关联的刀具实例属于另一部门：不给实例编号和状态
+        hidden = ToolInstance.objects.create(tool_uid="HIDDEN-UID", display_tool_no="HIDDEN-NO",
+                                             status="SCRAPPED", dept_belong_id=self.other_dept.pk)
+        detail = OldToolRecord.objects.get(old_tool_number="OLD-1").tool_change_detail
+        ToolChangeDetail.objects.filter(pk=detail.pk).update(tool_number="T-1")
+        NewToolRecord.objects.create(tool_change_detail=detail, tool_instance=hidden, dept_belong_id=self.dept.pk)
+        OldToolRecord.objects.filter(old_tool_number="OLD-1").update(confirmed_tool_instance=hidden)
+        calls = (
+            (tools.calculate_tool_performance, {"project_id": self.project.project_id, "tool_numbers": ["T-1"]}),
+            (trace_tool_lifecycle, {"project_id": self.project.project_id, "tool_ids": ["OLD-1", "T-1"]}),
+        )
+        for call, params in calls:
+            self.assertIn("SCRAPPED", call(json.dumps(params)))
+        scope_token = ANALYSIS_REQUEST.set(views._analysis_scope_request(self.user))
+        try:
+            results = [call(json.dumps(params)) for call, params in calls]
+        finally:
+            ANALYSIS_REQUEST.reset(scope_token)
+        for result in results:
+            self.assertNotIn("SCRAPPED", result)
+            self.assertNotIn("HIDDEN", result)
+        self.assertEqual(json.loads(results[0])["tools"][0]["tool_number"], "T-1")
+        self.assertEqual([item["instance"] for item in json.loads(results[1])["results"]], [None, None])
 
     def test_scope_is_restored_after_failure_and_stream_close(self):
         context = views._context_for_user(self.user, {"project_id": self.project.project_id, "route_mode": "rule"})

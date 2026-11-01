@@ -54,12 +54,14 @@ def _active_detail_query(params=None, *, checked_only=True):
     return query
 
 
-def _visible_records(query, **related):
-    """明细带出的新刀、旧刀记录各按权限范围过滤，看不到的当作没有，与数据分析页一致。"""
+def _visible_records(query, **instance_fields):
+    """明细带出的新刀、旧刀记录及其刀具实例各按权限范围过滤，看不到的当作没有，与数据分析页一致。"""
     models = {'new_tool_record': NewToolRecord, 'old_tool_record': OldToolRecord}
+    instances = scoped_queryset(ToolInstance.objects.select_related('tool_info'))
     return query.prefetch_related(*(
-        Prefetch(name, queryset=scoped_queryset(models[name].objects.select_related(*paths)))
-        for name, paths in related.items()
+        Prefetch(name, queryset=scoped_queryset(models[name].objects.all()).prefetch_related(
+            *(Prefetch(field, queryset=instances) for field in fields)))
+        for name, fields in instance_fields.items()
     ))
 
 # 地层类型中文映射（与系统字典数据保持一致）
@@ -796,7 +798,7 @@ def calculate_tool_performance(params_str: str) -> str:
 
         rows_qs = _visible_records(_active_detail_query(params).filter(
             tool_number__in=tool_numbers
-        ).select_related('warehouse'), new_tool_record=('tool_instance__tool_info',))
+        ).select_related('warehouse'), new_tool_record=('tool_instance',))
         if project_id:
             rows_qs = rows_qs.filter(warehouse__project__project_id=project_id)
 
@@ -827,7 +829,7 @@ def calculate_tool_performance(params_str: str) -> str:
                     install_rows = [next((r for r in rows if r.is_replaced), rows[0])]
                 for install_row in install_rows:
                     installation = getattr(install_row, 'new_tool_record', None)
-                    instance = installation.tool_instance if installation else None
+                    instance = getattr(installation, 'tool_instance', None)  # 实例看不到时为 None
                     install_inferred = installation is None
                     install_ring = int(install_row.warehouse.ring_no)
                     removal_ring, removal_record, removal_inferred = _installation_removal(
@@ -1101,6 +1103,9 @@ def recommend_tools(params_str: str) -> str:
             )
         if tool_type:
             installs = installs.filter(tool_instance__tool_parent_type=tool_type)
+        if ANALYSIS_REQUEST.get() is not None:
+            # 型号来自刀具实例，看不到实例的安装不计入
+            installs = installs.filter(tool_instance__in=scoped_queryset(ToolInstance.objects.all()))
 
         install_rows = list(installs)
         if not install_rows:

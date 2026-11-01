@@ -10,7 +10,6 @@ from application.ai_assistant.tools_repairs import _repair_payload
 from application.shield.analysis_metrics import confirmed_service_segments, scoped_queryset
 from application.shield.cutter_position_scope import normalize_cutter_position_no
 from application.shield.models import OldToolPhoto, ToolInstance
-from application.shield.tool_identity import resolve_removed_tool_identity
 
 
 def _event_key(row):
@@ -107,8 +106,8 @@ def trace_tool_lifecycle(params_str: str) -> str:
 
     rows = list(_visible_records(
         _filtered_details(params).select_related('warehouse'),
-        new_tool_record=('tool_instance__tool_info',),
-        old_tool_record=('confirmed_tool_instance__tool_info', 'suggested_tool_instance__tool_info')))
+        new_tool_record=('tool_instance',),
+        old_tool_record=('confirmed_tool_instance', 'suggested_tool_instance')))
     rows.sort(key=_event_key)
     positions, installs, removals = defaultdict(list), defaultdict(list), defaultdict(list)
     old_rows = []
@@ -151,14 +150,16 @@ def trace_tool_lifecycle(params_str: str) -> str:
                               for r in matched_old}
                 if len(identities) == 1 and None not in identities:
                     # 对齐 tool_identity：确认实例优先于建议；不把本行新刀编号当作拆下身份。
-                    instance, _ = resolve_removed_tool_identity(matched_old[0])
+                    # 实例看不到时就是 None，不能再退回未过滤的历史安装去找
+                    old = matched_old[0].old_tool_record
+                    instance = old.confirmed_tool_instance or old.suggested_tool_instance
                 elif len(identities) > 1:
                     missing.append('旧刀编号的实例关联不唯一，仅列出匹配的拆下和返修记录')
             else:
                 matched_details = [r for r in rows if r.tool_number == value]
                 if matched_details:
                     resolved = 'tool_number'
-                    new_instances = {r.new_tool_record.tool_instance_id: r.new_tool_record.tool_instance
+                    new_instances = {r.new_tool_record.tool_instance_id: getattr(r.new_tool_record, 'tool_instance', None)
                                      for r in matched_details if getattr(r, 'new_tool_record', None)}
                     if len(new_instances) == 1:
                         instance = next(iter(new_instances.values()))
