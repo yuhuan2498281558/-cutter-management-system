@@ -8,7 +8,6 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from .agent_loop import astream_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from langchain_community.chat_message_histories import SQLChatMessageHistory
 from .llm_provider import create_chat_model, get_llm_config, get_context_policy, LLMProviderError
 from .tools import (
     query_tool_change_data,
@@ -1120,21 +1119,6 @@ class ToolAssistant:
         text = response.content if hasattr(response, "content") else str(response)
         return text
 
-    @staticmethod
-    def _get_session_history(session_id: str):
-        """为每个 session_id（user_id）返回对应的持久化历史对象。
-
-        消融：AI_ABLATE_MEMORY=1 时返回进程内的一次性历史对象，等价于关闭多轮记忆，
-        每轮请求都从空历史开始。
-        """
-        if _flag_enabled("AI_ABLATE_MEMORY"):
-            from langchain_core.chat_history import InMemoryChatMessageHistory
-            return InMemoryChatMessageHistory()
-        return SQLChatMessageHistory(
-            session_id=session_id,
-            connection_string=_HISTORY_DB_URL,
-        )
-
     def _load_memory(self, user_id: str) -> MemorySnapshot:
         if _flag_enabled("AI_ABLATE_MEMORY"):
             return MemorySnapshot(scope_key=self.memory.scope_key(user_id), backend="ablate")
@@ -1764,33 +1748,6 @@ class ToolAssistant:
             parts.append("【项目数据概况】" + "，".join(snap_parts))
 
         return "【当前上下文】" + "；".join(parts) if parts else None
-
-    # AI 追问参数的特征词
-    _ASKING_PARAMS_KEYWORDS = (
-        "请提供", "请指定", "请告知", "请输入", "请问", "您可以",
-        "需要您", "能否提供", "请给出", "请确认",
-    )
-
-    def _is_asking_for_params(self, ai_message: str) -> bool:
-        return any(kw in ai_message for kw in self._ASKING_PARAMS_KEYWORDS)
-
-    def _try_merge_with_previous_question(self, user_query: str, user_id: str) -> str:
-        """如果上一条 AI 消息是在追问参数，把原始问题和用户补充合并"""
-        if _flag_enabled("AI_ABLATE_MEMORY"):
-            return user_query
-        try:
-            history = self._get_session_history(user_id).messages
-            if len(history) < 2:
-                return user_query
-            last_ai = history[-1]
-            last_human = history[-2]
-            from langchain_core.messages import AIMessage as AI, HumanMessage as HM
-            if isinstance(last_ai, AI) and isinstance(last_human, HM):
-                if self._is_asking_for_params(last_ai.content):
-                    return f"{last_human.content}\n补充信息：{user_query}"
-        except Exception:
-            pass
-        return user_query
 
     # 触发工具调用的关键词
     _DATA_QUERY_KEYWORDS = (

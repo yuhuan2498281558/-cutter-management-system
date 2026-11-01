@@ -6,7 +6,6 @@ import json
 import logging
 from uuid import uuid4
 
-from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_core.messages import (
     AIMessage, BaseMessageChunk, HumanMessage, ToolMessage,
     message_chunk_to_message, message_to_dict, messages_from_dict,
@@ -14,6 +13,7 @@ from langchain_core.messages import (
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text, UniqueConstraint, select
 from sqlalchemy.schema import CreateTable
 
+from .agent_loop import tool_messages
 from .token_estimation import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ class ContextEventStore:
 
     @staticmethod
     def turn_messages(enriched_input, answer, steps=()):
-        messages = [HumanMessage(content=enriched_input), *format_to_tool_messages(steps), AIMessage(content=answer)]
+        messages = [HumanMessage(content=enriched_input), *tool_messages(steps), AIMessage(content=answer)]
         return [message_chunk_to_message(item) if isinstance(item, BaseMessageChunk) else item for item in messages]
 
     @classmethod

@@ -10,17 +10,25 @@ from unittest.mock import AsyncMock, Mock, call, patch
 from asgiref.sync import async_to_sync
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.agents.output_parsers.tools import ToolAgentAction
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.agents import AgentAction, AgentFinish
+from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, message_to_dict
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 
-from application.ai_assistant.agent_loop import astream_agent, invoke_agent
+from application.ai_assistant.agent_loop import ToolAgentAction, astream_agent, invoke_agent, parse_tool_calls, tool_messages
 from application.ai_assistant.context_budget import ContextBudgetPolicy, GuardedChatModel
 from application.ai_assistant.llm_service import ToolAssistant, tool_query_tool_change_data
 from application.ai_assistant.memory_service import MemorySnapshot
+
+
+# 固定期望取自 LangChain 0.3.25 的实际输出，包含日志末尾的空格。
+_PARSING_ERROR_LOG = (
+    "Could not parse tool input: {'name': 'lookup', 'arguments': 'invalid JSON'} because "
+    "the `arguments` is not valid JSON.\nFor troubleshooting, visit: "
+    "https://python.langchain.com/docs/troubleshooting/errors/OUTPUT_PARSING_FAILURE "
+)
 
 
 class _Model(Runnable):
@@ -92,20 +100,89 @@ async def _collect(*args, **kwargs):
 
 
 class AgentLoopTests(SimpleTestCase):
+    def test_parse_final_preserves_content_and_log(self):
+        for content in ("完成", [{"type": "text", "text": "完成"}]):
+            with self.subTest(content=content):
+                self.assertEqual(parse_tool_calls(AIMessage(content=content)),
+                                 AgentFinish(return_values={"output": content}, log=str(content)))
+
+    def test_parse_tools_preserves_order_arguments_and_message_log(self):
+        message = AIMessage(content="正在查询", tool_calls=[
+            {"name": "lookup", "args": {"value": 1}, "id": "call-1"},
+            {"name": "legacy", "args": {"__arg1": "刀具", "ignored": 2}, "id": "call-2"},
+        ])
+        self.assertEqual(parse_tool_calls(message), [
+            ToolAgentAction(tool="lookup", tool_input={"value": 1}, tool_call_id="call-1",
+                            log="\nInvoking: `lookup` with `{'value': 1}`\nresponded: 正在查询\n\n",
+                            message_log=[message]),
+            ToolAgentAction(tool="legacy", tool_input="刀具", tool_call_id="call-2",
+                            log="\nInvoking: `legacy` with `刀具`\nresponded: 正在查询\n\n",
+                            message_log=[message]),
+        ])
+
+    def test_parse_raw_tool_calls_and_invalid_json(self):
+        for arguments, expected_input, expected_log in (
+            ('{"value": 2}', {"value": 2}, "\nInvoking: `lookup` with `{'value': 2}`\n\n\n"),
+            ("", {}, "\nInvoking: `lookup` with `{}`\n\n\n"),
+        ):
+            with self.subTest(arguments=arguments):
+                message = AIMessage(content="", additional_kwargs={"tool_calls": [{
+                    "id": "raw", "function": {"name": "lookup", "arguments": arguments},
+                }]}).model_copy(update={"tool_calls": []})
+                self.assertEqual(parse_tool_calls(message), [ToolAgentAction(
+                    tool="lookup", tool_input=expected_input, tool_call_id="raw",
+                    log=expected_log, message_log=[message],
+                )])
+        malformed = AIMessage(content="", additional_kwargs={"tool_calls": [{
+            "id": "bad", "function": {"name": "lookup", "arguments": "invalid JSON"},
+        }]})
+        with self.assertRaises(OutputParserException) as raised:
+            parse_tool_calls(malformed)
+        self.assertEqual(str(raised.exception), _PARSING_ERROR_LOG)
+        self.assertEqual((raised.exception.send_to_llm, raised.exception.observation, raised.exception.llm_output),
+                         (False, None, None))
+
+    def test_tool_messages_preserves_batches_serialization_and_error_replay(self):
+        first, second = _tool_message(1, 2), _tool_message(3)
+        actions, next_actions = parse_tool_calls(first), parse_tool_calls(second)
+        steps = [(actions[0], "查到1条"), (actions[1], {"刀具": "滚刀", "数量": 2}),
+                 (actions[0], "查到1条"), (next_actions[0], 1 + 2j),
+                 (AgentAction("_Exception", "Invalid or incomplete response", _PARSING_ERROR_LOG),
+                  "Invalid or incomplete response")]
+        expected = [
+            first,
+            ToolMessage(content="查到1条", tool_call_id="call-1", additional_kwargs={"name": "lookup"}),
+            ToolMessage(content='{"刀具": "滚刀", "数量": 2}', tool_call_id="call-2",
+                        additional_kwargs={"name": "lookup"}),
+            second,
+            ToolMessage(content="(1+2j)", tool_call_id="call-3", additional_kwargs={"name": "lookup"}),
+            AIMessage(content=_PARSING_ERROR_LOG),
+        ]
+        self.assertEqual([message_to_dict(message) for message in tool_messages(steps)],
+                         [message_to_dict(message) for message in expected])
+
     def test_sync_and_stream_match_reference_messages_and_evidence(self):
         responses = [[_tool_message(1)], [AIMessageChunk(content="共"), AIMessageChunk(content="1条。")]]
         model, *args = _setup(responses)
         result = invoke_agent(*args)
         streamed_model, *streamed_args = _setup(responses)
         events = async_to_sync(_collect)(*streamed_args)
-        reference_model, guard, prompt, tools, inputs = _setup(responses)
-        executor = AgentExecutor(agent=create_tool_calling_agent(guard, tools, prompt), tools=tools,
-                                 return_intermediate_steps=True, handle_parsing_errors=True)
-        reference = async_to_sync(executor.ainvoke)(inputs)
-        self.assertEqual(result, {key: reference[key] for key in ("output", "intermediate_steps")})
+        expected_action = ToolAgentAction(
+            tool="lookup", tool_input={"value": 1}, tool_call_id="call-1",
+            log="\nInvoking: `lookup` with `{'value': 1}`\n\n\n",
+            message_log=[AIMessageChunk(content="", tool_calls=[
+                {"name": "lookup", "args": {"value": 1}, "id": "call-1"},
+            ])],
+        )
+        expected_messages = [SystemMessage(content="按工具结果回答。"), HumanMessage(content="查询")]
+        expected_calls = [expected_messages, [*expected_messages, *expected_action.message_log,
+                          ToolMessage(content='{"value": 1}', tool_call_id="call-1",
+                                      additional_kwargs={"name": "lookup"})]]
+        self.assertEqual(result, {"output": "共1条。", "intermediate_steps": [(expected_action, {"value": 1})]})
         self.assertEqual(result, {key: events[-1][key] for key in result})
-        for other in (streamed_model, reference_model):
-            self.assertEqual([item[0] for item in model.calls], [item[0] for item in other.calls])
+        for actual_model in (model, streamed_model):
+            self.assertEqual([[message_to_dict(message) for message in item[0]] for item in actual_model.calls],
+                             [[message_to_dict(message) for message in messages] for messages in expected_calls])
         action, observation = result["intermediate_steps"][0]
         self.assertIsInstance(action, ToolAgentAction)
         self.assertEqual((action.tool, action.tool_input, action.tool_call_id), ("lookup", {"value": 1}, "call-1"))
@@ -232,13 +309,15 @@ class AgentLoopTests(SimpleTestCase):
         responses = [[malformed], [AIMessage(content="已修复")]]
         model, *args = _setup(responses)
         events = await _collect(*args)
-        reference_model, guard, prompt, tools, inputs = _setup(responses)
-        executor = AgentExecutor(agent=create_tool_calling_agent(guard, tools, prompt), tools=tools,
-                                 return_intermediate_steps=True, handle_parsing_errors=True)
-        reference = await executor.ainvoke(inputs)
-        self.assertEqual(events[-1]["intermediate_steps"], reference["intermediate_steps"])
-        self.assertEqual(events[-1]["output"], reference["output"])
-        self.assertEqual(model.calls[1][0], reference_model.calls[1][0])
+        self.assertEqual(events[-1]["intermediate_steps"], [
+            (AgentAction("_Exception", "Invalid or incomplete response", _PARSING_ERROR_LOG),
+             "Invalid or incomplete response"),
+        ])
+        self.assertEqual(events[-1]["output"], "已修复")
+        expected_messages = [SystemMessage(content="按工具结果回答。"), HumanMessage(content="查询")]
+        expected_calls = [expected_messages, [*expected_messages, AIMessage(content=_PARSING_ERROR_LOG)]]
+        self.assertEqual([[message_to_dict(message) for message in item[0]] for item in model.calls],
+                         [[message_to_dict(message) for message in messages] for messages in expected_calls])
         action, observation = events[-1]["intermediate_steps"][0]
         self.assertEqual(action.tool, "_Exception")
         self.assertEqual(observation, "Invalid or incomplete response")
