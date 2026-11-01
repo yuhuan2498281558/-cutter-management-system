@@ -4,12 +4,13 @@ import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from application.ai_assistant.answer_check import answer_requirements, check_final_answer
 from application.ai_assistant.context_budget import ContextBudgetExceeded, ContextBudgetPolicy, ContextUsage, GuardedChatModel, OutputLimitExceeded, context_usage
-from application.ai_assistant.llm_service import ToolAssistant
+from application.ai_assistant.llm_service import TOOLS, ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
 
@@ -94,15 +95,14 @@ class AnswerCheckTests(SimpleTestCase):
         assistant._llm = Mock()
         assistant._llm.invoke.return_value = AIMessage(content=GOOD)
         result = {"output": answer, "intermediate_steps": [(SimpleNamespace(tool=tool, tool_input=args or {}), json.dumps(data))]}
-        assistant._invoke_with_retry = Mock(return_value=result)
 
         async def stream(*args, **kwargs):
-            yield {"event": "on_chain_start", "run_id": "root", "parent_ids": []}
-            yield {"event": "on_tool_end", "name": "tool_query_tool_cost_catalog", "data": {"output": json.dumps(data)}}
-            yield {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content=answer)}}
-            yield {"event": "on_chain_end", "run_id": "root", "data": {"output": result}}
+            yield {"type": "tool_end", "call_id": "call-1", "name": "tool_query_tool_cost_catalog", "args": {}, "observation": json.dumps(data)}
+            yield {"type": "model_text", "iteration": 2, "content": answer}
+            yield {"type": "final", **result}
 
-        assistant._get_executor_for_query = Mock(return_value=SimpleNamespace(astream_events=stream))
+        assistant._get_tools_for_query = Mock(return_value=TOOLS)
+        self.enterContext(patch('application.ai_assistant.llm_service.astream_agent', side_effect=stream))
         return assistant
 
     def revise(self, assistant, answer=BAD, tools=None):
@@ -188,7 +188,7 @@ class AnswerCheckTests(SimpleTestCase):
                     self.assertNotIn("revising", [e.get("stage") for e in events])
                     answer, trace = answers[0], events[-1]["answer_check"]
                 else:
-                    result = assistant.chat(QUESTION, {"user_id": 1, "route_mode": "agent"})
+                    result = await sync_to_async(assistant.chat)(QUESTION, {"user_id": 1, "route_mode": "agent"})
                     self.assertTrue(result["success"], result)
                     answer, trace = result["answer"], result["answer_check"]
             self.assertEqual(json.loads(fetch.call_args.args[0])["project_id"], "scoped-project")

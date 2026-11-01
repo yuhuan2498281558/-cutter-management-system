@@ -108,15 +108,21 @@ class IntegrationContractsTests(SimpleTestCase):
     def test_iteration_limit_and_multi_source_tools(self):
         assistant = _assistant()
         assistant._llm, assistant._prompt = Mock(), Mock()
-        with patch.object(service, 'create_tool_calling_agent'), patch.object(service, 'AgentExecutor') as executor:
-            assistant._create_executor(service.TOOLS)
-        self.assertEqual(executor.call_args.kwargs['max_iterations'], 10)
         assistant._ensure_agent_runtime = Mock()
-        assistant._create_executor = Mock()
         for query in ('综合返修、报价和掘进参数给出风险分析', '结合检查、地层、厂家和费用分析'):
             self.assertEqual(assistant._tool_group_for_query(query), 'all')
-            assistant._get_executor_for_query(query, project_id='TEST')
-            self.assertEqual(len(assistant._create_executor.call_args.args[0]), 22)
+            selected = assistant._get_tools_for_query(query, project_id='TEST')
+            self.assertEqual(len(selected), 22)
+        async def events(*args, **kwargs):
+            yield {'type': 'tool_end', 'name': service.TOOLS[0].name, 'observation': {'total_records': 2}}
+            yield {'type': 'final', 'output': '已查到数据。', 'intermediate_steps': [(None, {'total_records': 2})]}
+
+        with patch.object(service, 'astream_agent', side_effect=events) as invoke:
+            result = assistant.chat('综合返修、报价和掘进参数给出风险分析',
+                                    {'project_id': 'TEST', 'route_mode': 'agent'})
+        self.assertTrue(result['success'], result)
+        self.assertEqual(invoke.call_args.kwargs['max_iterations'], 10)
+        self.assertEqual(len(invoke.call_args.args[2]), 22)
 
 
 class IntegrationRoutingTests(SimpleTestCase):
@@ -301,16 +307,19 @@ class IntegrationRequestTests(SimpleTestCase):
             bound = service._bind_tools_to_project([service.tool_query_data_catalog], 'TEST')[0]
 
             async def events(*args, **kwargs):
-                yield {'event': 'on_chain_start', 'run_id': 'root', 'parent_ids': []}
                 observation = await bound.ainvoke({})
-                yield {'event': 'on_tool_end', 'name': bound.name, 'data': {'output': observation}}
-                yield {'event': 'on_chain_end', 'run_id': 'root', 'data': {'output': {
-                    'output': '已查到数据。', 'intermediate_steps': [(SimpleNamespace(tool=bound.name, tool_input={}), observation)]}}}
+                yield {'type': 'tool_end', 'call_id': 'call-1', 'name': bound.name, 'args': {}, 'observation': observation}
+                yield {'type': 'final', 'output': '已查到数据。',
+                       'intermediate_steps': [(SimpleNamespace(tool=bound.name, tool_input={}), observation)]}
 
-            assistant._get_executor_for_query = Mock(return_value=SimpleNamespace(astream_events=events))
-            with patch.object(service, 'query_data_catalog', self._traced_catalog()), patch.dict('os.environ', {'AI_TRACE_TOOL_RESULTS': '0'}):
+            assistant._get_tools_for_query = Mock(return_value=[bound])
+            with (patch.object(service, 'query_data_catalog', self._traced_catalog()),
+                  patch.object(service, 'astream_agent', side_effect=events) as stream,
+                  patch.dict('os.environ', {'AI_TRACE_TOOL_RESULTS': '0'})):
                 result = [item async for item in assistant.chat_stream('现在有哪些数据可以查', {
                     'project_id': 'TEST', 'route_mode': mode, 'focus_sources': ['cost']})]
+            if mode == 'agent':
+                self.assertEqual(stream.call_args.kwargs['max_iterations'], 10)
             self.assertEqual(result[-1]['type'], 'done', result)
             self.assertEqual(result[-1]['tool_calls'][0]['source_label'], '可查数据')
             self.assertEqual(result[-1]['tool_calls'][0]['scope'], {'project_id': 'TEST'})

@@ -1,11 +1,11 @@
 """A successful call only repairs the failed request it can be linked to."""
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
 from langchain_core.messages import AIMessage
 
-from application.ai_assistant.llm_service import ToolAssistant
+from application.ai_assistant.llm_service import TOOLS, ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
 
@@ -108,24 +108,24 @@ class ToolRecoveryTests(SimpleTestCase):
                 candidate = {**valid, 'tool_type': 'DISC'} if variant == 'different_type' else valid
 
                 async def events(*args, **kwargs):
-                    yield {'event': 'on_chain_start', 'run_id': 'root', 'parent_ids': []}
-                    yield {'event': 'on_chat_model_start', 'run_id': 'model1'}
+                    yield {'type': 'model_text', 'iteration': 1, 'content': ''}
                     if variant != 'missing_start':
-                        yield {'event': 'on_tool_start', 'run_id': 'failed', 'name': TOOL_NAME, 'data': {'input': invalid}}
-                    yield {'event': 'on_tool_end', 'run_id': 'failed', 'name': TOOL_NAME, 'data': {'output': error(['ring_range'])}}
+                        yield {'type': 'tool_start', 'call_id': 'failed', 'name': TOOL_NAME, 'args': invalid}
+                    yield {'type': 'tool_end', 'call_id': 'failed', 'name': TOOL_NAME, 'args': invalid, 'observation': error(['ring_range'])}
                     if variant != 'same_round':
-                        yield {'event': 'on_chat_model_start', 'run_id': 'model2'}
-                    yield {'event': 'on_tool_start', 'run_id': 'fixed', 'name': TOOL_NAME, 'data': {'input': candidate}}
-                    yield {'event': 'on_tool_end', 'run_id': 'wrong' if variant == 'wrong_run' else 'fixed',
-                           'name': TOOL_NAME, 'data': {'output': SUCCESS}}
-                    yield {'event': 'on_chain_end', 'run_id': 'root', 'data': {'output': {
+                        yield {'type': 'model_text', 'iteration': 2, 'content': ''}
+                    yield {'type': 'tool_start', 'call_id': 'fixed', 'name': TOOL_NAME, 'args': candidate}
+                    yield {'type': 'tool_end', 'call_id': 'wrong' if variant == 'wrong_run' else 'fixed',
+                           'name': TOOL_NAME, 'args': candidate, 'observation': SUCCESS}
+                    yield {'type': 'final',
                         'output': 'Do not save', 'intermediate_steps': [
                             (action(invalid, 'first'), error(['ring_range'])),
                             (action(candidate, 'next'), SUCCESS),
                         ],
-                    }}}
+                    }
 
-                assistant._get_executor_for_query = Mock(return_value=SimpleNamespace(astream_events=events))
-                messages = [item async for item in assistant.chat_stream('统计换刀', {'user_id': 1})]
+                assistant._get_tools_for_query = Mock(return_value=TOOLS)
+                with patch('application.ai_assistant.llm_service.astream_agent', side_effect=events):
+                    messages = [item async for item in assistant.chat_stream('统计换刀', {'user_id': 1})]
                 self.assertEqual(messages[-1]['type'], 'error')
                 assistant._store_turn_and_summarize.assert_not_called()

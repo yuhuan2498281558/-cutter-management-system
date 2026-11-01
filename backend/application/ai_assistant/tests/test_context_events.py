@@ -1,14 +1,16 @@
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
 import os
 import sqlite3
 from pathlib import Path
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
+import httpx
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
-from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, convert_to_openai_messages
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -88,19 +90,20 @@ class ContextEventTests(SimpleTestCase):
             ("system", SYSTEM_PROMPT), MessagesPlaceholder("chat_history"),
             ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
         ])
-        executor = AgentExecutor(agent=create_tool_calling_agent(self.guard, [self.tool], prompt),
-                                 tools=[self.tool], return_intermediate_steps=True, max_iterations=3)
         self.assistant = ToolAssistant()
         self.assistant.memory = self.memory
         self.assistant._llm = self.guard
-        self.assistant._get_executor_for_query = Mock(return_value=executor)
+        self.assistant._prompt = prompt
+        self.assistant._get_tools_for_query = Mock(return_value=[self.tool])
         self.assistant._model_needs_tools = Mock(return_value=True)
 
     def snapshot(self):
         return self.memory.load(self.memory.scope_key("event-test"))
 
     def ask(self, query="查询100到200环滚刀", **context):
-        result = self.assistant.chat(query, {**self.options, **context})
+        # 派生的异步测试也复用此夹具，同步入口在没有事件循环的线程中运行。
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = pool.submit(self.assistant.chat, query, {**self.options, **context}).result()
         self.assertTrue(result["success"], result)
         return result
 
@@ -238,7 +241,8 @@ class ContextEventTests(SimpleTestCase):
 
     async def test_failed_interrupted_and_length_limited_turns_never_commit(self):
         self.model.mode = "fail"
-        self.assertFalse(self.assistant.chat("查询", self.options)["success"])
+        self.assertFalse((await sync_to_async(self.assistant.chat)("查询", self.options))["success"])
+        self.assertEqual(len(self.model.seen), 1)
         events = [event async for event in self.assistant.chat_stream("查询", self.options)]
         self.assertEqual(events[-1]["type"], "error")
         self.model.mode = "tools"
@@ -312,39 +316,41 @@ class ContextEventTests(SimpleTestCase):
         with patch.dict(os.environ, {"AI_LLM_PROVIDER": "deepseek", "AI_LLM_MODEL": "offline-requested",
                                     "AI_LLM_API_KEY": "offline-test", "AI_LLM_BASE_URL": "http://test.invalid/v1"}, clear=True):
             guard = create_chat_model()
-        self.assertTrue(guard.model.stream_usage)
-        chunk = guard.model._convert_chunk_to_generation_chunk(
-            {"choices": [], "usage": dict(PROVIDER_USAGE)}, AIMessageChunk, None,
-        )
-        self.assertEqual(chunk.message.response_metadata["token_usage"], PROVIDER_USAGE)
-        self.assertEqual(chunk.message.usage_metadata["input_tokens"], 15000)
         chunks = [
             {"choices": [{"delta": {"role": "assistant", "content": "回答"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}], "model": "offline-actual"},
             {"choices": [], "usage": dict(PROVIDER_USAGE)},
         ]
-        for asynchronous in (False, True):
-            response = MagicMock()
-            response.__enter__.return_value = response
-            response.__aenter__.return_value = response
-            response.__iter__.return_value = iter(chunks)
-            response.__aiter__.return_value = chunks
-            usage = ContextUsage()
-            token = context_usage.set(usage)
-            try:
-                if asynchronous:
-                    with patch.object(guard.model.async_client, "create", AsyncMock(return_value=response)) as create:
-                        _ = [item async for item in guard.astream("问题")]
-                else:
-                    with patch.object(guard.model.client, "create", return_value=response) as create:
-                        list(guard.stream("问题"))
-                self.assertEqual(create.call_args.kwargs["stream_options"], {"include_usage": True})
-                self.assertEqual(create.call_args.kwargs["max_tokens"], 8192)
-                self.assertEqual(usage.provider_usage, {"prompt_tokens": 15000, "completion_tokens": 24, "cache_hit_tokens": 12000})
-                self.assertEqual(len(usage.calls), 1)
-                self.assertEqual(usage.event()["model"], "offline-actual")
-            finally:
-                context_usage.reset(token)
+        requests = []
+
+        def respond(request):
+            requests.append(json.loads(request.content))
+            body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode("utf-8"))
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as async_client:
+                guard.model.http_client, guard.model.http_async_client = client, async_client
+                for asynchronous in (False, True):
+                    usage = ContextUsage()
+                    token = context_usage.set(usage)
+                    try:
+                        if asynchronous:
+                            received = [item async for item in guard.astream("问题")]
+                        else:
+                            received = list(guard.stream("问题"))
+                        self.assertEqual(received[-1].response_metadata["token_usage"], {
+                            **PROVIDER_USAGE, "total_tokens": None,
+                            "prompt_tokens_details": None, "completion_tokens_details": None,
+                        })
+                        self.assertEqual(received[-1].usage_metadata["input_tokens"], 15000)
+                        self.assertEqual(requests[-1]["stream_options"], {"include_usage": True})
+                        self.assertEqual(requests[-1]["max_tokens"], 8192)
+                        self.assertEqual(usage.provider_usage, {"prompt_tokens": 15000, "completion_tokens": 24, "cache_hit_tokens": 12000})
+                        self.assertEqual(len(usage.calls), 1)
+                        self.assertEqual(usage.event()["model"], "offline-actual")
+                    finally:
+                        context_usage.reset(token)
 
     def queried(self, query, **arguments):
         self.model.mode = "tools"

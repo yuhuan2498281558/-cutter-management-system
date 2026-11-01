@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import threading
@@ -5,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
-from langchain_community.chat_message_histories import SQLChatMessageHistory
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
@@ -111,20 +111,41 @@ class LegacyMemoryTests(SimpleTestCase):
         self.assertEqual(len(sequences), 20)
         self.assertEqual(sequences, sorted(set(sequences)))
 
-    def test_legacy_format_remains_readable_by_langchain(self):
+    def test_legacy_writes_match_original_json(self):
         self.service.append_turn("experiment:compatibility", "question", "answer", slots={"tool_type": "DISC"})
-        history = SQLChatMessageHistory(session_id="compatibility", connection=self.service._get_legacy_engine())
-        self.assertEqual([item.content for item in history.messages], ["question", "answer"])
-        self.assertEqual(history.messages[0].additional_kwargs["memory_slots"], {"tool_type": "DISC"})
+        # 固定 JSON 取自 SQLChatMessageHistory 0.3.24 实际写入的 message_store 行。
+        expected = [
+            '{"type": "human", "data": {"content": "question", "additional_kwargs": '
+            '{"memory_slots": {"tool_type": "DISC"}, "memory_metadata": {}}, "response_metadata": {}, '
+            '"type": "human", "name": null, "id": null, "example": false}}',
+            '{"type": "ai", "data": {"content": "answer", "additional_kwargs": {"memory_metadata": {}}, '
+            '"response_metadata": {}, "type": "ai", "name": null, "id": null, "example": false, '
+            '"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": null}}',
+        ]
+        with self.service._get_legacy_engine().connect() as connection:
+            rows = connection.exec_driver_sql(
+                "SELECT session_id, message FROM message_store ORDER BY id",
+            ).all()
+        self.assertEqual([row.session_id for row in rows], ["compatibility", "compatibility"])
+        self.assertEqual([json.loads(row.message) for row in rows], [json.loads(row) for row in expected])
 
-    def test_reads_existing_langchain_history_with_slots(self):
-        from langchain_core.messages import AIMessage, HumanMessage
-        history = SQLChatMessageHistory(session_id="old", connection=self.service._get_legacy_engine())
-        history.add_messages([HumanMessage(content="question", additional_kwargs={
-            "memory_slots": {"ring_range": [10, 20]},
-        }), AIMessage(content="answer")])
+    def test_reads_original_json_history_with_slots(self):
+        # 直接插入旧组件的原始 JSON，避免用当前序列化代码生成兼容性期望。
+        rows = [
+            '{"type": "human", "data": {"content": "question", "additional_kwargs": '
+            '{"memory_slots": {"ring_range": [10, 20]}}, "response_metadata": {}, "type": "human", '
+            '"name": null, "id": null, "example": false}}',
+            '{"type": "ai", "data": {"content": "answer", "additional_kwargs": {}, "response_metadata": {}, '
+            '"type": "ai", "name": null, "id": null, "example": false, "tool_calls": [], '
+            '"invalid_tool_calls": [], "usage_metadata": null}}',
+        ]
+        with self.service._get_legacy_engine().begin() as connection:
+            connection.exec_driver_sql("INSERT INTO message_store (session_id, message) VALUES (?, ?)",
+                                       [("old", row) for row in rows])
         snapshot = self.service.load("experiment:old")
         self.assertEqual(snapshot.message_count, 2)
+        self.assertEqual([(item.role, item.content) for item in snapshot.messages],
+                         [("human", "question"), ("ai", "answer")])
         self.assertEqual(snapshot.slots, {"ring_range": [10, 20]})
         updated = self.service.append_turn("experiment:old", "next", "next answer")
         self.assertEqual(updated.slots, {"ring_range": [10, 20]})

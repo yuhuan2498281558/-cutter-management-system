@@ -78,6 +78,14 @@ class FixedQuestionReplayTests(TestCase):
                 stack.enter_context(patch("application.ai_assistant.llm_provider.create_chat_model", side_effect=AssertionError("禁止创建模型")))
                 runtime = stack.enter_context(patch.object(llm_service.ToolAssistant, "_ensure_llm_runtime", side_effect=AssertionError("禁止初始化模型")))
                 assistant = llm_service.ToolAssistant()
+                original_route = assistant._direct_route
+
+                def _route(*args, **kwargs):
+                    # 从规则路由起采集证据，范围准备查询不计入规则工具集合。
+                    calls.clear()
+                    return original_route(*args, **kwargs)
+
+                stack.enter_context(patch.object(assistant, "_direct_route", side_effect=_route))
                 stack.enter_context(patch.object(assistant.memory, "load", side_effect=memory.load))
                 stack.enter_context(patch.object(assistant.memory, "append_turn", side_effect=memory.append_turn))
                 for name in [*llm_service._TOOL_SOURCES, "query_data_catalog"]:
