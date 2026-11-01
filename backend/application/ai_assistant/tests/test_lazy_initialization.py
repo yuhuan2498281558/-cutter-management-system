@@ -89,7 +89,7 @@ class LazyInitializationTests(SimpleTestCase):
             patch("application.ai_assistant.context_budget.prepare_messages", side_effect=AssertionError("history must be read-only")),
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
             patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
-            patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="ollama")),
+            patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="deepseek", api_key="test-not-a-secret")),
             patch("application.ai_assistant.llm_service.get_context_policy", return_value=ContextBudgetPolicy(32768)),
         ):
             assistant = ToolAssistant()

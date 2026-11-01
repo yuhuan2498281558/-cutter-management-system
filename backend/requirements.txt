@@ -19,8 +19,7 @@ requests==2.32.4
 langchain==0.3.25
 langchain-community==0.3.24
 langchain-core==0.3.65
-langchain-ollama==0.2.3
-langchain-openai==0.3.24
+openai==1.109.1
 # langchain_community SQLChatMessageHistory imports SQLAlchemy asyncio, which requires greenlet
 greenlet==3.2.4
 typing-extensions==4.12.2

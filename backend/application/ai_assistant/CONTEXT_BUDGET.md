@@ -8,7 +8,7 @@
 2. 对长 `ToolMessage` 的同构标量对象数组尝试列式编码；保存列名、逐行值和明确路径，附带解码说明。只在收益大于等于去空白 JSON 的 5% 且至少 32 个估算 token 时采用。
 3. 将系统提示、历史、用户问题、工具调用参数、工具结果、实际工具 schema 和调用选项纳入估算，另加消息封装开销。
 4. 输入限额 = 配置窗口 − 输出上限 − 安全余量。压缩后仍超限则抛出明确错误，不静默删除证据或更改查询范围。本轮查询结果导致超限时，提示缩小范围或拆分问题；不算本轮结果、历史本身就已超限时抛出 `HistoryBudgetExceeded`，提示点「重置对话」清空历史，因为缩小范围和 new 模式都不会减少回放的历史。
-5. 将输出上限实际传给供应商。供应商明确返回 `finish_reason=length` 或 `done_reason=length` 时视为未完成；直聊/Agent 不保存该轮，也不发送成功 `done`。可选润色失败仍沿用原有的完整规则回答回退。
+5. 将输出上限实际传给供应商。供应商明确返回 `finish_reason=length` 时视为未完成；直聊/Agent 不保存该轮，也不发送成功 `done`。可选润色失败仍沿用原有的完整规则回答回退。
 
 原 `intermediate_steps`、工具事件、参数校验及纠错关联均保留原文。列式编码不合并均值、不重算分母、不改变 TopK，不将未知值补为零；错误、异常 JSON、重复键及存在数值精度风险的输入保持原文。统计约束继续使用共用 `ANSWER_POLICY`。早前对话的精简和摘要见下文“阶段 B：自动整理”。
 
@@ -41,7 +41,7 @@ auto/new/continue 只影响查询条件的继承，均保留完整历史；清�
 
 ## 真实计量与 ContextInfo v2
 
-API 客户端开启 `stream_usage=True`。同步和流式每次模型调用只记录一次；流式先合并全部分片，包括最后单独的 usage chunk。DeepSeek 的 `prompt_cache_hit_tokens` 单独保留，既不与 prompt_tokens 相加，也不从上下文占用扣除。
+流式请求带 `stream_options.include_usage`，最后一个分片返回整次用量。同步和流式每次模型调用只记录一次；流式先合并全部分片，包括最后单独的 usage chunk。DeepSeek 的 `prompt_cache_hit_tokens` 单独保留，既不与 prompt_tokens 相加，也不从上下文占用扣除。
 
 turn 的 `used` 取本轮调用峰值：每次调用优先实际 prompt_tokens，缺失时用该次估算；`measurement` 指出峰值来源，`last_prompt_tokens_actual` 单独报告最后一次调用。`provider_usage` 累加本轮已取得的 prompt/completion/cache_hit 用量，没有 usage 为 null。`parts` 始终是估算分项，实际计量时不要求其合计等于 used；memory 包括整个历史协议。`history` 提供 turns、tool_results、legacy_qa_turns、other_project_turns 和 tokens。旧字段保留，`memory.recent_turns/recent_budget` 为 null；`thresholds.evidence_soft_tokens` 已删除。
 
@@ -83,19 +83,19 @@ baseline 只使用配置和纯消息编码/估算，不初始化模型客户端�
 
 环境变量优先，其次是 Django settings；配置在模型首次初始化时固定。调整后须按现有流程重新加载后端模型实例。
 
-- `AI_CONTEXT_WINDOW_TOKENS`：应用预算窗口。OpenAI/DeepSeek/兼容 API 默认 `256000`；Ollama 默认取 `OLLAMA_NUM_CTX`（缺省 `4096`），不得超过该值。
-- `AI_CONTEXT_OUTPUT_TOKENS`：预留并实际限制输出。API 默认 `8192`；Ollama 默认取 `OLLAMA_NUM_PREDICT`（缺省 `1024`）。显式配置优先。
-- `AI_CONTEXT_SAFETY_MARGIN_TOKENS`：API 默认 `4096`，Ollama 默认 `512`。
+- `AI_CONTEXT_WINDOW_TOKENS`：应用预算窗口，默认 `256000`。
+- `AI_CONTEXT_OUTPUT_TOKENS`：预留并实际限制输出，默认 `8192`。
+- `AI_CONTEXT_SAFETY_MARGIN_TOKENS`：默认 `4096`。
 - `AI_CONTEXT_TRIGGER_RATIO`：默认 `0.8`，触发线 `window × trigger_ratio = 204800`，本轮第一次调用的预计输入量超过它时整理早前对话。
 - `AI_CONTEXT_RETAIN_RATIO`：默认 `0.16`，整理时最近约 `window × retain_ratio = 40960` 的完整轮次保留原文；必须满足 `0 < retain_ratio < trigger_ratio < 1`。
 - `AI_CONTEXT_COMPACTION_MIN_TOKENS`：默认 `1000`，低于阈值的工具正文不改写。
 - `AI_CONTEXT_TOOL_PROTOCOL_TOKENS`：默认 `1024`，有非空tools/functions的请求额外计入一次协议预留，包括tool_choice=none；工具schema仍完整计数。用于供应商工具模板开销，与安全余量分开。
 
-五项 token 参数必须为正整数，窗口必须大于输出与安全余量之和。配置不合法时模型初始化报错；纯规则路径仍可使用。API 默认硬输入预算为 `243712`。删除原 24000 软上限、`AI_CONTEXT_EVIDENCE_SOFT_TOKENS` 和早前结果摘要逻辑。窗口是应用的运行限制，不代表自动探测到的供应商能力。Ollama 默认 4096 的输入空间不足以容纳当前完整系统提示和 21 工具，应依据本机模型与资源配置更大的 `OLLAMA_NUM_CTX`。
+五项 token 参数必须为正整数，窗口必须大于输出与安全余量之和。配置不合法时模型初始化报错；纯规则路径仍可使用。API 默认硬输入预算为 `243712`。删除原 24000 软上限、`AI_CONTEXT_EVIDENCE_SOFT_TOKENS` 和早前结果摘要逻辑。窗口是应用的运行限制，不代表自动探测到的供应商能力。
 
 预检计数沿用汉字 1.5、其他字符 0.25 的启发式，按消息正文、工具参数、schema 和其他选项分别计算，正文及参数不经过整包 JSON 二次转义。忽略本地消息 ID、usage、artifact 等字段，原文 tool_calls 优先于解析后重序列化的参数，重复调用只计一份；未知消息类型保守回退。工具 schema 即使在 tool_choice=none 下也保留计数。预检估算不是供应商 tokenizer 或计费值；安全余量不能保证绝不触及供应商限制。目前只支持文本内容，图片/音频请求明确拒绝。
 
-OpenAI 使用本机 SDK 的 `max_completion_tokens` 约定；DeepSeek、`api` 和 `openai-compatible` 在最终 Chat Completions payload 中保留 `max_tokens`。Ollama 在构造时设置 `num_predict`，不传无效的顶层调用参数。调用者可降低 API 输出 cap；Ollama 通过配置修改。禁止动态 `model`、`num_ctx`、`extra_body`、嵌套 `options/model_kwargs` 覆盖预算。升级 LangChain/provider SDK 后须回归最终请求 payload 测试。
+模型调用由 `chat_model.ChatCompletionsModel` 经 openai SDK 发出，只支持 OpenAI 兼容的 Chat Completions 接口（2026-11-01 起不再支持 Ollama）。OpenAI 在请求体中用 `max_completion_tokens`；DeepSeek、`api` 和 `openai-compatible` 用 `max_tokens`。调用者可降低输出上限，不能提高。禁止动态 `model`、`extra_body`、嵌套 `options/model_kwargs` 覆盖预算。升级 openai SDK 后须回归最终请求 payload 测试。
 
 ## 阶段 A 验证与实际输出示例（2026-10-26）
 

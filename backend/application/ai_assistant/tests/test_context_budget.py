@@ -187,10 +187,10 @@ class ContextBudgetTests(SimpleTestCase):
         model = RecordingModel()
         guard = GuardedChatModel(model, ContextBudgetPolicy())
         for value in (0, -1, None, True, guard.policy.output_tokens + 1):
-            for name in ("max_tokens", "max_completion_tokens", "num_predict"):
+            for name in ("max_tokens", "max_completion_tokens"):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     guard.bind(**{name: value}).invoke("hello")
-        for kwargs in ({"options": {"num_predict": -1}}, {"model_kwargs": {"max_tokens": 9000}}, {"num_ctx": 1}, {"extra_body": {"max_tokens": 99999}}, {"model": "another"}):
+        for kwargs in ({"options": {"max_tokens": -1}}, {"model_kwargs": {"max_tokens": 9000}}, {"extra_body": {"max_tokens": 99999}}, {"model": "another"}):
             with self.assertRaises(ValueError):
                 guard.invoke("hello", **kwargs)
         self.assertEqual(model.calls, [])
@@ -213,16 +213,15 @@ class ContextBudgetTests(SimpleTestCase):
         self.assertEqual(model.closed, ["sync", "async"])
 
     async def test_length_stop_never_returns_success(self):
-        for finish in ({"finish_reason": "length"}, {"done_reason": "length"}):
-            guard = GuardedChatModel(RecordingModel(finish), ContextBudgetPolicy())
-            with self.assertRaises(OutputLimitExceeded):
-                guard.invoke("hello")
-            with self.assertRaises(OutputLimitExceeded):
-                await guard.ainvoke("hello")
-            with self.assertRaises(OutputLimitExceeded):
-                list(guard.stream("hello"))
-            with self.assertRaises(OutputLimitExceeded):
-                _ = [chunk async for chunk in guard.astream("hello")]
+        guard = GuardedChatModel(RecordingModel({"finish_reason": "length"}), ContextBudgetPolicy())
+        with self.assertRaises(OutputLimitExceeded):
+            guard.invoke("hello")
+        with self.assertRaises(OutputLimitExceeded):
+            await guard.ainvoke("hello")
+        with self.assertRaises(OutputLimitExceeded):
+            list(guard.stream("hello"))
+        with self.assertRaises(OutputLimitExceeded):
+            _ = [chunk async for chunk in guard.astream("hello")]
 
     async def test_budget_failure_does_not_persist_or_emit_done(self):
         assistant = ToolAssistant()
@@ -300,18 +299,18 @@ class ContextBudgetTests(SimpleTestCase):
 class ContextPolicyTests(SimpleTestCase):
     def test_api_defaults_and_future_compaction_ratios(self):
         with patch("application.ai_assistant.llm_provider._config_value", side_effect=lambda name, default="": default):
-            policy = get_context_policy("deepseek")
+            policy = get_context_policy()
             self.assertEqual((policy.context_tokens, policy.output_tokens, policy.safety_margin_tokens), (256000, 8192, 4096))
             self.assertEqual(policy.input_budget, 243712)
             self.assertEqual(policy.trigger_tokens, 204800)
             self.assertEqual(policy.retain_ratio, 0.16)
         with patch.dict(os.environ, {"AI_CONTEXT_TRIGGER_RATIO": "0.75", "AI_CONTEXT_RETAIN_RATIO": "0.2"}):
-            policy = get_context_policy("deepseek")
+            policy = get_context_policy()
             self.assertEqual((policy.trigger_ratio, policy.retain_ratio), (0.75, 0.2))
         for value in ("0", "1", "invalid"):
             with patch.dict(os.environ, {"AI_CONTEXT_TRIGGER_RATIO": value}):
                 with self.assertRaises(LLMProviderError):
-                    get_context_policy("deepseek")
+                    get_context_policy()
 
     def test_invalid_policy_rejected(self):
         for kwargs in ({"context_tokens": 100}, {"output_tokens": 0}, {"safety_margin_tokens": -1}, {"compaction_min_tokens": True}):
@@ -333,34 +332,14 @@ class ContextPolicyTests(SimpleTestCase):
                     with self.assertRaises(LLMProviderError):
                         get_context_policy()
 
-    def test_ollama_limits_and_invalid_configuration(self):
-        with patch.dict(os.environ, {"AI_LLM_PROVIDER": "ollama", "OLLAMA_NUM_CTX": "8192"}, clear=True):
-            self.assertEqual(get_context_policy().context_tokens, 8192)
-            self.assertEqual(get_context_policy().output_tokens, 1024)
-            for value in ("abc", "99999", "100"):
-                with patch.dict(os.environ, {"AI_CONTEXT_WINDOW_TOKENS": value}):
-                    with self.assertRaises(LLMProviderError):
-                        get_context_policy()
-
     def test_openai_factory_enforces_output_cap(self):
         with patch.dict(os.environ, {"AI_LLM_PROVIDER": "openai", "AI_LLM_API_KEY": "test-not-a-secret", "AI_CONTEXT_OUTPUT_TOKENS": "512"}, clear=True):
-            with patch("langchain_openai.ChatOpenAI", return_value=RecordingModel()) as factory:
+            with patch("application.ai_assistant.chat_model.ChatCompletionsModel", return_value=RecordingModel()) as factory:
                 guard = create_chat_model()
             self.assertIsInstance(guard, GuardedChatModel)
             self.assertEqual(factory.call_args.kwargs["max_tokens"], 512)
             guard.invoke("hello")
             self.assertEqual(guard.model.calls[0][2]["max_tokens"], 512)
-
-    def test_ollama_actual_request_shape_no_top_level_num_predict(self):
-        with patch.dict(os.environ, {"AI_LLM_PROVIDER": "ollama"}, clear=True):
-            guard = create_chat_model()
-        prepared, options = guard._prepare_call("hello", {})
-        params = guard.model._chat_params(prepared, **options)
-        self.assertNotIn("num_predict", params)
-        self.assertEqual(params["options"].num_predict, guard.policy.output_tokens)
-        self.assertEqual(params["options"].num_ctx, 4096)
-        with self.assertRaises(ValueError):
-            guard.invoke("hello", num_predict=128)
 
     def test_actual_openai_and_compatible_payload_caps(self):
         for provider in ("openai", "deepseek", "api", "openai-compatible"):

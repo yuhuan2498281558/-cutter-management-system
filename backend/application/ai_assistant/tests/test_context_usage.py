@@ -265,7 +265,7 @@ class ContextUsageTests(SimpleTestCase):
         )):
             self.assertIsNone(assistant.get_history("1")["context"])
         with (
-            patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="ollama")),
+            patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="deepseek", api_key="test-not-a-secret")),
             patch("application.ai_assistant.llm_service.get_context_policy", side_effect=LLMProviderError("invalid budget")),
         ):
             self.assertIsNone(assistant.get_history("1")["context"])

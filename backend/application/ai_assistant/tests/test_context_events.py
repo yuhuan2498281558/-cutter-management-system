@@ -6,8 +6,9 @@ import os
 import sqlite3
 from pathlib import Path
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
+import httpx
 from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, convert_to_openai_messages
@@ -315,39 +316,41 @@ class ContextEventTests(SimpleTestCase):
         with patch.dict(os.environ, {"AI_LLM_PROVIDER": "deepseek", "AI_LLM_MODEL": "offline-requested",
                                     "AI_LLM_API_KEY": "offline-test", "AI_LLM_BASE_URL": "http://test.invalid/v1"}, clear=True):
             guard = create_chat_model()
-        self.assertTrue(guard.model.stream_usage)
-        chunk = guard.model._convert_chunk_to_generation_chunk(
-            {"choices": [], "usage": dict(PROVIDER_USAGE)}, AIMessageChunk, None,
-        )
-        self.assertEqual(chunk.message.response_metadata["token_usage"], PROVIDER_USAGE)
-        self.assertEqual(chunk.message.usage_metadata["input_tokens"], 15000)
         chunks = [
             {"choices": [{"delta": {"role": "assistant", "content": "回答"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}], "model": "offline-actual"},
             {"choices": [], "usage": dict(PROVIDER_USAGE)},
         ]
-        for asynchronous in (False, True):
-            response = MagicMock()
-            response.__enter__.return_value = response
-            response.__aenter__.return_value = response
-            response.__iter__.return_value = iter(chunks)
-            response.__aiter__.return_value = chunks
-            usage = ContextUsage()
-            token = context_usage.set(usage)
-            try:
-                if asynchronous:
-                    with patch.object(guard.model.async_client, "create", AsyncMock(return_value=response)) as create:
-                        _ = [item async for item in guard.astream("问题")]
-                else:
-                    with patch.object(guard.model.client, "create", return_value=response) as create:
-                        list(guard.stream("问题"))
-                self.assertEqual(create.call_args.kwargs["stream_options"], {"include_usage": True})
-                self.assertEqual(create.call_args.kwargs["max_tokens"], 8192)
-                self.assertEqual(usage.provider_usage, {"prompt_tokens": 15000, "completion_tokens": 24, "cache_hit_tokens": 12000})
-                self.assertEqual(len(usage.calls), 1)
-                self.assertEqual(usage.event()["model"], "offline-actual")
-            finally:
-                context_usage.reset(token)
+        requests = []
+
+        def respond(request):
+            requests.append(json.loads(request.content))
+            body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode("utf-8"))
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as async_client:
+                guard.model.http_client, guard.model.http_async_client = client, async_client
+                for asynchronous in (False, True):
+                    usage = ContextUsage()
+                    token = context_usage.set(usage)
+                    try:
+                        if asynchronous:
+                            received = [item async for item in guard.astream("问题")]
+                        else:
+                            received = list(guard.stream("问题"))
+                        self.assertEqual(received[-1].response_metadata["token_usage"], {
+                            **PROVIDER_USAGE, "total_tokens": None,
+                            "prompt_tokens_details": None, "completion_tokens_details": None,
+                        })
+                        self.assertEqual(received[-1].usage_metadata["input_tokens"], 15000)
+                        self.assertEqual(requests[-1]["stream_options"], {"include_usage": True})
+                        self.assertEqual(requests[-1]["max_tokens"], 8192)
+                        self.assertEqual(usage.provider_usage, {"prompt_tokens": 15000, "completion_tokens": 24, "cache_hit_tokens": 12000})
+                        self.assertEqual(len(usage.calls), 1)
+                        self.assertEqual(usage.event()["model"], "offline-actual")
+                    finally:
+                        context_usage.reset(token)
 
     def queried(self, query, **arguments):
         self.model.mode = "tools"

@@ -1,5 +1,5 @@
 """
-LLM服务封装 - 使用LangChain Tool Calling Agent + Ollama
+LLM服务封装 - 自己的工具循环 + OpenAI 兼容接口
 记忆由 MemoryService 统一编排；legacy 模式兼容 SQLChatMessageHistory，django 模式由 Django 迁移管理
 """
 
@@ -253,12 +253,6 @@ def _new_usage_callback():
     handler = UsageMetadataCallbackHandler()
     return [handler], lambda: getattr(handler, "usage_metadata", {}) or {}
 
-
-_OLLAMA_RUNNER_ERRORS = (
-    "llama runner process has terminated",
-    "model runner has unexpectedly stopped",
-    "runner process has terminated",
-)
 
 # 历史记录数据库连接（使用 Django 项目同一数据库）
 # 从环境变量读取，默认使用 SQLite 文件（与 Django settings 中的 db 路径一致）
@@ -1057,17 +1051,10 @@ class ToolAssistant:
     def _friendly_error(self, error_msg: str) -> str:
         """把底层 LLM 异常转成前端可展示的稳定文案"""
         msg_lower = error_msg.lower()
-        if any(part in msg_lower for part in _OLLAMA_RUNNER_ERRORS) or (
-            "status code: 500" in msg_lower and "runner" in msg_lower
-        ):
-            return (
-                "本地 Ollama 模型进程异常退出。请先重试一次；如果持续出现，"
-                "建议重启 Ollama，或降低模型/上下文配置后再使用。"
-            )
-        if "timeout" in msg_lower:
+        if "timeout" in msg_lower or "timed out" in msg_lower:
             return "处理超时，请稍后重试或简化问题。"
         if "connection" in msg_lower:
-            return "无法连接到 LLM 服务，请检查 Ollama 是否运行。"
+            return "无法连接到模型服务，请稍后重试。"
         return f"处理出错：{error_msg}"
 
     def _build_direct_messages(
@@ -3110,14 +3097,13 @@ class ToolAssistant:
                 provider, model = self._llm.provider, self._llm.model_name
             else:
                 config = get_llm_config(self._model_name)
-                if config.provider != "ollama" and not config.api_key:
+                if not config.api_key:
                     return None
-                policy = get_context_policy(config.provider)
-                output_parameter = "num_predict" if config.provider == "ollama" else "max_tokens"
+                policy = get_context_policy()
+                output_parameter = "max_tokens"
                 provider, model = config.provider, getattr(config, "model", "")
             options = {"tools": [convert_to_openai_tool(tool) for tool in TOOLS]}
-            if output_parameter != "num_predict":
-                options[output_parameter] = policy.output_tokens
+            options[output_parameter] = policy.output_tokens
             if project_id is None:
                 project_id = next((item.metadata.get("project_id") for item in reversed(snapshot.messages)
                                    if item.metadata.get("project_id")), "")

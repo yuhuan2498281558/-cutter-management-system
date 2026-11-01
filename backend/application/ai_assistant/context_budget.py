@@ -47,7 +47,7 @@ class OutputLimitExceeded(ValueError):
 
 def _check_completion(message):
     metadata = getattr(message, "response_metadata", {}) or {}
-    if metadata.get("finish_reason") == "length" or metadata.get("done_reason") == "length":
+    if metadata.get("finish_reason") == "length":
         raise OutputLimitExceeded("本次回答达到输出上限，未生成完整回答。请缩小范围或拆分问题后重试。")
     return message
 
@@ -394,36 +394,21 @@ class GuardedChatModel(Runnable):
 
     def _prepare_call(self, value, kwargs):
         options = {**self.request_options, **kwargs}
-        for name in ("max_tokens", "max_completion_tokens", "num_predict"):
+        for name in ("max_tokens", "max_completion_tokens"):
             if name in options:
                 option_value = options[name]
                 if type(option_value) is not int or not 0 < option_value <= self.policy.output_tokens:
                     raise ValueError(f"{name} must be within the configured output reserve")
-        if "num_ctx" in options:
-            raise ValueError("num_ctx cannot override the configured context budget")
         if any(name in options for name in ("options", "model_kwargs", "extra_body", "model")):
             raise ValueError("Model overrides cannot bypass context budget settings")
         # Caller may lower the output cap, but can never increase the reserve.
-        caps = [options[name] for name in ("max_tokens", "max_completion_tokens", "num_predict")
+        caps = [options[name] for name in ("max_tokens", "max_completion_tokens")
                 if name in options]
         cap = min(caps, default=self.policy.output_tokens)
-        if self.output_parameter == "num_predict":
-            # langchain-ollama 0.3 accepts this only in constructor/options;
-            # a top-level invocation kwarg leaks into Client.chat and fails.
-            # The factory fixes the cap at construction. Runtime overrides
-            # cannot safely replace the provider's entire options dictionary.
-            if cap != self.policy.output_tokens or any(
-                name in options for name in ("max_tokens", "max_completion_tokens")
-            ):
-                raise ValueError("Set Ollama output limit through AI_CONTEXT_OUTPUT_TOKENS")
-            options.pop("num_predict", None)
-        else:
-            if "num_predict" in options:
-                raise ValueError("num_predict is only supported by Ollama")
-            options[self.output_parameter] = cap
-            if "max_completion_tokens" in options:
-                options.pop("max_tokens")
-                options["max_completion_tokens"] = cap
+        options[self.output_parameter] = cap
+        if "max_completion_tokens" in options:
+            options.pop("max_tokens")
+            options["max_completion_tokens"] = cap
         prepared = prepare_messages(value, self.policy, options)
         return prepared, options
 
