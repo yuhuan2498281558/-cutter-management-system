@@ -3,7 +3,9 @@ import json
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from application.ai_assistant.tools import _analysis_payload, _build_json, classify_wear_counts, is_abnormal_wear
+from application.ai_assistant.tools import (
+    _analysis_payload, _build_json, _visible_records, classify_wear_counts, is_abnormal_wear,
+)
 from application.ai_assistant.tools_inspections import _detail_scope, _filtered_details, _validate_detail_params
 from application.shield.analysis_metrics import confirmed_service_segments
 from application.shield.cutter_position_scope import normalize_cutter_position_no
@@ -65,8 +67,8 @@ def compare_manufacturer_service(params_str: str) -> str:
 
     # 在役没有拆下环，不套用拆下环段；按同项目、同机器、同刀位的末次安装判断。
     current_params = {key: value for key, value in params.items() if key != 'ring_range'}
-    history = list(_filtered_details(current_params).filter(is_replaced=True)
-                   .select_related('warehouse', 'new_tool_record__tool_instance'))
+    history = list(_visible_records(_filtered_details(current_params).filter(is_replaced=True)
+                                    .select_related('warehouse'), new_tool_record=('tool_instance',)))
     latest = {}
     for row in sorted(history, key=lambda r: (r._tool_ring, r.warehouse.open_time, r.pk)):
         key = (row.warehouse.project_id, row.warehouse.shield_model_id, normalize_cutter_position_no(row.cutter_position_no))

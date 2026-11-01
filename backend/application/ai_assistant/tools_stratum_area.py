@@ -7,7 +7,7 @@ from django.db.models import IntegerField
 from django.db.models.functions import Cast
 
 from application.ai_assistant.tools import _analysis_payload, _build_json
-from application.shield.analysis_metrics import RING_NUMERIC_REGEX
+from application.shield.analysis_metrics import RING_NUMERIC_REGEX, scoped_queryset
 from application.shield.longitudinal_ratios import (
     AREA_LABELS, LONGITUDINAL_LABELS, longitudinal_area_notes,
     validate_condition_alignment, validate_longitudinal_ratios,
@@ -57,7 +57,7 @@ def _checked_ring_range(value):
 
 
 def _stratum_query(project_id=None):
-    query = StratumBasicInfo.objects.filter(ring_no__regex=RING_NUMERIC_REGEX)
+    query = scoped_queryset(StratumBasicInfo.objects.all()).filter(ring_no__regex=RING_NUMERIC_REGEX)
     if project_id is not None:
         query = query.filter(project__project_id=project_id)
     return query.annotate(_ring=Cast('ring_no', IntegerField()))
@@ -216,7 +216,7 @@ def query_opening_stratum(params_str: str) -> str:
         if ring is not None:
             _positive_int(ring, 'ring_no')
         recent = _positive_int(params.get('recent_openings', 1), 'recent_openings', 20)
-        query = WarehouseOpeningBasicInfo.objects.filter(ring_no__regex=RING_NUMERIC_REGEX)
+        query = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).filter(ring_no__regex=RING_NUMERIC_REGEX)
         if params.get('project_id') is not None:
             query = query.filter(project__project_id=params['project_id'])
         if params.get('shield_machine_id') is not None:

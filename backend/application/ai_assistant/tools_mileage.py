@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from .tool_contracts import ToolMileageQuery, tool_validation_error
 from .tools import _analysis_payload, _build_json
 from .tools_inspections import _validate_detail_params
+from application.shield.analysis_metrics import scoped_queryset
 from application.shield.analysis_views import _build_opening_queryset, _life_mileage
 from application.shield.models import ProjectInfo
 
@@ -24,7 +25,7 @@ def query_tool_mileage(params_str: str) -> str:
 
     q = QueryDict(mutable=True)
     if params.get('project_id'):
-        project = ProjectInfo.objects.filter(project_id=params['project_id']).values_list('pk', flat=True).first()
+        project = scoped_queryset(ProjectInfo.objects.all()).filter(project_id=params['project_id']).values_list('pk', flat=True).first()
         if project is None:
             return _build_json({'error': '未找到绑定项目'})
         q['project'] = str(project)

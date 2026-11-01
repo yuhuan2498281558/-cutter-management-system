@@ -4,10 +4,10 @@ from collections import defaultdict
 
 from django.db.models import Count
 
-from application.ai_assistant.tools import _analysis_payload, _build_json
+from application.ai_assistant.tools import _analysis_payload, _build_json, _visible_records
 from application.ai_assistant.tools_inspections import _filtered_details, _validate_detail_params
 from application.ai_assistant.tools_repairs import _repair_payload
-from application.shield.analysis_metrics import confirmed_service_segments
+from application.shield.analysis_metrics import confirmed_service_segments, scoped_queryset
 from application.shield.cutter_position_scope import normalize_cutter_position_no
 from application.shield.models import OldToolPhoto, ToolInstance
 from application.shield.tool_identity import resolve_removed_tool_identity
@@ -105,10 +105,10 @@ def trace_tool_lifecycle(params_str: str) -> str:
     except (ValueError, TypeError) as exc:
         return _build_json({'error': str(exc) if not isinstance(exc, json.JSONDecodeError) else '参数必须是有效的 JSON 对象'})
 
-    rows = list(_filtered_details(params).select_related(
-        'warehouse', 'new_tool_record__tool_instance__tool_info',
-        'old_tool_record__confirmed_tool_instance__tool_info',
-        'old_tool_record__suggested_tool_instance__tool_info'))
+    rows = list(_visible_records(
+        _filtered_details(params).select_related('warehouse'),
+        new_tool_record=('tool_instance__tool_info',),
+        old_tool_record=('confirmed_tool_instance__tool_info', 'suggested_tool_instance__tool_info')))
     rows.sort(key=_event_key)
     positions, installs, removals = defaultdict(list), defaultdict(list), defaultdict(list)
     old_rows = []
@@ -123,10 +123,10 @@ def trace_tool_lifecycle(params_str: str) -> str:
             identity = old.confirmed_tool_instance_id or old.suggested_tool_instance_id
             if identity:
                 removals[identity].append(row)
-    photos = dict(OldToolPhoto.objects.filter(old_tool_record_id__in=[r.old_tool_record.pk for r in old_rows])
+    photos = dict(scoped_queryset(OldToolPhoto.objects.all()).filter(old_tool_record_id__in=[r.old_tool_record.pk for r in old_rows])
                   .values('old_tool_record_id').annotate(n=Count('pk')).values_list('old_tool_record_id', 'n'))
     paired = {s['installation_detail_id']: s for s in confirmed_service_segments(rows) if s['paired']}
-    instances = ToolInstance.objects.select_related('tool_info')
+    instances = scoped_queryset(ToolInstance.objects.all()).select_related('tool_info')
     results = []
     for original in ids:
         value = original.strip()

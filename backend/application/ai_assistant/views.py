@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from contextlib import aclosing
+from types import SimpleNamespace
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
@@ -16,6 +17,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
+from application.shield.analysis_metrics import ANALYSIS_REQUEST, scoped_queryset
+from application.shield.models import ProjectInfo
+
 from .llm_service import get_assistant, _data_coverage, FOCUS_SOURCE_LABELS
 
 logger = logging.getLogger(__name__)
@@ -23,21 +27,20 @@ logger = logging.getLogger(__name__)
 _GUEST_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
-def _resolve_request_project_id(project_id=None) -> str:
-    """Use the sole configured project when the client has no project selector.
+def _analysis_scope_request(user):
+    """借用数据分析页总览接口的权限范围：返回一个只用于数据范围过滤的请求对象。"""
+    # 过滤器按请求地址精确找按钮，分析页每个接口各有一份范围，AI 统一用总览这份
+    return SimpleNamespace(user=user, method="GET", path="/api/shield/analysis/overview/",
+                           parser_context={"kwargs": {}})
 
-    The current AI page does not expose a project selector. Falling back to the
-    demo project id silently returns an empty dataset, while aggregating every
-    project would create a cross-project data leak. Therefore automatic
-    inference is allowed only when exactly one project exists.
-    """
+
+def _resolve_request_project_id(project_id=None) -> str:
+    """未指定项目时，仅在权限范围内恰好有一个项目时自动补全。"""
     if project_id not in (None, ""):
         return str(project_id)
 
-    from application.shield.models import ProjectInfo
-
     project_ids = list(
-        ProjectInfo.objects.values_list("project_id", flat=True)[:2]
+        scoped_queryset(ProjectInfo.objects.all()).values_list("project_id", flat=True)[:2]
     )
     return str(project_ids[0]) if len(project_ids) == 1 else ""
 
@@ -68,9 +71,9 @@ def _build_project_snapshot(project_id: str) -> dict:
         from django.db.models.functions import Cast
 
         # 开仓记录统计
-        warehouse_qs = WarehouseOpeningBasicInfo.objects.filter(
+        warehouse_qs = scoped_queryset(WarehouseOpeningBasicInfo.objects.filter(
             project__project_id=project_id
-        )
+        ))
         warehouse_stats = warehouse_qs.filter(ring_no__regex=r'^\d+$').annotate(
             ring_int=Cast('ring_no', output_field=IntegerField())
         ).aggregate(
@@ -84,9 +87,9 @@ def _build_project_snapshot(project_id: str) -> dict:
             total=Count('id'), replaced=Count('id', filter=Q(is_replaced=True)),
         )
         total_changes, total_replaced = changes['total'], changes['replaced']
-        positions = CutterPositionInfo.objects.filter(
+        positions = scoped_queryset(CutterPositionInfo.objects.filter(
             shield_machine_id__in=warehouse_qs.values('shield_model_id'),
-        ).values_list('cutter_position_no', 'tool_type')
+        )).values_list('cutter_position_no', 'tool_type')
         total_positions = sum(is_active_cutter_position(code, kind) for code, kind in positions)
 
         return {
@@ -124,11 +127,18 @@ def _context_for_user(user, body, token=None) -> dict:
         "user_id": _memory_user_id(user, token),
         "username": user.username,
         "require_project": True,
+        "data_scope": _analysis_scope_request(user),
     }
-    project_id = _resolve_request_project_id(body.get("project_id"))
-    if project_id:
-        ctx["project_id"] = project_id
-        ctx.update(_build_project_snapshot(project_id))
+    scope_token = ANALYSIS_REQUEST.set(ctx["data_scope"])
+    try:
+        project_id = _resolve_request_project_id(body.get("project_id"))
+        if project_id:
+            if not scoped_queryset(ProjectInfo.objects.filter(project_id=project_id)).exists():
+                raise PermissionError("无权查看该项目的数据")
+            ctx["project_id"] = project_id
+            ctx.update(_build_project_snapshot(project_id))
+    finally:
+        ANALYSIS_REQUEST.reset(scope_token)
     if body.get("project_name"):
         ctx["project_name"] = body["project_name"]
     if body.get("ring_range") and isinstance(body["ring_range"], list) and len(body["ring_range"]) == 2:
@@ -206,7 +216,10 @@ def chat(request):
     user_query = request.data['query'].strip()
 
     started_at = time.perf_counter()
-    context = _build_context(request)
+    try:
+        context = _build_context(request)
+    except PermissionError:
+        return Response({'code': 4030, 'data': None, 'msg': '无权查看该项目的数据'}, status=403)
     context_ready_ms = (time.perf_counter() - started_at) * 1000
     if request.data.get('route_mode'):
         context['route_mode'] = request.data.get('route_mode')
@@ -261,11 +274,14 @@ async def chat_stream(request):
     user_query = body['query'].strip()
 
     started_at = time.perf_counter()
-    context = await sync_to_async(_context_for_user)(
-        user,
-        body,
-        getattr(request, "ai_validated_token", None),
-    )
+    try:
+        context = await sync_to_async(_context_for_user)(
+            user,
+            body,
+            getattr(request, "ai_validated_token", None),
+        )
+    except PermissionError:
+        return JsonResponse({'code': 4030, 'msg': '无权查看该项目的数据'}, status=403)
 
     context_ready_ms = (time.perf_counter() - started_at) * 1000
     assistant = await sync_to_async(get_assistant)()

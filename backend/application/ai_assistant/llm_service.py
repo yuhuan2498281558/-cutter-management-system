@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from .agent_loop import astream_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from application.shield.analysis_metrics import ANALYSIS_REQUEST, scoped_queryset
 from .llm_provider import create_chat_model, get_llm_config, get_context_policy, LLMProviderError
 from .tools import (
     query_tool_change_data,
@@ -98,7 +99,7 @@ def _data_coverage(project_id: str, domain: str, ring_range=None) -> dict:
             "掘进": (ShieldTunnelingData, "record_time"),
             "地层": (StratumBasicInfo, None),
         }[domain]
-        query = model.objects.filter(project__project_id=project_id)
+        query = scoped_queryset(model.objects.filter(project__project_id=project_id))
         ring_field = "ring_no"
     query = query.filter(**{f"{ring_field}__regex": r"^\d+$"}).annotate(
         coverage_ring=Cast(ring_field, IntegerField()))
@@ -2982,7 +2983,7 @@ class ToolAssistant:
             from application.shield.models import ToolInfo
             branch, func = "tool_cost_catalog", query_tool_cost_catalog
             params = {**project, **({"tool_type": params["tool_type"]} if params.get("tool_type") else {})}
-            models = ToolInfo.objects.order_by().values_list("tool_type_name", flat=True).distinct()
+            models = scoped_queryset(ToolInfo.objects.order_by()).values_list("tool_type_name", flat=True).distinct()
             matches = [name for name in models if name and name in query]
             if matches:
                 params["tool_model"] = max(matches, key=len)
@@ -3333,6 +3334,8 @@ class ToolAssistant:
         _trace_start()
         usage = ContextUsage()
         token = context_usage.set(usage)
+        # 本轮所有查询与数据分析页使用同一权限范围。
+        scope_token = ANALYSIS_REQUEST.set((context or {}).get("data_scope"))
         memory_info, tool_group = None, None
         trace_offset = 0
         answer_check = {}
@@ -3554,6 +3557,7 @@ class ToolAssistant:
                 "success": False, "error": error_msg, "type": "error",
             }, "error")}
         finally:
+            ANALYSIS_REQUEST.reset(scope_token)
             context_usage.reset(token)
             _trace_stop()
 

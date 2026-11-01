@@ -8,7 +8,7 @@ from django.db.models.functions import Cast
 from application.ai_assistant.tools import _active_detail_query, _analysis_payload, _build_json
 from application.ai_assistant.tools_stratum_area import _checked_ring_range, _positive_int, _read_params
 from application.shield.analysis_metrics import (
-    RING_NUMERIC_REGEX, confirmed_service_segments, cost_source_rows, summarize_cost_rows,
+    RING_NUMERIC_REGEX, confirmed_service_segments, cost_source_rows, summarize_cost_rows, scoped_queryset,
 )
 from application.shield.models import TOOL_TYPES, ToolCost
 
@@ -39,7 +39,7 @@ def query_tool_cost_catalog(params_str: str) -> str:
         for key in ('tool_model', 'brand', 'manufacturer'):
             if params.get(key) is not None and (not isinstance(params[key], str) or not params[key].strip()):
                 raise ValueError(f'{key}须为非空字符串。')
-        query = ToolCost.objects.select_related('tool_info')
+        query = scoped_queryset(ToolCost.objects.all()).select_related('tool_info')
         if tool_type is not None:
             query = query.filter(tool_info__tool_parent_type=tool_type)
         if cost_type is not None:

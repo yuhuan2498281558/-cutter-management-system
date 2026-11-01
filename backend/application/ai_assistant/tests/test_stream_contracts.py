@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from django.test import RequestFactory, SimpleTestCase
+from django.test import RequestFactory, TestCase
 from langchain_core.messages import AIMessage
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
@@ -12,7 +12,7 @@ from application.ai_assistant.llm_service import TOOLS, ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
 
-class StreamContractTests(SimpleTestCase):
+class StreamContractTests(TestCase):
     def make_assistant(self, events=()):
         assistant = ToolAssistant()
         snapshot = MemorySnapshot(scope_key="user:1", backend="legacy")

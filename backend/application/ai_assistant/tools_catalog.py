@@ -10,7 +10,7 @@ from application.ai_assistant.tools import (
 from application.ai_assistant.tools_stratum_area import (
     _area_summary, _legacy_codes, _read_params, _stratum_query, _stratum_rows,
 )
-from application.shield.analysis_metrics import RING_NUMERIC_REGEX
+from application.shield.analysis_metrics import RING_NUMERIC_REGEX, scoped_queryset
 from application.shield.longitudinal_ratios import AREA_LABELS
 from application.shield.models import (
     TOOL_TYPES, MobileToolChangeTask, OldToolRecord, ShieldTunnelingData,
@@ -41,17 +41,17 @@ def query_data_catalog(params_str: str) -> str:
     try:
         params = _read_params(params_str)
         project_id = params.get('project_id')
-        openings = WarehouseOpeningBasicInfo.objects.all()
-        tunneling = ShieldTunnelingData.objects.all()
-        tasks = MobileToolChangeTask.objects.all()
+        openings = scoped_queryset(WarehouseOpeningBasicInfo.objects.all())
+        tunneling = scoped_queryset(ShieldTunnelingData.objects.all())
+        tasks = scoped_queryset(MobileToolChangeTask.objects.all())
         if project_id is not None:
             openings = openings.filter(project__project_id=project_id)
             tunneling = tunneling.filter(project__project_id=project_id)
             tasks = tasks.filter(warehouse__project__project_id=project_id)
         details = _active_detail_query(params)
-        repairs = OldToolRecord.objects.filter(tool_change_detail__in=details)
+        repairs = scoped_queryset(OldToolRecord.objects.all()).filter(tool_change_detail__in=details)
         # 型号和报价是共用资料库，没有项目外键；项目筛选只作用于现场业务记录。
-        models = list(ToolInfo.objects.order_by('tool_parent_type', 'tool_type_name', 'tool_type_code', 'id').values(
+        models = list(scoped_queryset(ToolInfo.objects.all()).order_by('tool_parent_type', 'tool_type_name', 'tool_type_code', 'id').values(
             'tool_parent_type', 'tool_type_name', 'tool_type_code',
         ))
         model_counts = Counter(row['tool_parent_type'] for row in models)
@@ -65,7 +65,7 @@ def query_data_catalog(params_str: str) -> str:
         area_counts = {row['code']: row['positive_ring_count'] for row in area['classes']}
         cross_counts = {row['code']: row['positive_ring_count'] for row in cross['classes']}
         opening_coverage = _coverage(openings, 'open_time')
-        quote_counts = _status_counts(ToolCost.objects.all(), 'cost_type')
+        quote_counts = _status_counts(scoped_queryset(ToolCost.objects.all()), 'cost_type')
         stratum_rings = [int(row['ring_no']) for row in strata]
         coverage = {
             'openings': {

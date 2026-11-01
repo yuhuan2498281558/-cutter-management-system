@@ -17,6 +17,7 @@ from application.shield.models import (
     ProjectInfo, ShieldMachineBasicInfo, ShieldTunnelingData, StratumBasicInfo,
     ToolChangeDetail, WarehouseOpeningBasicInfo,
 )
+from dvadmin.system.models import Users
 
 
 _NEW_TOOLS = {
@@ -260,9 +261,11 @@ class IntegrationRoutingTests(SimpleTestCase):
         self.assertEqual(self.calls['query_old_tool_repairs'].call_count, 1)
 
 
-class IntegrationRequestTests(SimpleTestCase):
-    def setUp(self):
-        self.user = SimpleNamespace(id=1, username='integration-user', is_authenticated=True)
+class IntegrationRequestTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = Users.objects.create(username='integration-user', is_superuser=True)
+        ProjectInfo.objects.create(project_id='TEST', project_name='接口测试')
 
     async def test_invalid_focus_sources_returns_400_from_both_entries(self):
         message = 'focus_sources 只能包含：tool_change、opening、inspection、position、stratum、tunneling、manufacturer、cost、repair、lifecycle'

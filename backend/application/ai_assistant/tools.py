@@ -8,13 +8,13 @@ from application.shield.models import (
     ProjectInfo, WarehouseOpeningBasicInfo,
     ShieldTunnelingData,
 )
-from django.db.models import Count, Avg, Q, Sum, Max, Min, Case, When, F, CharField
+from django.db.models import Count, Avg, Q, Sum, Max, Min, Case, When, F, CharField, Prefetch
 from django.db.models.functions import Cast, Upper, Trim
 from django.db.models import IntegerField
 from application.shield.cutter_position_scope import (
     ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no, cutter_position_sort_key,
 )
-from application.shield.analysis_metrics import confirmed_service_segments
+from application.shield.analysis_metrics import ANALYSIS_REQUEST, confirmed_service_segments, scoped_queryset
 from application.shield.longitudinal_ratios import AREA_LABELS
 from application.shield.wear import normalize_wear
 import json
@@ -31,7 +31,11 @@ def _active_detail_query(params=None, *, checked_only=True):
     not backfilled. Empty precreated rows are never statistical observations.
     """
     params = params or {}
-    query = ToolChangeDetail.objects.annotate(
+    query = scoped_queryset(ToolChangeDetail.objects.all())
+    if ANALYSIS_REQUEST.get() is not None:
+        # 与数据分析页一样，明细还要落在可见的开仓里
+        query = query.filter(warehouse__in=scoped_queryset(WarehouseOpeningBasicInfo.objects.all()))
+    query = query.annotate(
         _ai_position=Upper(Trim('cutter_position_no')),
         _ai_type=Upper(Trim('tool_parent_type')),
     ).annotate(_ai_position=Case(
@@ -48,6 +52,15 @@ def _active_detail_query(params=None, *, checked_only=True):
     if checked_only:
         query = query.filter(Q(is_checked=True) | Q(is_replaced=True))
     return query
+
+
+def _visible_records(query, **related):
+    """明细带出的新刀、旧刀记录各按权限范围过滤，看不到的当作没有，与数据分析页一致。"""
+    models = {'new_tool_record': NewToolRecord, 'old_tool_record': OldToolRecord}
+    return query.prefetch_related(*(
+        Prefetch(name, queryset=scoped_queryset(models[name].objects.select_related(*paths)))
+        for name, paths in related.items()
+    ))
 
 # 地层类型中文映射（与系统字典数据保持一致）
 STRATUM_TYPE_NAMES = {
@@ -315,7 +328,7 @@ def _checked_tool_type(value):
 
 
 def _filter_tunneling_query(params: dict):
-    query = ShieldTunnelingData.objects.select_related('project', 'shield_machine').all()
+    query = scoped_queryset(ShieldTunnelingData.objects.all()).select_related('project', 'shield_machine')
     project_id = (params.get('project_id') or '').strip()
     shield_machine_id = params.get('shield_machine_id')
     ring_range = _checked_ring_range(params.get('ring_range'))
@@ -533,7 +546,7 @@ def query_tool_change_data(params_str: str) -> str:
         # 同环可能多次开仓，按主键限定所选开仓，不能扩成环段。
         opening_ids = None
         if last_n_openings:
-            opening_qs = WarehouseOpeningBasicInfo.objects.annotate(
+            opening_qs = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).annotate(
                 ring_int=Cast('ring_no', output_field=IntegerField())
             ).order_by('-ring_int', '-open_time', '-id')
             if project_id:
@@ -631,7 +644,7 @@ def query_stratum_data(params_str: str) -> str:
         project_id = params.get('project_id')
         ring_range = params.get('ring_range', [])
 
-        query = StratumBasicInfo.objects.select_related('project')
+        query = scoped_queryset(StratumBasicInfo.objects.all()).select_related('project')
 
         if project_id:
             query = query.filter(project__project_id=project_id)
@@ -781,9 +794,9 @@ def calculate_tool_performance(params_str: str) -> str:
                          "若要按型号比较请用 recommend_tools。"
             })
 
-        rows_qs = _active_detail_query(params).filter(
+        rows_qs = _visible_records(_active_detail_query(params).filter(
             tool_number__in=tool_numbers
-        ).select_related('warehouse', 'new_tool_record__tool_instance__tool_info')
+        ).select_related('warehouse'), new_tool_record=('tool_instance__tool_info',))
         if project_id:
             rows_qs = rows_qs.filter(warehouse__project__project_id=project_id)
 
@@ -901,7 +914,7 @@ def _ring_int(value):
 
 def _stratum_codes_by_ring(project_id=None) -> dict:
     """返回 {环号(int): {地层代码大写}}，用于按地层筛选服役区间。"""
-    qs = StratumBasicInfo.objects.all()
+    qs = scoped_queryset(StratumBasicInfo.objects.all())
     if project_id:
         qs = qs.filter(project__project_id=project_id)
     mapping = {}
@@ -934,7 +947,7 @@ def _replacement_rings_by_position(project_id=None) -> dict:
 
 
 def _removal_records(project_id=None):
-    query = OldToolRecord.objects.filter(
+    query = scoped_queryset(OldToolRecord.objects.all()).filter(
         tool_change_detail_id__in=_active_detail_query({'project_id': project_id}).filter(is_replaced=True).values('id'),
     ).select_related('tool_change_detail__warehouse')
     return list(query)
@@ -1075,7 +1088,7 @@ def recommend_tools(params_str: str) -> str:
 
         # 所有安装事件（每条 NewToolRecord = 一把物理刀装到某个刀位）
         installs = (
-            NewToolRecord.objects
+            scoped_queryset(NewToolRecord.objects.all())
             .filter(tool_change_detail_id__in=_active_detail_query(params).values('id'))
             .select_related(
                 'tool_instance', 'tool_instance__tool_info',
@@ -1114,7 +1127,7 @@ def recommend_tools(params_str: str) -> str:
         }
         stratum_map = {}
         if stratum_types:
-            strata = StratumBasicInfo.objects.all()
+            strata = scoped_queryset(StratumBasicInfo.objects.all())
             if project_id:
                 strata = strata.filter(project__project_id=project_id)
             for row in strata.values('project_id', 'ring_no', 'stratum_type_codes', 'longitudinal_type_ratios'):
@@ -1122,7 +1135,7 @@ def recommend_tools(params_str: str) -> str:
                          if stratum_basis == 'label' else
                          {code for code, ratio in (row['longitudinal_type_ratios'] or {}).items() if ratio > 0})
                 stratum_map.setdefault((row['project_id'], _ring_int(row['ring_no'])), set()).update(codes)
-        opening_scope = WarehouseOpeningBasicInfo.objects.all()
+        opening_scope = scoped_queryset(WarehouseOpeningBasicInfo.objects.all())
         if project_id:
             opening_scope = opening_scope.filter(project__project_id=project_id)
         if params.get('shield_machine_id'):
@@ -1217,7 +1230,7 @@ def recommend_tools(params_str: str) -> str:
         info_ids = [v["tool_info_id"] for v in models_acc.values() if v["tool_info_id"]]
         if info_ids:
             for cost in (
-                ToolCost.objects.filter(tool_info_id__in=info_ids, cost_type='NEW_TOOL', unit_price__isnull=False)
+                scoped_queryset(ToolCost.objects.all()).filter(tool_info_id__in=info_ids, cost_type='NEW_TOOL', unit_price__isnull=False)
                 .order_by('tool_info_id', 'unit_price', 'id')
             ):
                 cost_map.setdefault(cost.tool_info_id, []).append({
@@ -1499,7 +1512,7 @@ def analyze_stratum_wear_correlation(params_str: str) -> str:
         ring_range = params.get('ring_range', [])
 
         # 1. 获取地层数据
-        stratum_query = StratumBasicInfo.objects.select_related('project')
+        stratum_query = scoped_queryset(StratumBasicInfo.objects.all()).select_related('project')
         if project_id:
             stratum_query = stratum_query.filter(project__project_id=project_id)
         if ring_range and len(ring_range) == 2:
@@ -1667,7 +1680,7 @@ def query_opening_records(params_str: str) -> str:
         if summary_status is not None and summary_status not in {'CONFIRMED', 'DRAFT'}:
             return _build_json({'error': '汇总状态只支持 CONFIRMED 或 DRAFT'})
 
-        query = WarehouseOpeningBasicInfo.objects.select_related('project').annotate(
+        query = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).select_related('project').annotate(
             ring_int=Cast('ring_no', output_field=IntegerField())
         )
         if project_id:
@@ -1719,7 +1732,7 @@ def query_opening_records(params_str: str) -> str:
         efficiency_all = _opening_efficiency(all_records)
         recent_qs = all_records[:limit]
         efficiency_recent = _opening_efficiency(recent_qs)
-        readings = WarehouseOpeningBasicInfo.objects.filter(
+        readings = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).filter(
             project_id__in={r['project_id'] for r in recent_qs},
             right_revolution_reading__isnull=False, left_revolution_reading__isnull=False,
             ring_no__regex=r'^[0-9]{1,9}$',
@@ -2234,7 +2247,7 @@ def query_tunneling_wear_correlation(params_str: str) -> str:
         tunneling_records = [r for r in tunneling_records if r.get('ring_int') is not None]
         ring_range = _checked_ring_range(params.get('ring_range'))
         change_qs = _active_detail_query({'project_id': project_id}).select_related('warehouse__project')
-        stratum_qs = StratumBasicInfo.objects.select_related('project')
+        stratum_qs = scoped_queryset(StratumBasicInfo.objects.all()).select_related('project')
         if project_id:
             change_qs = change_qs.filter(warehouse__project__project_id=project_id)
             stratum_qs = stratum_qs.filter(project__project_id=project_id)
@@ -2389,7 +2402,7 @@ def query_position_stratum_impact(params_str: str) -> str:
                                 "note": "标签关联次数按每次更换所在开仓的历史地层标签计数，一次更换可能对应多个标签，所以会多于实际更换次数。",
                                 **_analysis_payload(warnings=['未找到实际更换记录'])})
 
-        stratum_query = StratumBasicInfo.objects.all()
+        stratum_query = scoped_queryset(StratumBasicInfo.objects.all())
         if project_id:
             stratum_query = stratum_query.filter(project__project_id=project_id)
         stratum_map = {}

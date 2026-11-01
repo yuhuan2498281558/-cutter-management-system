@@ -7,6 +7,7 @@ from django.db.models import Count
 
 from application.ai_assistant.tools import _analysis_payload, _build_json
 from application.ai_assistant.tools_inspections import _detail_scope, _filtered_details, _validate_detail_params
+from application.shield.analysis_metrics import scoped_queryset
 from application.shield.cutter_position_scope import cutter_position_sort_key, normalize_cutter_position_no
 from application.shield.models import (
     BEARING_FAILURE_REASON_CHOICES, HUB_FAILURE_REASON_CHOICES, OLD_TOOL_DISPOSITION_CHOICES,
@@ -57,7 +58,7 @@ def query_old_tool_repairs(params_str: str) -> str:
 
     params.setdefault('list_limit', 20)
     details = _filtered_details(params).filter(is_replaced=True)
-    query = OldToolRecord.objects.filter(tool_change_detail__in=details)
+    query = scoped_queryset(OldToolRecord.objects.all()).filter(tool_change_detail__in=details)
     for field in ('inspection_status', 'disposition'):
         if field in params:
             query = query.filter(**{field: params[field]})
@@ -69,7 +70,7 @@ def query_old_tool_repairs(params_str: str) -> str:
     records.sort(key=lambda r: (-rows[r.tool_change_detail_id]._tool_ring,
                                cutter_position_sort_key(r.tool_change_detail.cutter_position_no), r.pk))
     # 照片独立计数，避免一把刀的多张照片放大登记金额。
-    photos = dict(OldToolPhoto.objects.filter(old_tool_record_id__in=[r.pk for r in records])
+    photos = dict(scoped_queryset(OldToolPhoto.objects.all()).filter(old_tool_record_id__in=[r.pk for r in records])
                   .values('old_tool_record_id').annotate(n=Count('pk')).values_list('old_tool_record_id', 'n'))
     statuses = Counter(r.inspection_status for r in records)
     disposition = defaultdict(Counter)

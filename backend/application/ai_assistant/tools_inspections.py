@@ -6,6 +6,7 @@ from django.db.models import IntegerField
 from django.db.models.functions import Cast
 
 from application.ai_assistant.tools import _active_detail_query, _analysis_payload, _build_json, is_abnormal_wear
+from application.shield.analysis_metrics import scoped_queryset
 from application.shield.cutter_position_scope import (
     ACTIVE_CUTTER_POSITION_CODES, cutter_position_sort_key, normalize_cutter_position_no,
 )
@@ -92,7 +93,7 @@ def query_tool_inspections(params_str: str) -> str:
         return _build_json({'error': str(exc) if not isinstance(exc, json.JSONDecodeError) else '参数必须是有效的 JSON 对象'})
 
     params.setdefault('list_limit', 20)
-    openings = WarehouseOpeningBasicInfo.objects.all()
+    openings = scoped_queryset(WarehouseOpeningBasicInfo.objects.all())
     if params.get('project_id'):
         openings = openings.filter(project__project_id=params['project_id'])
     if params.get('shield_machine_id'):
@@ -110,7 +111,7 @@ def query_tool_inspections(params_str: str) -> str:
     by_opening = defaultdict(list)
     for row in all_rows:
         by_opening[row.warehouse_id].append(row)
-    tasks = list(MobileToolChangeTask.objects.filter(warehouse_id__in=[o.pk for o in openings]).values('warehouse_id', 'status'))
+    tasks = list(scoped_queryset(MobileToolChangeTask.objects.all()).filter(warehouse_id__in=[o.pk for o in openings]).values('warehouse_id', 'status'))
     statuses = defaultdict(list)
     for task in tasks:
         statuses[task['warehouse_id']].append(task['status'])
