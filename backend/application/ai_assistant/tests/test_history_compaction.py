@@ -97,8 +97,11 @@ class HistoryCompactionTests(SimpleTestCase):
         llm = Mock(policy=ContextBudgetPolicy())
         llm.invoke.side_effect = [AIMessage(content="共换刀 5678 把"), AIMessage(content="共换刀 9999 把")]
         self.assistant._llm = llm
-        summary = self.assistant._write_checkpoint(material, self.snapshot())
+        config = {"configurable": {"session_id": "event-test"}, "callbacks": []}
+        summary = self.assistant._write_checkpoint(material, self.snapshot(), config)
         self.assertTrue(summary.startswith("（自动节选，未经整理）"), summary)
+        # 摘要调用沿用本轮 config，用量回调才能把它计入本轮用量
+        self.assertEqual([item.kwargs["config"] for item in llm.invoke.call_args_list], [config, config])
         self.assertIn("问：查询第1项", summary)
         retry = llm.invoke.call_args_list[1].args[0][-1].content
         self.assertIn("5678", retry)

@@ -3,6 +3,7 @@ import json
 import os
 from unittest.mock import Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase, override_settings
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
@@ -232,7 +233,7 @@ class ContextBudgetTests(SimpleTestCase):
         assistant._model_needs_tools = Mock(return_value=False)
         query = "解释概念" + "x" * 5000
         context = {"user_id": 1, "project_id": "TEST", "route_mode": "agent"}
-        result = assistant.chat(query, context)
+        result = await sync_to_async(assistant.chat)(query, context)
         self.assertFalse(result["success"])
         self.assertIn("上下文超过配置预算", result["error"])
         events = [event async for event in assistant.chat_stream(query, context)]
@@ -249,7 +250,7 @@ class ContextBudgetTests(SimpleTestCase):
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
         assistant._model_needs_tools = Mock(return_value=False)
         context = {"user_id": 1, "project_id": "TEST", "route_mode": "agent"}
-        result = assistant.chat("你好", context)
+        result = await sync_to_async(assistant.chat)("你好", context)
         self.assertFalse(result["success"])
         self.assertIn("达到输出上限", result["error"])
         events = [event async for event in assistant.chat_stream("你好", context)]

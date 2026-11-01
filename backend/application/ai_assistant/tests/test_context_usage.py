@@ -208,7 +208,7 @@ class ContextUsageTests(SimpleTestCase):
             if failed:
                 self.assertGreater(info["used"], info["input_budget"])
                 assistant._store_turn_and_summarize.assert_not_called()
-                sync_result = assistant.chat("解释磨损机理", request_context)
+                sync_result = await sync_to_async(assistant.chat)("解释磨损机理", request_context)
                 self.assertEqual(sync_result["context"], info)
 
     async def test_rule_stream_has_null_usage_and_no_model_initialization(self):

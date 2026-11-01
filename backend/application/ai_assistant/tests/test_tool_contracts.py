@@ -157,9 +157,11 @@ class ToolContractTests(SimpleTestCase):
 
     def test_sync_model_mode_does_not_fall_back_for_recent_ring_query(self):
         assistant = self.make_assistant()
-        self.enterContext(patch('application.ai_assistant.llm_service.invoke_agent', return_value={
-            'output': '已查询所选范围', 'intermediate_steps': [(None, {'total_records': 2})],
-        }))
+        async def events(*args, **kwargs):
+            yield {'type': 'tool_end', 'name': TOOLS[0].name, 'observation': {'total_records': 2}}
+            yield {'type': 'final', 'output': '已查询所选范围', 'intermediate_steps': [(None, {'total_records': 2})]}
+
+        self.enterContext(patch('application.ai_assistant.llm_service.astream_agent', side_effect=events))
         result = assistant.chat('统计最近100环换刀情况', {'user_id': 1, 'route_mode': 'agent'})
         self.assertTrue(result['success'])
         self.assertEqual(result['tool_group'], 'all')

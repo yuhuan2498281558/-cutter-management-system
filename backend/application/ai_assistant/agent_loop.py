@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_ERRORS = ("timeout", "connection", "rate limit", "overloaded", "503", "502")
 
 
-def astream_agent(model, prompt, tools, inputs, *, max_iterations=10, model_retries=2, config=None):
-    """逐轮调用模型并顺序执行工具，产出文字、工具起止和最终结果事件。"""
-    return _agent_events(model, prompt, tools, inputs, max_iterations, model_retries, config, in_calling_thread=False)
+def astream_agent(model, prompt, tools, inputs, *, max_iterations=10, model_retries=2, config=None,
+                  in_calling_thread=False):
+    """逐轮调用模型并顺序执行工具，产出文字、工具起止和最终结果事件。
+
+    同步入口传 in_calling_thread=True：模型和工具都回到调用线程走同步接口。
+    """
+    return _agent_events(model, prompt, tools, inputs, max_iterations, model_retries, config, in_calling_thread)
 
 
 def _stream_reply(bound_model, messages, config):

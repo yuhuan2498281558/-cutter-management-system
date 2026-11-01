@@ -220,8 +220,10 @@ class StreamContractTests(SimpleTestCase):
 
     def test_sync_agent_still_requires_evidence_after_retry(self):
         assistant = self.make_assistant()
-        with patch('application.ai_assistant.llm_service.invoke_agent',
-                   return_value={'output': '没有查询依据的统计', 'intermediate_steps': []}) as invoke:
+        async def events(*args, **kwargs):
+            yield {'type': 'final', 'output': '没有查询依据的统计', 'intermediate_steps': []}
+
+        with patch('application.ai_assistant.llm_service.astream_agent', side_effect=events) as invoke:
             result = assistant.chat('查询换刀记录', {'user_id': 1, 'project_id': 'TEST', 'route_mode': 'agent'})
         self.assertFalse(result['success'])
         self.assertEqual(invoke.call_count, 2)

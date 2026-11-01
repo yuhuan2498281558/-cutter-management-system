@@ -113,9 +113,11 @@ class IntegrationContractsTests(SimpleTestCase):
             self.assertEqual(assistant._tool_group_for_query(query), 'all')
             selected = assistant._get_tools_for_query(query, project_id='TEST')
             self.assertEqual(len(selected), 22)
-        with patch.object(service, 'invoke_agent', return_value={
-            'output': '已查到数据。', 'intermediate_steps': [(None, {'total_records': 2})],
-        }) as invoke:
+        async def events(*args, **kwargs):
+            yield {'type': 'tool_end', 'name': service.TOOLS[0].name, 'observation': {'total_records': 2}}
+            yield {'type': 'final', 'output': '已查到数据。', 'intermediate_steps': [(None, {'total_records': 2})]}
+
+        with patch.object(service, 'astream_agent', side_effect=events) as invoke:
             result = assistant.chat('综合返修、报价和掘进参数给出风险分析',
                                     {'project_id': 'TEST', 'route_mode': 'agent'})
         self.assertTrue(result['success'], result)

@@ -4,6 +4,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
 from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -94,7 +95,6 @@ class AnswerCheckTests(SimpleTestCase):
         assistant._llm = Mock()
         assistant._llm.invoke.return_value = AIMessage(content=GOOD)
         result = {"output": answer, "intermediate_steps": [(SimpleNamespace(tool=tool, tool_input=args or {}), json.dumps(data))]}
-        self.enterContext(patch('application.ai_assistant.llm_service.invoke_agent', return_value=result))
 
         async def stream(*args, **kwargs):
             yield {"type": "tool_end", "call_id": "call-1", "name": "tool_query_tool_cost_catalog", "args": {}, "observation": json.dumps(data)}
@@ -188,7 +188,7 @@ class AnswerCheckTests(SimpleTestCase):
                     self.assertNotIn("revising", [e.get("stage") for e in events])
                     answer, trace = answers[0], events[-1]["answer_check"]
                 else:
-                    result = assistant.chat(QUESTION, {"user_id": 1, "route_mode": "agent"})
+                    result = await sync_to_async(assistant.chat)(QUESTION, {"user_id": 1, "route_mode": "agent"})
                     self.assertTrue(result["success"], result)
                     answer, trace = result["answer"], result["answer_check"]
             self.assertEqual(json.loads(fetch.call_args.args[0])["project_id"], "scoped-project")

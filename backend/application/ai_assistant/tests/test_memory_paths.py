@@ -2,6 +2,7 @@ import json
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
 
 from application.ai_assistant.llm_service import ToolAssistant
@@ -205,9 +206,9 @@ class MemoryPathTests(SimpleTestCase):
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._direct_route = Mock(return_value={"answer": "已查询", "type": "analysis", "rule_branch": "tool_change_summary"})
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
-        assistant._polish_direct_answer = Mock(return_value=("已查询", {}))
+        assistant._polish_direct_answer = Mock(return_value="已查询")
         query = "取消滚刀限制"
-        sync_result = assistant.chat(query, {"user_id": 1, "project_id": "TEST"})
+        sync_result = await sync_to_async(assistant.chat)(query, {"user_id": 1, "project_id": "TEST"})
         stream = [event async for event in assistant.chat_stream(query, {"user_id": 1, "project_id": "TEST"})]
         for call in assistant._store_turn_and_summarize.call_args_list:
             self.assertEqual(call.args[1], query)

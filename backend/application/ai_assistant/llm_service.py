@@ -5,7 +5,7 @@ LLM服务封装 - 使用LangChain Tool Calling Agent + Ollama
 
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from .agent_loop import astream_agent, invoke_agent
+from .agent_loop import astream_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_community.chat_message_histories import SQLChatMessageHistory
@@ -61,7 +61,7 @@ from .answer_reporting import (render_report, render_abnormal_cause, display, nu
                                wants_manufacturer_prices, manufacturer_price_order, manufacturer_price_table,
                                GROUPED_SORT)
 from application.shield.stratum_ratios import STRATUM_LABELS
-from asgiref.sync import sync_to_async
+from asgiref.sync import async_to_sync, sync_to_async
 from contextlib import aclosing
 import logging
 import json
@@ -253,17 +253,6 @@ def _new_usage_callback():
     handler = UsageMetadataCallbackHandler()
     return [handler], lambda: getattr(handler, "usage_metadata", {}) or {}
 
-
-def _merge_usage(*usages) -> dict:
-    """合并多次调用的 token 用量，按模型名聚合。"""
-    merged = {}
-    for usage in usages:
-        for model, counts in (usage or {}).items():
-            bucket = merged.setdefault(model, {})
-            for key, value in (counts or {}).items():
-                if isinstance(value, (int, float)):
-                    bucket[key] = bucket.get(key, 0) + value
-    return merged
 
 _OLLAMA_RUNNER_ERRORS = (
     "llama runner process has terminated",
@@ -1102,20 +1091,19 @@ class ToolAssistant:
         messages.append(HumanMessage(content=human))
         return messages
 
-    def _verbalize_raw_tool_results(self, user_query: str, calls: list):
+    async def _verbalize_raw_tool_results(self, user_query: str, calls: list, config=None, *, streaming: bool):
         """消融用：绕过 _format_* 模板，把工具原始返回直接交给 LLM 自行组织成回答。
 
         这条路径正是本系统主张要避免的做法——数值不再由确定性模板产出，而是由 LLM
         从 JSON 中复述，因此可用来量化"模板化格式化"对数值一致性的实际贡献。
-        返回 (答案 或 None, token用量)；生成失败时回退到模板答案。
+        返回答案或 None；生成失败时回退到模板答案，用量由本轮回调统一记录。
         """
         payload = "\n\n".join(
             f"工具 {c.get('tool')} 返回：\n{c.get('result')}"
             for c in (calls or []) if c.get("result")
         )
         if not payload:
-            return None, {}
-        callbacks, get_usage = _new_usage_callback()
+            return None
         messages = [
             SystemMessage(content=(
                 SYSTEM_PROMPT
@@ -1125,25 +1113,25 @@ class ToolAssistant:
                                  question=user_query, results=payload),
         ]
         try:
-            result = self.llm.invoke(
-                messages, config={"callbacks": callbacks} if callbacks else None
-            )
+            await sync_to_async(self._ensure_llm_runtime)()
+            # 同步入口沿用调用线程和同步客户端，流式入口使用异步客户端。
+            result = (await self.llm.ainvoke(messages, config=config) if streaming else
+                      await sync_to_async(self.llm.invoke, thread_sensitive=True)(messages, config=config))
             text = result.content if hasattr(result, "content") else str(result)
-            return (text.strip() or None), get_usage()
+            return text.strip() or None
         except Exception as e:
             logger.warning("模板消融路径生成失败，回退模板答案：%s", e)
-            return None, get_usage()
+            return None
 
-    def _direct_chat(self, user_query: str, context: dict = None):
-        """返回 (答案, token用量)。"""
-        callbacks, get_usage = _new_usage_callback()
+    def _direct_chat(self, user_query: str, context: dict = None, config=None):
+        """同步直聊，用量由本轮回调统一记录。"""
         memory_snapshot = context.get("memory_snapshot") if context else None
         response = self.llm.invoke(
             self._build_direct_messages(user_query, context, memory_snapshot),
-            config={"callbacks": callbacks} if callbacks else None,
+            config=config,
         )
         text = response.content if hasattr(response, "content") else str(response)
-        return text, get_usage()
+        return text
 
     @staticmethod
     def _get_session_history(session_id: str):
@@ -1243,7 +1231,7 @@ class ToolAssistant:
         before = self._first_request_tokens(history, enriched_input, anchor)
         return before > self._llm.policy.trigger_tokens, history, before
 
-    def _compact_history(self, snapshot, working_context, enriched_input, force=False):
+    def _compact_history(self, snapshot, working_context, enriched_input, force=False, config=None):
         """历史用到触发线时整理早前对话，返回（快照, 回放的历史）。
 
         最近约 retain_ratio 个窗口的完整轮次保留原文；更早的轮次先精简大查询结果，
@@ -1283,7 +1271,7 @@ class ToolAssistant:
             payload = None
             material = [item for item in _history_turns(history) if item[0] is None or item[0] <= boundary]
         if payload is None:
-            summary = self._write_checkpoint(material, snapshot)
+            summary = self._write_checkpoint(material, snapshot, config)
             payload = {"mode": "checkpoint", "through_sequence": boundary, "summary": summary, "before": before}
             _, after = trial(payload)
         payload["after"] = after
@@ -1295,7 +1283,7 @@ class ToolAssistant:
                     payload["mode"], boundary, before, after)
         return saved, self._replayed_history(saved, working_context)[0]
 
-    def _write_checkpoint(self, material_turns, snapshot) -> str:
+    def _write_checkpoint(self, material_turns, snapshot, config=None) -> str:
         """用模型把早前对话写成摘要，摘要里的数字要能在材料里找到；两次都对不上时改用问答节选。"""
         policy = self._llm.policy
         material = _checkpoint_material(material_turns)
@@ -1311,7 +1299,7 @@ class ToolAssistant:
         try:
             messages = [SystemMessage(content=CHECKPOINT_PROMPT), HumanMessage(content=material)]
             for attempt in range(2):
-                text = self._llm.invoke(messages).content
+                text = self._llm.invoke(messages, config=config).content
                 if not isinstance(text, str) or not text.strip():
                     break
                 missing = _unsupported_numbers(text, material)
@@ -1343,11 +1331,11 @@ class ToolAssistant:
                 lines.append(f"- 问：{question.content}\n  答：{answer.content[:300]}")
         return "（自动节选，未经整理）\n" + "\n".join(lines)
 
-    def _compact_after_overflow(self, error, snapshot, working_context, enriched_input):
+    def _compact_after_overflow(self, error, snapshot, working_context, enriched_input, config=None):
         """供应商或预算报上下文超长时强制整理一次；整理不出空间时返回 None，由调用方照常报错。"""
         if not _context_overflow(error) or snapshot.backend != "legacy":
             return None
-        compacted, history = self._compact_history(snapshot, working_context, enriched_input, force=True)
+        compacted, history = self._compact_history(snapshot, working_context, enriched_input, force=True, config=config)
         if compacted is snapshot:
             return None
         if usage := context_usage.get():
@@ -2651,31 +2639,26 @@ class ToolAssistant:
             HumanMessage(content=human), question=user_query, results=structured_answer,
         )]
 
-    def _polish_direct_answer(self, user_query: str, structured_answer: str):
-        """返回 (答案, token用量)。
-
-        注意：润色会把已经拼好的模板答案再交给 LLM 重写，这一步同样消耗 token，
-        此前未被任何统计覆盖，会低估规则直答路径的实际成本。
-        """
+    def _polish_direct_answer(self, user_query: str, structured_answer: str, config=None):
+        """同步润色，用量由本轮回调统一记录。"""
         if (
             not self._should_polish_direct_answer()
             or not structured_answer
             or self._must_preserve_direct_answer(structured_answer)
         ):
-            return structured_answer, {}
-        callbacks, get_usage = _new_usage_callback()
+            return structured_answer
         try:
             result = self.llm.invoke(
                 self._build_polish_messages(user_query, structured_answer),
-                config={"callbacks": callbacks} if callbacks else None,
+                config=config,
             )
             text = result.content if hasattr(result, "content") else str(result)
-            return (text.strip() or structured_answer), get_usage()
+            return text.strip() or structured_answer
         except Exception as e:
             logger.warning("直接路由答案润色失败，回退结构化答案：%s", e)
-            return structured_answer, get_usage()
+            return structured_answer
 
-    async def _polish_direct_answer_async(self, user_query: str, structured_answer: str) -> str:
+    async def _polish_direct_answer_async(self, user_query: str, structured_answer: str, config=None) -> str:
         if (
             not self._should_polish_direct_answer()
             or not structured_answer
@@ -2684,7 +2667,7 @@ class ToolAssistant:
             return structured_answer
         try:
             await sync_to_async(self._ensure_llm_runtime)()
-            result = await self.llm.ainvoke(self._build_polish_messages(user_query, structured_answer))
+            result = await self.llm.ainvoke(self._build_polish_messages(user_query, structured_answer), config=config)
             text = result.content if hasattr(result, "content") else str(result)
             return text.strip() or structured_answer
         except Exception as e:
@@ -3400,281 +3383,134 @@ class ToolAssistant:
             yield {"type": "status", "stage": "done"}
         logger.info("AI answer_check=%s", json.dumps(trace, ensure_ascii=False))
 
-    def chat(self, user_query: str, context: dict = None) -> dict:
+    async def _turn_events(self, user_query: str, context: dict = None, *, streaming: bool):
+        """同步与流式共用本轮编排，最后产出携带 chat 返回字典的 result 事件。"""
         user_id = str(context.get("user_id", "anonymous")) if context else "anonymous"
-        memory_snapshot = self._load_memory(user_id)
-        working_context = self._prepare_query_context(user_query, memory_snapshot, context)
-        if self._route_mode_for_context(working_context) == "rule":
-            working_context.pop("focus_sources", None)
-        resolved_slots = working_context["memory_slots"]
-
-        # 条件继承与历史回放独立，原问题仍用于界面历史。
-        merged_query = working_context["effective_query"]
-        ctx_msg = self._build_context_message(working_context)
-        enriched_input = f"{ctx_msg}\n\n{merged_query}" if ctx_msg else merged_query
-
-        config = {"configurable": {"session_id": user_id}}
-
-        # 埋点：记录本次请求的工具调用、被裁剪出的工具组、token 用量。
-        # route 字段保持原有取值（rule / llm）以兼容既有前端；新增 route_stage
-        # 用于区分"LLM 直聊"与"Agent 工具调用"——二者原本都返回 route="llm"，
-        # 无法在日志与实验数据中区分。
-        _trace_start()
         started_at = time.perf_counter()
-        model_selects_tools = self._route_mode_for_context(working_context) == "agent"
-        tool_group = "all" if model_selects_tools or working_context.get("focus_sources") or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(merged_query)
-        callbacks, get_usage = _new_usage_callback()
+        _trace_start()
+        usage = ContextUsage()
+        token = context_usage.set(usage)
+        memory_info, tool_group = None, None
+        trace_offset = 0
         answer_check = {}
+        callbacks, get_usage = _new_usage_callback()
+        config = {"configurable": {"session_id": user_id}}
         if callbacks:
-            config = {**config, "callbacks": callbacks}
+            config["callbacks"] = callbacks
 
-        def _finish(payload: dict, route_stage: str, retry_count: int = 0) -> dict:
+        def _finish(payload, route_stage, retry_count=0):
             payload.update({
                 "context": self._context_info(usage, memory_info),
-                "route_stage": route_stage,
-                "rule_branch": payload.get("rule_branch"),
+                "route_stage": route_stage, "rule_branch": payload.get("rule_branch"),
                 "tool_group": tool_group,
-                "tool_calls": _trace_calls(
-                    include_results=_flag_enabled("AI_TRACE_TOOL_RESULTS")
-                ),
-                "usage": get_usage(),
-                "retry_count": retry_count,
+                "tool_calls": _trace_calls(include_results=_flag_enabled("AI_TRACE_TOOL_RESULTS"))[trace_offset:],
+                "usage": get_usage(), "retry_count": retry_count,
                 "latency_ms": round((time.perf_counter() - started_at) * 1000, 1),
                 "config": current_config_signature(),
             })
             if answer_check:
                 payload["answer_check"] = answer_check
-            _trace_stop()
             return payload
 
-        usage = ContextUsage(inputs={enriched_input: {"system": ctx_msg or "", "question": merged_query}})
-        memory_info = self.memory.context_info(memory_snapshot, include_recent=(
-            memory_snapshot.backend != "ablate"
-        ))
-        token = context_usage.set(usage)
-        try:
-            logger.info("AI query user_id=%s query_chars=%s", user_id, len(user_query))
-            needs_tools = self._model_needs_tools(merged_query, working_context)
-            if working_context.get('require_project') and not working_context.get('project_id') and needs_tools:
-                raise RuntimeError("当前无法确定查询项目，请先明确项目；存在多个项目时需要从指定项目入口查询")
-            direct = self._direct_route(merged_query, working_context) if not model_selects_tools else None
-            if direct:
-                ablate_usage = {}
-                if _flag_enabled("AI_ABLATE_TEMPLATE"):
-                    raw_answer, ablate_usage = self._verbalize_raw_tool_results(
-                        merged_query, _trace_calls(include_results=True)
-                    )
-                    if raw_answer:
-                        direct["answer"] = raw_answer
-                answer, polish_usage = self._polish_direct_answer(merged_query, direct["answer"])
-                stored_snapshot = self._store_turn_and_summarize(
-                    user_id, user_query, answer, resolved_slots,
-                    metadata={"route": "rule", "rule_branch": direct.get("rule_branch"), "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")},
-                    expected_generation=memory_snapshot.generation,
-                )
-                base_usage = get_usage()
-                result_payload = {
-                    "success": True, "answer": answer, "type": direct["type"],
-                    "route": "rule", "route_label": "规则直答",
-                    "rule_branch": direct.get("rule_branch"),
-                    "estimated_time": "通常 1 秒内",
-                }
-                payload = _finish(result_payload, "rule")
-                payload["usage"] = _merge_usage(base_usage, polish_usage, ablate_usage)
-                payload["memory"] = self._memory_diagnostics(stored_snapshot, working_context)
-                return payload
-
-            # 调模型之前：历史用到触发线就先整理
-            memory_snapshot, history_messages = self._compact_history(memory_snapshot, working_context, enriched_input)
-            working_context["memory_snapshot"] = memory_snapshot
-            history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
-
-            if not needs_tools:
-                answer, chat_usage = self._direct_chat(merged_query, working_context)
-                stored_snapshot = self._store_turn_and_summarize(
-                    user_id, user_query, answer, resolved_slots,
-                    metadata={"route": "llm", "route_stage": "llm_direct", "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")},
-                    expected_generation=memory_snapshot.generation,
-                    enriched_input=enriched_input, usage=usage.event(),
-                )
-                payload = _finish({
-                    "success": True, "answer": answer, "type": "text",
-                    "route": "llm", "route_label": "模型分析",
-                    "estimated_time": "通常 6-8 秒",
-                }, "llm_direct")
-                payload["usage"] = _merge_usage(payload.get("usage"), chat_usage)
-                payload["memory"] = self._memory_diagnostics(stored_snapshot, working_context)
-                return payload
-
-            tools = self._get_tools_for_query(
-                merged_query,
-                project_id=working_context.get("project_id", ""),
-                model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
-            )
-            try:
-                result = invoke_agent(
-                    self._llm, self._prompt, tools,
-                    {"input": enriched_input, "chat_history": history_messages},
-                    max_iterations=10, config=config,
-                )
-            except Exception as error:
-                compacted = self._compact_after_overflow(error, memory_snapshot, working_context, enriched_input)
-                if compacted is None:
-                    raise
-                memory_snapshot, history_messages = compacted
-                history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
-                result = invoke_agent(
-                    self._llm, self._prompt, tools,
-                    {"input": enriched_input, "chat_history": history_messages},
-                    max_iterations=10, config=config,
-                )
-
-            # 验证：需要查数据的问题必须有工具调用记录
-            retry_count = 0
-            steps = result.get("intermediate_steps", [])
-            if needs_tools and not steps and not history_evidence:
-                logger.warning(f"[{user_id}] 未调用工具，强制重试")
-                retry_input = (
-                    f"{enriched_input}\n\n"
-                    "【系统提示】你上一次回答没有调用任何工具，直接编造了数据，这是错误的。"
-                    "请立即调用对应工具查询真实数据，不得编造任何数字或结论。"
-                )
-                usage.inputs[retry_input] = usage.inputs[enriched_input]
-                retry_count = 1
-                result = invoke_agent(
-                    self._llm, self._prompt, tools,
-                    {"input": retry_input, "chat_history": history_messages},
-                    max_iterations=10, config=config,
-                )
-                enriched_input = retry_input
-
-            answer = self._validated_agent_answer(result, history_evidence)
-            tool_results = [{"tool": getattr(action, "tool", ""), "args": getattr(action, "tool_input", {}),
-                             "result": observation} for action, observation in result.get("intermediate_steps", [])]
-            for event in self._revise_agent_answer(
-                merged_query, answer, working_context["query_spec"], tool_results, answer_check, config,
-                working_context.get("project_id", ""),
-            ):
-                if event["type"] == "answer":
-                    answer = event["content"]
-            logger.info(f"[{user_id}] 回答成功，工具调用次数：{len(result.get('intermediate_steps', []))}")
-            stored_snapshot = self._store_turn_and_summarize(
-                user_id, user_query, answer, resolved_slots,
-                metadata={"route": "llm", "route_stage": "agent", "tool_group": tool_group, "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")},
-                expected_generation=memory_snapshot.generation,
-                enriched_input=enriched_input, intermediate_steps=result.get("intermediate_steps", []),
-                usage=usage.event(),
-            )
-            payload = _finish({
-                "success": True, "answer": answer, "type": "text",
-                "route": "llm", "route_label": "模型分析",
-                "estimated_time": "通常 6-8 秒",
-            }, "agent", retry_count=retry_count)
-            payload["memory"] = self._memory_diagnostics(stored_snapshot, working_context)
-            return payload
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"[{user_id}] 查询失败：{error_msg}")
-            return _finish({
-                "success": False, "error": self._friendly_error(error_msg), "type": "error",
-            }, "error")
-        finally:
-            context_usage.reset(token)
-
-    async def chat_stream(self, user_query: str, context: dict = None):
-        """
-        异步生成器，逐 token 产出内容。
-        记忆上下文由 MemoryService 显式加载和写回，保证同步与 SSE 语义一致。
-        """
-        user_id = str(context.get("user_id", "anonymous")) if context else "anonymous"
-        original_query = user_query
-        _trace_start()
-        usage = ContextUsage()
-        token = context_usage.set(usage)
-        memory_info = None
-        answer_check = {}
         try:
             memory_snapshot = await sync_to_async(self._load_memory)(user_id)
             working_context = await sync_to_async(self._prepare_query_context)(user_query, memory_snapshot, context)
             if self._route_mode_for_context(working_context) == "rule":
                 working_context.pop("focus_sources", None)
             resolved_slots = working_context["memory_slots"]
-            user_query = working_context["effective_query"]
-            needs_tools = self._model_needs_tools(user_query, working_context)
+            merged_query = working_context["effective_query"]
+            ctx_msg = self._build_context_message(working_context)
+            enriched_input = f"{ctx_msg}\n\n{merged_query}" if ctx_msg else merged_query
+            started_at = time.perf_counter()
+            # 返回字典的工具记录（评测打分用）不含准备上下文时的查询；流式 done 照旧包含。
+            trace_offset = len(_trace_calls())
+            usage.inputs[enriched_input] = {"system": ctx_msg or "", "question": merged_query}
+            model_selects_tools = self._route_mode_for_context(working_context) == "agent"
+            tool_group = "all" if model_selects_tools or working_context.get("focus_sources") or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(merged_query)
+            memory_info = await sync_to_async(self.memory.context_info)(
+                memory_snapshot, include_recent=memory_snapshot.backend != "ablate",
+            )
+            if not streaming:
+                logger.info("AI query user_id=%s query_chars=%s", user_id, len(user_query))
+            needs_tools = self._model_needs_tools(merged_query, working_context)
             if working_context.get('require_project') and not working_context.get('project_id') and needs_tools:
                 raise RuntimeError("当前无法确定查询项目，请先明确项目；存在多个项目时需要从指定项目入口查询")
-            ctx_msg = self._build_context_message(working_context)
-            enriched_input = f"{ctx_msg}\n\n{user_query}" if ctx_msg else user_query
-            usage.inputs[enriched_input] = {"system": ctx_msg or "", "question": user_query}
-            memory_info = await sync_to_async(self.memory.context_info)(memory_snapshot, include_recent=(
-                memory_snapshot.backend != "ablate"
-            ))
-            full_answer = []
-            final_result = None
-            model_selects_tools = self._route_mode_for_context(working_context) == "agent"
-            direct = await sync_to_async(self._direct_route)(user_query, working_context) if not model_selects_tools else None
+            direct = await sync_to_async(self._direct_route)(merged_query, working_context) if not model_selects_tools else None
             if not direct:
-                # 调模型之前：历史用到触发线就先整理，页面显示“正在整理早前对话”
                 due, history_messages, _ = await sync_to_async(self._compaction_check)(
                     memory_snapshot, working_context, enriched_input,
                 )
                 if due:
                     yield {"type": "status", "stage": "compacting"}
                     memory_snapshot, history_messages = await sync_to_async(self._compact_history)(
-                        memory_snapshot, working_context, enriched_input,
+                        memory_snapshot, working_context, enriched_input, config=config,
                     )
                     yield {"type": "status", "stage": "done"}
                 working_context["memory_snapshot"] = memory_snapshot
-                history_evidence = self._history_evidence_covers(history_messages, working_context, original_query)
+                history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
 
+            route_stage = "rule" if direct else ("agent" if needs_tools else "llm_direct")
+            route_info = {
+                "route": "rule" if direct else "llm", "route_label": "规则直答" if direct else "模型分析",
+                "route_stage": route_stage, "estimated_time": "通常 1 秒内" if direct else "通常 6-8 秒",
+            }
             if direct:
-                answer = await self._polish_direct_answer_async(user_query, direct["answer"])
+                route_info["rule_branch"] = direct.get("rule_branch")
+            elif needs_tools:
+                route_info["tool_group"] = tool_group
+            full_answer, final_result, retry_count = [], None, 0
+            if direct:
+                if _flag_enabled("AI_ABLATE_TEMPLATE"):
+                    raw_answer = await self._verbalize_raw_tool_results(
+                        merged_query, _trace_calls(include_results=True)[trace_offset:], config, streaming=streaming,
+                    )
+                    if raw_answer:
+                        direct["answer"] = raw_answer
+                # 同步润色回到调用线程，避免缓存客户端绑定到临时事件循环。
+                answer = (await self._polish_direct_answer_async(merged_query, direct["answer"], config) if streaming else
+                          await sync_to_async(self._polish_direct_answer, thread_sensitive=True)(merged_query, direct["answer"], config))
                 full_answer.append(answer)
                 if answer:
-                    yield {"type": "meta", "route": "rule", "route_label": "规则直答",
-                           "route_stage": "rule", "rule_branch": direct.get("rule_branch"),
-                           "estimated_time": "通常 1 秒内"}
+                    yield {"type": "meta", **route_info}
                     yield {"type": "chunk", "content": answer}
             elif not needs_tools:
-                yield {"type": "meta", "route": "llm", "route_label": "模型分析",
-                       "route_stage": "llm_direct", "estimated_time": "通常 6-8 秒"}
-                await sync_to_async(self._ensure_llm_runtime)()
-                async with aclosing(self.llm.astream(self._build_direct_messages(user_query, working_context, memory_snapshot))) as tokens:
-                    async for chunk in tokens:
-                        text = chunk.content if hasattr(chunk, "content") else str(chunk)
-                        if isinstance(text, str) and text:
-                            full_answer.append(text)
-                            yield {"type": "chunk", "content": text}
+                yield {"type": "meta", **route_info}
+                # 流式直聊逐片输出，同步直聊使用调用线程上的同步客户端。
+                if streaming:
+                    await sync_to_async(self._ensure_llm_runtime)()
+                    async with aclosing(self.llm.astream(
+                        self._build_direct_messages(merged_query, working_context, memory_snapshot), config=config,
+                    )) as chunks:
+                        async for chunk in chunks:
+                            text = chunk.content if hasattr(chunk, "content") else str(chunk)
+                            if isinstance(text, str) and text:
+                                full_answer.append(text)
+                                yield {"type": "chunk", "content": text}
+                else:
+                    answer = await sync_to_async(self._direct_chat, thread_sensitive=True)(merged_query, working_context, config)
+                    full_answer.append(answer)
+                    if answer:
+                        yield {"type": "chunk", "content": answer}
             else:
-                yield {"type": "meta", "route": "llm", "route_label": "模型分析",
-                       "route_stage": "agent",
-                       "tool_group": "all" if model_selects_tools or working_context.get("focus_sources") or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(user_query),
-                       "estimated_time": "通常 6-8 秒"}
+                yield {"type": "meta", **route_info}
                 tools = await sync_to_async(self._get_tools_for_query)(
-                    user_query,
-                    project_id=working_context.get("project_id", ""),
+                    merged_query, project_id=working_context.get("project_id", ""),
                     model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
                 )
                 tool_names = {item.name for item in tools}
-                for attempt in (1, 2):
-                    final_result = None
-                    successful_tools = 0
-                    unresolved_tools = []
-                    tool_inputs = {}
-                    model_round = 0
+                overflow_retried = False
+                while True:
+                    final_result, successful_tools, unresolved_tools, tool_inputs, model_round = None, 0, [], {}, 0
                     try:
-                        async with aclosing(astream_agent(
-                            self._llm, self._prompt, tools,
-                            {"input": enriched_input, "chat_history": history_messages}, max_iterations=10,
-                        )) as events:
+                        inputs = {"input": enriched_input, "chat_history": history_messages}
+                        events = astream_agent(self._llm, self._prompt, tools, inputs, max_iterations=10,
+                                               config=config, in_calling_thread=not streaming)
+                        async with aclosing(events):
                             async for event in events:
                                 kind = event['type']
                                 if kind == 'tool_start' and event.get('name') in tool_names:
                                     if event.get('call_id'):
-                                        tool_inputs[event['call_id']] = (
-                                            event['name'], event['args'], model_round or None,
-                                        )
+                                        tool_inputs[event['call_id']] = (event['name'], event['args'], model_round or None)
                                 elif kind == 'tool_end' and event.get('name') in tool_names:
                                     started = tool_inputs.pop(event.get('call_id'), None)
                                     arguments, batch = (started[1], started[2]) if started and started[0] == event['name'] else (None, None)
@@ -3695,28 +3531,39 @@ class ToolAssistant:
                                     if (successful_tools or history_evidence) and not unresolved_tools and text:
                                         full_answer.append(text)
                                         yield {"type": "chunk", "content": text}
-                        break
                     except Exception as error:
-                        # 页面还没收到回答文字时，超长可以整理历史后重试一次
-                        if attempt == 2 or full_answer or not _context_overflow(error):
+                        if overflow_retried or full_answer or not _context_overflow(error):
                             raise
                         yield {"type": "status", "stage": "compacting"}
                         compacted = await sync_to_async(self._compact_after_overflow)(
-                            error, memory_snapshot, working_context, enriched_input,
+                            error, memory_snapshot, working_context, enriched_input, config=config,
                         )
                         yield {"type": "status", "stage": "done"}
                         if compacted is None:
                             raise error
                         memory_snapshot, history_messages = compacted
-                        history_evidence = self._history_evidence_covers(history_messages, working_context, original_query)
+                        history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
+                        overflow_retried = True
+                        continue
+                    if isinstance(final_result, dict) and not final_result.get("intermediate_steps") and not history_evidence and not retry_count:
+                        logger.warning(f"[{user_id}] 未调用工具，强制重试")
+                        retry_input = (
+                            f"{enriched_input}\n\n"
+                            "【系统提示】你上一次回答没有调用任何工具，直接编造了数据，这是错误的。"
+                            "请立即调用对应工具查询真实数据，不得编造任何数字或结论。"
+                        )
+                        usage.inputs[retry_input] = usage.inputs[enriched_input]
+                        enriched_input, retry_count = retry_input, 1
+                        continue
+                    break
                 if not isinstance(final_result, dict) or not (successful_tools or history_evidence) or unresolved_tools:
                     raise RuntimeError("未取得完整的工具查询结果，请重试")
                 answer = self._validated_agent_answer(final_result, history_evidence)
                 tool_results = [{"tool": getattr(action, "tool", ""), "args": getattr(action, "tool_input", {}),
                                  "result": observation} for action, observation in final_result.get("intermediate_steps", [])]
                 revision = self._revise_agent_answer(
-                    user_query, answer, working_context["query_spec"], tool_results, answer_check,
-                    project_id=working_context.get("project_id", ""),
+                    merged_query, answer, working_context["query_spec"], tool_results, answer_check, config,
+                    working_context.get("project_id", ""),
                 )
                 while (event := await sync_to_async(next)(revision, None)) is not None:
                     if event["type"] == "answer":
@@ -3726,40 +3573,61 @@ class ToolAssistant:
                     # 后续工具调用前的文字仍是临时输出，落库和回填只使用最终回答。
                     yield {"type": "answer", "content": answer}
                 full_answer = [answer]
+                if not streaming:
+                    logger.info(f"[{user_id}] 回答成功，工具调用次数：{len(final_result.get('intermediate_steps', []))}")
 
             answer = "".join(full_answer)
             if not answer.strip():
                 raise RuntimeError("未生成完整回答，请重试")
-            is_direct = not needs_tools
+            metadata = {"route": route_info["route"], "route_stage": route_stage,
+                        "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")}
+            if direct:
+                metadata["rule_branch"] = direct.get("rule_branch")
+            elif needs_tools:
+                metadata["tool_group"] = tool_group
             stored_snapshot = await sync_to_async(self._store_turn_and_summarize)(
-                user_id,
-                original_query,
-                answer,
-                resolved_slots,
-                metadata={
-                    "route": "rule" if direct else "llm",
-                    "route_stage": "rule" if direct else ("llm_direct" if is_direct else "agent"),
-                    "query_intent": working_context["query_spec"],
-                    "project_id": working_context.get("project_id", ""),
-                },
+                user_id, user_query, answer, resolved_slots, metadata=metadata,
                 expected_generation=memory_snapshot.generation,
                 enriched_input=None if direct else enriched_input,
                 intermediate_steps=(final_result or {}).get("intermediate_steps", []),
                 usage=None if direct else usage.event(),
             )
-            yield {"type": "memory", **self._memory_diagnostics(stored_snapshot, working_context)}
+            memory = self._memory_diagnostics(stored_snapshot, working_context)
+            yield {"type": "memory", **memory}
             yield {"type": "context", "context": self._context_info(usage, memory_info)}
             yield {"type": "done", "tool_calls": _trace_calls(include_results=_flag_enabled("AI_TRACE_TOOL_RESULTS")),
                    **({"answer_check": answer_check} if answer_check else {})}
-
-        except Exception as e:
-            logger.error(f"[{user_id}] 流式查询失败：{e}")
+            yield {"type": "result", "payload": _finish({
+                "success": True, "answer": answer, "type": direct["type"] if direct else "text",
+                **route_info, "memory": memory,
+            }, route_stage, retry_count)}
+        except Exception as error:
+            logger.error(f"[{user_id}] {'流式查询失败' if streaming else '查询失败'}：{error}")
             if usage.exceeded:
                 yield {"type": "context", "context": self._context_info(usage, memory_info)}
-            yield {"type": "error", "content": self._friendly_error(str(e))}
+            error_msg = self._friendly_error(str(error))
+            yield {"type": "error", "content": error_msg}
+            yield {"type": "result", "payload": _finish({
+                "success": False, "error": error_msg, "type": "error",
+            }, "error")}
         finally:
             context_usage.reset(token)
             _trace_stop()
+
+    def chat(self, user_query: str, context: dict = None) -> dict:
+        async def _consume():
+            async with aclosing(self._turn_events(user_query, context, streaming=False)) as events:
+                async for event in events:
+                    if event["type"] == "result":
+                        return event["payload"]
+
+        return async_to_sync(_consume)()
+
+    async def chat_stream(self, user_query: str, context: dict = None):
+        async with aclosing(self._turn_events(user_query, context, streaming=True)) as events:
+            async for event in events:
+                if event["type"] != "result":
+                    yield event
 
     def get_history(self, user_id: str, *, before_sequence=None, limit=50, project_id=None) -> dict:
         """返回用户记忆中的对话消息与诊断信息，用于前端刷新后回填。只读，不触发模型调用。"""
