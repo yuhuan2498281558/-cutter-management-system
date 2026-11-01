@@ -7,9 +7,9 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.test import RequestFactory, TestCase
 from django.utils import timezone
-from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from application.ai_assistant.tests.test_context_budget_agent import FakeMessagesListChatModel
+from application.ai_assistant.messages import AIMessage
+from application.ai_assistant.agent_loop import AgentPrompt
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 
@@ -249,10 +249,7 @@ class DataScopeTests(TestCase):
                     AIMessage(content="", tool_calls=[{"name": "tool_query_tool_change_data", "args": {}, "id": "scope-call"}]),
                     AIMessage(content="查询到2条换刀记录。"),
                 ])
-                assistant._prompt = ChatPromptTemplate.from_messages([
-                    ("system", "按查询结果回答。"), MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-                ])
+                assistant._prompt = AgentPrompt("按查询结果回答。")
                 assistant._get_tools_for_query = Mock(return_value=service._bind_tools_to_project(
                     [service.tool_query_tool_change_data], self.project.project_id,
                 ))

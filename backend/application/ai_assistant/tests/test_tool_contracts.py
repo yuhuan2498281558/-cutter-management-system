@@ -1,5 +1,6 @@
 """Tool-boundary and model-routing regressions; never call a real provider."""
 import json
+from string import Formatter
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -63,7 +64,7 @@ class ToolContractTests(SimpleTestCase):
         selected = assistant._get_tools_for_query('对照不同供货商与施工参数',
                                                    project_id='PROJECT-A', model_selects_tools=True)
         self.assertEqual({item.name for item in selected}, {item.name for item in TOOLS})
-        self.assertTrue(all('project_id' not in item.args for item in selected))
+        self.assertTrue(all('project_id' not in item.args_schema.model_fields for item in selected))
 
     def test_model_business_queries_do_not_depend_on_legacy_keyword_list(self):
         assistant = ToolAssistant()
@@ -123,12 +124,10 @@ class ToolContractTests(SimpleTestCase):
         self.assertIn(ANSWER_POLICY, assistant._build_polish_messages('厂家对比', '结果')[0].content)
         for old in ('排名第一的厂家质量最好', '间隔越短说明刀具磨损越快', '不存在其他地层类型', '传入JSON字符串参数'):
             self.assertNotIn(old, SYSTEM_PROMPT)
-        # The actual LangChain template remains renderable after prompt changes.
-        template = llm_service.ChatPromptTemplate.from_messages([
-            ('system', SYSTEM_PROMPT), ('human', '{input}'),
-        ])
-        self.assertEqual(template.input_variables, ['input'])
-        self.assertTrue(template.format_messages(input='厂家对比'))
+        # 实际模板仍可渲染，系统提示的花括号不会引入额外变量。
+        template = llm_service.AgentPrompt(SYSTEM_PROMPT)
+        self.assertEqual([field for _, field, _, _ in Formatter().parse(SYSTEM_PROMPT) if field], [])
+        self.assertEqual(template.format_messages(input='厂家对比')[-1].content, '厂家对比')
 
     def test_capability_and_general_explanations_do_not_require_irrelevant_tools(self):
         assistant = ToolAssistant()

@@ -2,7 +2,7 @@ import json
 from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
-from langchain_core.messages import AIMessage, ToolMessage
+from application.ai_assistant.messages import AIMessage, ToolMessage
 
 from application.ai_assistant.context_budget import ContextBudgetPolicy, estimate_request_tokens
 from application.ai_assistant.context_events import (

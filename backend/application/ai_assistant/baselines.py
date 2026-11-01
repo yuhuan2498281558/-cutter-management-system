@@ -23,7 +23,8 @@ from sqlparse.tokens import Keyword
 
 from django.apps import apps
 from django.db import connection
-from langchain_core.messages import HumanMessage, SystemMessage
+from .messages import HumanMessage, SystemMessage
+from .chat_model import UsageCollector
 
 from .llm_provider import create_chat_model
 from .evaluation.current_data_suite import readonly_database
@@ -88,12 +89,8 @@ def _check_tables(tokens):
 
 
 def _usage_callback():
-    try:
-        from langchain_core.callbacks import UsageMetadataCallbackHandler
-    except ImportError:
-        return [], lambda: {}
-    handler = UsageMetadataCallbackHandler()
-    return [handler], lambda: getattr(handler, "usage_metadata", {}) or {}
+    collector = UsageCollector()
+    return collector, lambda: collector.usage_metadata
 
 
 class NoToolBaseline:
@@ -109,12 +106,12 @@ class NoToolBaseline:
         self.llm = create_chat_model(model_name)
 
     def chat(self, user_query: str, context: dict = None) -> dict:
-        callbacks, get_usage = _usage_callback()
+        collector, get_usage = _usage_callback()
         started = time.perf_counter()
         try:
             response = self.llm.invoke(
                 [SystemMessage(content=self.SYSTEM), HumanMessage(content=user_query)],
-                config={"callbacks": callbacks} if callbacks else None,
+                config={"usage": collector},
             )
             answer = response.content if hasattr(response, "content") else str(response)
             success = True
@@ -223,7 +220,7 @@ class TextToSQLBaseline:
         return rows
 
     def chat(self, user_query: str, context: dict = None) -> dict:
-        callbacks, get_usage = _usage_callback()
+        collector, get_usage = _usage_callback()
         started = time.perf_counter()
         system = SQL_SYSTEM_TEMPLATE.format(schema=self.schema, project_id=self.project_id)
         messages = [SystemMessage(content=system), HumanMessage(content=user_query)]
@@ -232,7 +229,7 @@ class TextToSQLBaseline:
         for attempt in range(self.MAX_REPAIR + 1):
             try:
                 raw = self.llm.invoke(
-                    messages, config={"callbacks": callbacks} if callbacks else None
+                    messages, config={"usage": collector}
                 )
                 text = raw.content if hasattr(raw, "content") else str(raw)
             except Exception as e:
@@ -270,7 +267,7 @@ class TextToSQLBaseline:
                             f"查询结果：{json.dumps(rows, ensure_ascii=False, default=str)}"
                         )),
                     ],
-                    config={"callbacks": callbacks} if callbacks else None,
+                    config={"usage": collector},
                 )
                 answer = verbalized.content if hasattr(verbalized, "content") else str(verbalized)
             except Exception as e:

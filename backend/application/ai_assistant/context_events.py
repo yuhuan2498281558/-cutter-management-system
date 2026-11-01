@@ -6,8 +6,8 @@ import json
 import logging
 from uuid import uuid4
 
-from langchain_core.messages import (
-    AIMessage, BaseMessageChunk, HumanMessage, ToolMessage,
+from .messages import (
+    AIMessage, AIMessageChunk, HumanMessage, ToolMessage,
     message_chunk_to_message, message_to_dict, messages_from_dict,
 )
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text, UniqueConstraint, select
@@ -75,7 +75,7 @@ class ContextEventStore:
     @staticmethod
     def turn_messages(enriched_input, answer, steps=()):
         messages = [HumanMessage(content=enriched_input), *tool_messages(steps), AIMessage(content=answer)]
-        return [message_chunk_to_message(item) if isinstance(item, BaseMessageChunk) else item for item in messages]
+        return [message_chunk_to_message(item) if isinstance(item, AIMessageChunk) else item for item in messages]
 
     @classmethod
     def append(cls, connection, scope_key, generation, project_id, sequences, messages, usage=None):

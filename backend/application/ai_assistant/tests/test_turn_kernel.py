@@ -6,18 +6,16 @@ from contextlib import aclosing
 from contextvars import ContextVar
 from copy import deepcopy
 from unittest.mock import Mock, patch
-from uuid import uuid4
 
 from asgiref.sync import async_to_sync
 from django.db import connection
 from django.test import TestCase
-from langchain_core.messages import AIMessageChunk, HumanMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import Runnable, RunnableConfig
-from langchain_core.tools import StructuredTool
+from application.ai_assistant.messages import AIMessageChunk, HumanMessage
+from application.ai_assistant.agent_loop import AgentPrompt
+from application.ai_assistant.tests.test_tooling import make_tool
 
 from application.ai_assistant import llm_service as service
+from application.ai_assistant.chat_model import UsageCollector
 from application.ai_assistant.context_budget import ContextBudgetPolicy, GuardedChatModel, context_usage
 from application.ai_assistant.memory_service import MemorySnapshot
 
@@ -34,7 +32,7 @@ def _calls(*values):
     ])
 
 
-class _ScriptedModel(Runnable):
+class _ScriptedModel:
     def __init__(self, script, sync_only=False):
         self.script, self.sync_only = script, sync_only
         self.calls, self.closed = [], []
@@ -58,8 +56,7 @@ class _ScriptedModel(Runnable):
                     chunk.response_metadata = {"model_name": "scripted"}
                 response = chunk if response is None else response + chunk
                 yield chunk
-            for callback in config.get("callbacks", []):
-                callback.on_llm_end(LLMResult(generations=[[ChatGeneration(message=response)]]), run_id=uuid4())
+            config["usage"].record(response)
         finally:
             self.closed.append(index)
 
@@ -87,21 +84,18 @@ class TurnKernelTests(TestCase):
         assistant = service.ToolAssistant()
         model = _ScriptedModel(script)
         assistant._llm = GuardedChatModel(model, ContextBudgetPolicy())
-        assistant._prompt = ChatPromptTemplate.from_messages([
-            ("system", "按查询结果回答。"), MessagesPlaceholder("chat_history"),
-            ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-        ])
+        assistant._prompt = AgentPrompt("按查询结果回答。")
         snapshot = MemorySnapshot(scope_key="user:turn", backend="legacy", generation=3)
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
         assistant._should_polish_direct_answer = Mock(return_value=False)
         executed = []
 
-        def _lookup(value: int, config: RunnableConfig):
+        def _lookup(value: int, config: dict):
             executed.append((value, config))
             return lookup(value) if lookup else {"total_records": 2}
 
-        tool = StructuredTool.from_function(_lookup, name="lookup", description="查询记录。")
+        tool = make_tool(_lookup, name="lookup", description="查询记录。")
         assistant._get_tools_for_query = Mock(return_value=[tool])
 
         def _direct(*args):
@@ -147,7 +141,7 @@ class TurnKernelTests(TestCase):
             self.assertGreaterEqual(result["latency_ms"], 0)
             for _, config, _, _ in model.calls:
                 self.assertEqual(config["configurable"], {"session_id": "turn"})
-                self.assertEqual(len(config["callbacks"]), 1)
+                self.assertIsInstance(config["usage"], UsageCollector)
                 self.assertIs(config, model.calls[0][1])
             for _, config in executed:
                 self.assertEqual(config["configurable"], {"session_id": "turn"})

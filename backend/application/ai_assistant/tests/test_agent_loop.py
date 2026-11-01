@@ -10,12 +10,11 @@ from unittest.mock import AsyncMock, Mock, call, patch
 from asgiref.sync import async_to_sync
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
-from langchain_core.agents import AgentAction, AgentFinish
-from langchain_core.exceptions import OutputParserException
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, message_to_dict
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import Runnable
-from langchain_core.tools import StructuredTool
+from application.ai_assistant.agent_loop import AgentAction, AgentFinish
+from application.ai_assistant.agent_loop import OutputParserException
+from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, message_to_dict
+from application.ai_assistant.agent_loop import AgentPrompt
+from application.ai_assistant.tests.test_tooling import make_tool, TestTool
 
 from application.ai_assistant.agent_loop import ToolAgentAction, astream_agent, invoke_agent, parse_tool_calls, tool_messages
 from application.ai_assistant.context_budget import ContextBudgetPolicy, GuardedChatModel
@@ -31,7 +30,7 @@ _PARSING_ERROR_LOG = (
 )
 
 
-class _Model(Runnable):
+class _Model:
     def __init__(self, responses):
         self.responses = responses
         self.calls, self.bindings, self.closed = [], [], []
@@ -80,15 +79,12 @@ def _tool_message(*values):
 def _setup(responses, function=None, coroutine=None):
     model = _Model(responses)
     guard = GuardedChatModel(model, ContextBudgetPolicy())
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "按工具结果回答。"), MessagesPlaceholder("chat_history"),
-        ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-    ])
+    prompt = AgentPrompt("按工具结果回答。")
 
     def lookup(value: int):
         return {"value": value}
 
-    tool = StructuredTool.from_function(
+    tool = make_tool(
         func=function or lookup, coroutine=coroutine, name="lookup", description="查询数值。",
     )
     return model, guard, prompt, [tool], {"input": "查询", "chat_history": []}
@@ -379,14 +375,14 @@ class AgentLoopTests(SimpleTestCase):
     async def test_config_is_passed_unchanged_to_guarded_model_and_tool(self):
         model, *args = _setup([[_tool_message(1)], [AIMessage(content="完成")]])
         config = {"tags": ["test"], "metadata": {"request": 1}, "callbacks": []}
-        original = StructuredTool.ainvoke
+        original = TestTool.ainvoke
         tool_configs = []
 
         async def invoke(tool, input, config=None, **kwargs):
             tool_configs.append(config)
             return await original(tool, input, config=config, **kwargs)
 
-        with patch.object(StructuredTool, 'ainvoke', invoke):
+        with patch.object(TestTool, 'ainvoke', invoke):
             await _collect(*args, config=config)
         self.assertEqual(len(tool_configs), 1)
         self.assertIs(tool_configs[0], config)

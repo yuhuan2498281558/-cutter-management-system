@@ -1,17 +1,40 @@
-"""通过 OpenAI SDK 保留现有的 LangChain 消息与回调接口。"""
+"""通过 OpenAI SDK 调用模型并保留消息和用量协议。"""
 
 import asyncio
 import json
 import re
 from typing import Any
+from dataclasses import dataclass, field
+from functools import partial
+from threading import Lock
+from uuid import uuid4
 
 import openai
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.output_parsers.openai_tools import make_invalid_tool_call, parse_tool_call
-from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field, PrivateAttr
+from .agent_loop import OutputParserException
+from .messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, _add_usage, _call
+from .tooling import openai_tool_schema
+
+
+class UsageCollector:
+    """按实际模型名累加普通和嵌套 token 用量。"""
+    def __init__(self):
+        self.usage_metadata, self._lock = {}, Lock()
+
+    def record(self, message):
+        """只记录同时具有模型名和用量的完整回复。"""
+        name = message.response_metadata.get("model_name")
+        if name and message.usage_metadata:
+            with self._lock:
+                self.usage_metadata[name] = _add_usage(self.usage_metadata.get(name), message.usage_metadata)
+
+
+@dataclass
+class _BoundModel:
+    bound: Any
+    kwargs: dict
+
+    def __getattr__(self, name):
+        return partial(getattr(self.bound, name), **self.kwargs)
 
 
 def _message_to_dict(message):
@@ -77,7 +100,7 @@ def _chat_result(response, model):
     if data.get("error"):
         raise ValueError(data["error"])
     usage = data.get("usage")
-    generations = []
+    messages = []
     for choice in data["choices"]:
         raw = choice["message"]
         additional, calls, invalid = {}, [], []
@@ -87,9 +110,17 @@ def _chat_result(response, model):
             additional["tool_calls"] = raw["tool_calls"]
             for call in raw["tool_calls"]:
                 try:
-                    calls.append(parse_tool_call(call, return_id=True))
+                    try:
+                        args = json.loads(call["function"]["arguments"], strict=False)
+                    except json.JSONDecodeError as error:
+                        raise OutputParserException(
+                            f"Function {call['function']['name']} arguments:\n\n"
+                            f"{call['function']['arguments']}\n\nare not valid JSON. Received JSONDecodeError {error}"
+                        ) from error
+                    calls.append(_call("tool_call", name=call["function"]["name"] or "", args=args or {}, id=call.get("id")))
                 except Exception as error:
-                    invalid.append(make_invalid_tool_call(call, str(error)))
+                    invalid.append(_call("invalid_tool_call", name=call["function"]["name"],
+                                         args=call["function"]["arguments"], id=call.get("id"), error=str(error)))
         message = AIMessage(
             content=raw.get("content") or "", name=raw.get("name"), id=raw.get("id"),
             additional_kwargs=additional, tool_calls=calls, invalid_tool_calls=invalid,
@@ -98,15 +129,18 @@ def _chat_result(response, model):
         info = {"finish_reason": choice.get("finish_reason")}
         if "logprobs" in choice:
             info["logprobs"] = choice["logprobs"]
-        generations.append(ChatGeneration(message=message, generation_info=info))
-    if generations and hasattr(response.choices[0].message, "refusal"):
-        generations[0].message.additional_kwargs["refusal"] = response.choices[0].message.refusal
+        message.response_metadata = info
+        messages.append(message)
+    if messages and hasattr(response.choices[0].message, "refusal"):
+        messages[0].additional_kwargs["refusal"] = response.choices[0].message.refusal
     output = {
         "token_usage": usage, "model_name": data.get("model", model),
         "system_fingerprint": data.get("system_fingerprint", ""),
     }
     output.update({key: data[key] for key in ("id", "service_tier") if key in data})
-    return ChatResult(generations=generations, llm_output=output)
+    if len(messages) == 1:
+        messages[0].response_metadata = {**output, **messages[0].response_metadata}
+    return messages[0]
 
 
 def _generation_chunk(response):
@@ -141,17 +175,18 @@ def _generation_chunk(response):
         content=delta.get("content") or "", id=delta.get("id"),
         additional_kwargs=additional, tool_call_chunks=calls,
         usage_metadata=_usage_metadata(usage) if usage else None,
-        response_metadata={"token_usage": usage} if usage else {},
+        response_metadata={**info, **({"token_usage": usage} if usage else {})},
     )
-    return ChatGenerationChunk(message=message, generation_info=info or None)
+    return message
 
 
-class ChatCompletionsModel(BaseChatModel):
+@dataclass
+class ChatCompletionsModel:
     """经 openai SDK 调用 Chat Completions 接口的模型。"""
 
     model: str
     base_url: str
-    api_key: str = Field(repr=False, exclude=True)
+    api_key: str = field(repr=False)
     temperature: float
     timeout: float
     max_tokens: int
@@ -159,15 +194,12 @@ class ChatCompletionsModel(BaseChatModel):
     http_client: Any = None
     http_async_client: Any = None
 
-    _client: Any = PrivateAttr(default=None)
-    _async_clients: dict = PrivateAttr(default_factory=dict)
-
-    @property
-    def _llm_type(self):
-        return "chat-completions"
+    _client: Any = field(default=None, init=False, repr=False)
+    _async_clients: dict = field(default_factory=dict, init=False, repr=False)
 
     def bind_tools(self, tools, **kwargs):
-        return self.bind(tools=[convert_to_openai_tool(tool) for tool in tools], **kwargs)
+        """绑定工具 schema，复用当前模型客户端。"""
+        return _BoundModel(self, {"tools": [openai_tool_schema(tool) for tool in tools], **kwargs})
 
     def _get_client(self):
         if self._client is None:
@@ -195,7 +227,8 @@ class ChatCompletionsModel(BaseChatModel):
         payload = {
             "model": self.model, "temperature": self.temperature, "stream": False,
             **kwargs, self.output_parameter: cap,
-            "messages": [_message_to_dict(message) for message in self._convert_input(input_).to_messages()],
+            "messages": [_message_to_dict(message) for message in
+                         ([HumanMessage(input_)] if isinstance(input_, str) else input_)],
         }
         if stop is not None:
             payload["stop"] = stop
@@ -207,33 +240,58 @@ class ChatCompletionsModel(BaseChatModel):
                     message["role"] = "developer"
         return payload
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+    def _record(self, message, config):
+        if collector := (config or {}).get("usage"):
+            collector.record(message)
+        return message
+
+    def invoke(self, input, config=None, *, stop=None, **kwargs):
+        """同步请求完整回复并记录用量。"""
         response = self._get_client().chat.completions.create(
-            **self._get_request_payload(messages, stop=stop, **kwargs),
+            **self._get_request_payload(input, stop=stop, **kwargs),
         )
-        return _chat_result(response, self.model)
+        message = _chat_result(response, self.model)
+        message.id = message.id or f"run--{(config or {}).get('run_id') or uuid4()}-0"
+        return self._record(message, config)
 
-    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+    async def ainvoke(self, input, config=None, *, stop=None, **kwargs):
+        """异步请求完整回复并记录用量。"""
         response = await self._get_async_client().chat.completions.create(
-            **self._get_request_payload(messages, stop=stop, **kwargs),
+            **self._get_request_payload(input, stop=stop, **kwargs),
         )
-        return _chat_result(response, self.model)
+        message = _chat_result(response, self.model)
+        message.id = message.id or f"run--{(config or {}).get('run_id') or uuid4()}-0"
+        return self._record(message, config)
 
-    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+    def stream(self, input, config=None, *, stop=None, **kwargs):
+        """同步逐片输出，流结束后记录合并用量。"""
         kwargs["stream"] = True
+        run_id, combined = f"run--{(config or {}).get('run_id') or uuid4()}", None
         with self._get_client().chat.completions.create(
-            **self._get_request_payload(messages, stop=stop, **kwargs),
+            **self._get_request_payload(input, stop=stop, **kwargs),
         ) as response:
             for chunk in response:
-                if (generation := _generation_chunk(chunk)) is not None:
-                    yield generation
+                if (message := _generation_chunk(chunk)) is not None:
+                    message.id = message.id or run_id
+                    combined = message if combined is None else combined + message
+                    yield message
+        if combined is None:
+            raise ValueError("No generation chunks were returned")
+        self._record(combined, config)
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+    async def astream(self, input, config=None, *, stop=None, **kwargs):
+        """异步逐片输出，流结束后记录合并用量。"""
         kwargs["stream"] = True
+        run_id, combined = f"run--{(config or {}).get('run_id') or uuid4()}", None
         response = await self._get_async_client().chat.completions.create(
-            **self._get_request_payload(messages, stop=stop, **kwargs),
+            **self._get_request_payload(input, stop=stop, **kwargs),
         )
         async with response:
             async for chunk in response:
-                if (generation := _generation_chunk(chunk)) is not None:
-                    yield generation
+                if (message := _generation_chunk(chunk)) is not None:
+                    message.id = message.id or run_id
+                    combined = message if combined is None else combined + message
+                    yield message
+        if combined is None:
+            raise ValueError("No generation chunks were returned")
+        self._record(combined, config)

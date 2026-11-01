@@ -11,10 +11,9 @@ from unittest.mock import Mock, patch
 import httpx
 from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, convert_to_openai_messages
-from langchain_core.outputs import ChatGenerationChunk
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import StructuredTool
+from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, convert_to_openai_messages
+from application.ai_assistant.agent_loop import AgentPrompt
+from application.ai_assistant.tests.test_tooling import make_tool
 from sqlalchemy import func, select
 
 from application.ai_assistant.context_budget import ContextBudgetPolicy, ContextUsage, GuardedChatModel, context_usage
@@ -58,15 +57,15 @@ class ConversationModel(RecordingToolModel):
         response = self._response(messages)
         metadata = dict(response.response_metadata)
         raw_usage = metadata.pop("token_usage", None)
-        yield ChatGenerationChunk(message=AIMessageChunk(
+        yield AIMessageChunk(
             content=response.content, additional_kwargs=response.additional_kwargs,
             tool_calls=response.tool_calls, response_metadata=metadata,
-        ))
+        )
         if raw_usage:
-            yield ChatGenerationChunk(message=AIMessageChunk(
+            yield AIMessageChunk(
                 content="", usage_metadata=response.usage_metadata,
                 response_metadata={"token_usage": raw_usage},
-            ))
+            )
 
 
 class ContextEventTests(SimpleTestCase):
@@ -81,15 +80,12 @@ class ContextEventTests(SimpleTestCase):
         self.addCleanup(self.memory.close)
         self.model = ConversationModel()
         self.guard = GuardedChatModel(self.model, ContextBudgetPolicy(), provider="deepseek", model_name="offline-requested")
-        self.tool = StructuredTool.from_function(
+        self.tool = make_tool(
             lambda label="", page=1, ring_range=None, tool_type="": RAW,
             name="tool_query_tool_change_trend", description="Read exact statistics.",
         )
         self.options = {"user_id": "event-test", "project_id": "P1", "route_mode": "agent"}
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPT), MessagesPlaceholder("chat_history"),
-            ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-        ])
+        prompt = AgentPrompt(SYSTEM_PROMPT)
         self.assistant = ToolAssistant()
         self.assistant.memory = self.memory
         self.assistant._llm = self.guard

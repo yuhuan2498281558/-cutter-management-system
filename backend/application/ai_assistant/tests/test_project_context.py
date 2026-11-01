@@ -34,7 +34,7 @@ class ProjectContextTests(SimpleTestCase):
             "P-REQUEST",
         )[0]
 
-        self.assertNotIn("project_id", bound_tool.args)
+        self.assertNotIn("project_id", bound_tool.args_schema.model_fields)
         with patch(
             "application.ai_assistant.llm_service.query_tool_change_data",
             return_value=json.dumps({"total_records": 0}),

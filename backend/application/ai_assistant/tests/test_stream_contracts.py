@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.test import RequestFactory, TestCase
-from langchain_core.messages import AIMessage
-from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from application.ai_assistant.messages import AIMessage
+from application.ai_assistant.tests.test_context_budget_agent import FakeMessagesListChatModel
 
 from application.ai_assistant import views
 from application.ai_assistant.llm_service import TOOLS, ToolAssistant
