@@ -24,7 +24,7 @@ class LazyInitializationTests(SimpleTestCase):
         with (
             patch("application.ai_assistant.llm_service.get_llm_config") as get_config,
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
-            patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
+            patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
         ):
             assistant = ToolAssistant()
 
@@ -38,7 +38,7 @@ class LazyInitializationTests(SimpleTestCase):
         snapshot = MemorySnapshot(scope_key="user:1", backend="legacy")
         with (
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
-            patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
+            patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
         ):
             assistant = ToolAssistant()
             assistant._load_memory = Mock(return_value=snapshot)
@@ -88,7 +88,7 @@ class LazyInitializationTests(SimpleTestCase):
         with (
             patch("application.ai_assistant.context_budget.prepare_messages", side_effect=AssertionError("history must be read-only")),
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
-            patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
+            patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
             patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="ollama")),
             patch("application.ai_assistant.llm_service.get_context_policy", return_value=ContextBudgetPolicy(32768)),
         ):
@@ -106,25 +106,26 @@ class LazyInitializationTests(SimpleTestCase):
         create_model.assert_not_called()
         create_agent.assert_not_called()
 
-    def test_agent_runtime_and_group_executor_are_cached(self):
-        all_executor = object()
-        group_executor = object()
+    def test_agent_runtime_and_group_tools_are_cached(self):
         with (
             patch("application.ai_assistant.llm_service.get_llm_config", return_value=_config()),
             patch("application.ai_assistant.llm_service.create_chat_model", return_value=object()) as create_model,
         ):
             assistant = ToolAssistant()
-            assistant._create_executor = Mock(side_effect=[all_executor, group_executor])
+            first = assistant._get_tools_for_query("分析掘进趋势")
+            second = assistant._get_tools_for_query("分析掘进趋势")
+            prompt = assistant._prompt
+            all_tools = assistant._get_tools_for_query("综合返修、报价和掘进参数")
 
-            first = assistant._get_executor_for_query("分析掘进趋势")
-            second = assistant._get_executor_for_query("分析掘进趋势")
-
-        self.assertIs(first, group_executor)
-        self.assertIs(second, group_executor)
+        self.assertIs(first, second)
+        self.assertEqual(first, llm_service.TOOL_GROUPS['tunneling'])
+        self.assertIs(all_tools, assistant._tools_cache['all'])
+        self.assertEqual(all_tools, llm_service.TOOLS)
+        self.assertIs(assistant._prompt, prompt)
         self.assertTrue(assistant.llm_runtime_ready)
         self.assertTrue(assistant.agent_runtime_ready)
         create_model.assert_called_once_with(None)
-        self.assertEqual(assistant._create_executor.call_count, 2)
+        self.assertEqual(set(assistant._tools_cache), {'all', 'tunneling'})
 
     def test_concurrent_llm_initialization_runs_once(self):
         model = object()

@@ -1,10 +1,10 @@
-"""Offline integration with the real LangChain 0.3 agent/executor protocol."""
+"""离线验证工具循环保留预算检查、用量回调和原始工具证据。"""
 
 import copy
 import json
 import unittest
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -12,6 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from pydantic import Field
 
+from application.ai_assistant.agent_loop import astream_agent, invoke_agent
 from application.ai_assistant.context_budget import (
     ContextBudgetExceeded, ContextBudgetPolicy, GuardedChatModel,
 )
@@ -85,7 +86,7 @@ def trend_payload():
     }, ensure_ascii=False)
 
 
-def make_executor(payload, policy=None):
+def make_agent(payload, policy=None):
     model = RecordingToolModel()
     guard = GuardedChatModel(model, policy or ContextBudgetPolicy(
         context_tokens=4096, output_tokens=512, safety_margin_tokens=512,
@@ -98,23 +99,19 @@ def make_executor(payload, policy=None):
         ("system", "Use query_trend for statistics. Preserve scope, null and denominator."),
         ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
     ])
-    agent = create_tool_calling_agent(guard, [tool], prompt)
-    executor = AgentExecutor(
-        agent=agent, tools=[tool], return_intermediate_steps=True, max_iterations=3,
-    )
-    return model, guard, executor
+    return model, guard, prompt, [tool]
 
 
 class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
-    def test_real_executor_compacts_second_round_only_and_preserves_evidence(self):
+    def test_agent_compacts_second_round_only_and_preserves_evidence(self):
         payload = trend_payload()
-        model, guard, executor = make_executor(payload)
+        model, guard, prompt, tools = make_agent(payload)
         # The raw observation alone is too large; only lossless compaction
         # allows this second model round to proceed under the selected budget.
         self.assertGreater(estimate_tokens(payload), guard.policy.input_budget)
-        result = executor.invoke({"input": "查询1至160环异常率"})
+        result = invoke_agent(guard, prompt, tools, {"input": "查询1至160环异常率"})
         self.assertEqual(len(model.seen), 2)
-        self.assertEqual(model.bound_names, ["query_trend"])
+        self.assertEqual(model.bound_names, ["query_trend", "query_trend"])
         self.assertFalse(any(isinstance(message, ToolMessage) for message in model.seen[0]))
         observation = next(message for message in model.seen[1] if isinstance(message, ToolMessage))
         self.assertEqual(json.loads(observation.content)["format"], COLUMNAR_FORMAT)
@@ -123,10 +120,11 @@ class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["intermediate_steps"][0][1], payload)
         self.assertEqual(result["output"], "已按原始统计口径返回。")
 
-    async def test_async_executor_also_guards_each_round(self):
+    async def test_async_agent_also_guards_each_round(self):
         payload = trend_payload()
-        model, _, executor = make_executor(payload)
-        result = await executor.ainvoke({"input": "查询1至160环异常率"})
+        model, guard, prompt, tools = make_agent(payload)
+        events = [event async for event in astream_agent(guard, prompt, tools, {"input": "查询1至160环异常率"})]
+        result = events[-1]
         self.assertEqual(len(model.seen), 2)
         observation = next(message for message in model.seen[1] if isinstance(message, ToolMessage))
         self.assertEqual(unpack_columnar(observation.content), json.loads(payload))
@@ -134,48 +132,56 @@ class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_event_stream_retains_model_events_usage_and_original_tool_output(self):
         payload = trend_payload()
-        model, _, executor = make_executor(payload)
-        events = [event async for event in executor.astream_events(
-            {"input": "查询1至160环异常率"}, version="v2",
+        model, guard, prompt, tools = make_agent(payload)
+        starts, streams = [], []
+
+        class Recorder(BaseCallbackHandler):
+            def on_chat_model_start(self, serialized, messages, **kwargs):
+                starts.append(messages)
+
+            def on_llm_new_token(self, token, **kwargs):
+                streams.append(kwargs["chunk"].message)
+
+        events = [event async for event in astream_agent(
+            guard, prompt, tools, {"input": "查询1至160环异常率"}, config={"callbacks": [Recorder()]},
         )]
-        starts = [event for event in events if event["event"] == "on_chat_model_start"]
-        streams = [event for event in events if event["event"] == "on_chat_model_stream"]
         self.assertEqual(len(model.seen), 2)
         self.assertGreaterEqual(len(starts), 2)
         self.assertTrue(streams)
-        self.assertTrue(any(event["data"]["chunk"].content == "已按原始统计口径返回。"
-                            for event in streams))
-        self.assertTrue(any(event["data"]["chunk"].usage_metadata == USAGE for event in streams))
-        tool_ends = [event for event in events if event["event"] == "on_tool_end"]
+        self.assertTrue(any(chunk.content == "已按原始统计口径返回。" for chunk in streams))
+        self.assertTrue(any(chunk.usage_metadata == USAGE for chunk in streams))
+        self.assertTrue(any(event["type"] == "model_text" and event["content"] == "已按原始统计口径返回。"
+                            for event in events))
+        tool_ends = [event for event in events if event["type"] == "tool_end"]
         self.assertEqual(len(tool_ends), 1)
-        self.assertEqual(tool_ends[0]["data"]["output"], payload)
+        self.assertEqual(tool_ends[0]["observation"], payload)
 
     def test_oversized_second_round_is_blocked_before_another_model_call(self):
         payload = json.dumps({"narrative": "无法结构压缩的长结果" * 5000}, ensure_ascii=False)
-        model, _, executor = make_executor(payload, ContextBudgetPolicy(
+        model, guard, prompt, tools = make_agent(payload, ContextBudgetPolicy(
             context_tokens=4096, output_tokens=256, safety_margin_tokens=256,
         ))
         with self.assertRaises(ContextBudgetExceeded):
-            executor.invoke({"input": "查询1至160环异常率"})
+            invoke_agent(guard, prompt, tools, {"input": "查询1至160环异常率"})
         self.assertEqual(len(model.seen), 1)
 
     async def test_async_event_second_round_is_blocked_after_original_tool_event(self):
         payload = json.dumps({"narrative": "巨大工具输出" * 5000}, ensure_ascii=False)
-        model, _, executor = make_executor(payload, ContextBudgetPolicy(
+        model, guard, prompt, tools = make_agent(payload, ContextBudgetPolicy(
             context_tokens=4096, output_tokens=256, safety_margin_tokens=256,
         ))
         events = []
         with self.assertRaises(ContextBudgetExceeded):
-            async for event in executor.astream_events({"input": "查询"}, version="v2"):
+            async for event in astream_agent(guard, prompt, tools, {"input": "查询"}):
                 events.append(event)
         self.assertEqual(len(model.seen), 1)
-        self.assertTrue(any(event["event"] == "on_tool_end"
-                            and event["data"]["output"] == payload for event in events))
+        self.assertTrue(any(event["type"] == "tool_end"
+                            and event["observation"] == payload for event in events))
 
     def test_error_observation_is_never_reformatted(self):
         payload = json.dumps({"error": "invalid ring range", "details": [1, 160]}, indent=4)
-        model, _, executor = make_executor(payload)
-        result = executor.invoke({"input": "查询"})
+        model, guard, prompt, tools = make_agent(payload)
+        result = invoke_agent(guard, prompt, tools, {"input": "查询"})
         observation = next(message for message in model.seen[1] if isinstance(message, ToolMessage))
         self.assertEqual(observation.content, payload)
         self.assertEqual(result["intermediate_steps"][0][1], payload)

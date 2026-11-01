@@ -5,7 +5,7 @@ LLM服务封装 - 使用LangChain Tool Calling Agent + Ollama
 
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from langchain.agents import create_tool_calling_agent, AgentExecutor
+from .agent_loop import astream_agent, invoke_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_community.chat_message_histories import SQLChatMessageHistory
@@ -140,7 +140,7 @@ _QUERY_NUMBER = r"[0-9零〇一二两三四五六七八九十百千万]+"
 # 工具调用埋点
 #
 # 论文实验需要分层指标（路由准确率 / 工具选择准确率 / 工具参数准确率 / 数值正确率），
-# 但规则直答路径是直接调用 tools.py 的函数、不经过 AgentExecutor，因此拿不到
+# 但规则直答路径是直接调用 tools.py 的函数、不经过工具循环，因此拿不到
 # intermediate_steps。这里在模块层给 14 个领域工具套一层记录器：
 #   - 规则直答路径：函数被直接调用，记录器命中；
 #   - Agent 路径：@tool 包装器内部同样调用这些模块级名字，记录器也命中。
@@ -265,8 +265,6 @@ def _merge_usage(*usages) -> dict:
                     bucket[key] = bucket.get(key, 0) + value
     return merged
 
-# 可重试的错误关键词
-_RETRYABLE_ERRORS = ("timeout", "connection", "rate limit", "overloaded", "503", "502")
 _OLLAMA_RUNNER_ERRORS = (
     "llama runner process has terminated",
     "model runner has unexpectedly stopped",
@@ -909,20 +907,17 @@ class ToolAssistant:
     """刀具管理智能助手"""
 
     def __init__(self, model_name: str | None = None):
-        # 规则路由不依赖 LLM 或 AgentExecutor。模型运行时只在直聊、Agent、
+        # 规则路由不依赖 LLM 或工具循环。模型运行时只在直聊、Agent、
         # 规则答案润色或 Django 记忆摘要真正需要时构造，避免首条规则请求
         # 为未使用的工具链支付冷启动成本。
         self._model_name = model_name
         self._llm_config = None
         self._llm = None
         self._prompt = None
-        self._executor = None
-        self._base_executor = None
-        self._executor_cache = {}
-        self._history_executor_cache = {}
+        self._tools_cache = {}
         self._llm_lock = threading.Lock()
         self._agent_lock = threading.Lock()
-        self._executor_cache_lock = threading.Lock()
+        self._tools_cache_lock = threading.Lock()
 
         self.memory = MemoryService()
 
@@ -939,7 +934,7 @@ class ToolAssistant:
 
     @property
     def agent_runtime_ready(self) -> bool:
-        return self._base_executor is not None
+        return self._prompt is not None
 
     @property
     def llm_config(self):
@@ -982,42 +977,23 @@ class ToolAssistant:
             started_at = time.perf_counter()
             self._ensure_llm_runtime()
             try:
-                self._prompt = ChatPromptTemplate.from_messages([
+                prompt = ChatPromptTemplate.from_messages([
                     ("system", SYSTEM_PROMPT),
                     MessagesPlaceholder("chat_history"),
                     ("human", "{input}"),
                     MessagesPlaceholder("agent_scratchpad"),
                 ])
-                base_executor = self._create_executor(TOOLS)
-                self._executor = base_executor
-                self._base_executor = base_executor
-                self._executor_cache = {"all": base_executor}
-                self._history_executor_cache = {"all": base_executor}
+                self._tools_cache = {"all": list(TOOLS)}
+                self._prompt = prompt
             except Exception:
                 self._prompt = None
-                self._executor = None
-                self._base_executor = None
-                self._executor_cache = {}
-                self._history_executor_cache = {}
+                self._tools_cache = {}
                 raise
             logger.info(
                 "ToolAssistant Agent 按需初始化完成，tools=%s，耗时=%.1fms",
                 len(TOOLS),
                 (time.perf_counter() - started_at) * 1000,
             )
-
-    def _create_executor(self, tools: list) -> AgentExecutor:
-        if self._llm is None or self._prompt is None:
-            raise RuntimeError("LLM runtime is not initialized")
-        agent = create_tool_calling_agent(self._llm, tools, self._prompt)
-        return AgentExecutor(
-            agent=agent,
-            tools=tools,
-            verbose=False,
-            max_iterations=10,
-            handle_parsing_errors=True,
-            return_intermediate_steps=True,
-        )
 
     def _is_multi_source_query(self, query: str) -> bool:
         sources = [
@@ -1065,10 +1041,9 @@ class ToolAssistant:
             return "tool_change"
         return "all"
 
-    def _get_executor_for_query(
+    def _get_tools_for_query(
         self,
         query: str,
-        with_history: bool = False,
         project_id: str = "",
         model_selects_tools: bool = False,
     ):
@@ -1080,19 +1055,13 @@ class ToolAssistant:
         if project_id:
             # 项目范围属于请求上下文，不属于模型参数。每次请求生成一组轻量包装
             # 工具，确保同步/SSE 并发时各自只查询当前项目。
-            return self._create_executor(_bind_tools_to_project(selected_tools, project_id))
+            return _bind_tools_to_project(selected_tools, project_id)
 
-        if group == "all":
-            return self._executor if with_history else self._base_executor
-
-        cache = self._history_executor_cache if with_history else self._executor_cache
+        cache = self._tools_cache
         if group not in cache:
-            with self._executor_cache_lock:
+            with self._tools_cache_lock:
                 if group not in cache:
-                    base_executor = self._create_executor(TOOL_GROUPS[group])
-                    # 历史由调用方通过 chat_history 显式传入，with_history 仅保留
-                    # 兼容调用方的参数形状，不再创建第二套历史包装器。
-                    cache[group] = base_executor
+                    cache[group] = list(selected_tools)
                     logger.info("AI Agent tool group selected: %s, tools=%s", group, len(TOOL_GROUPS[group]))
         return cache[group]
 
@@ -3126,23 +3095,6 @@ class ToolAssistant:
         if branch == "manufacturer_service" and "刀位" in query:
             answer += "\n\n按厂家拆分的高频刀位：暂无，当前厂家工具未提供此项。"
         return {"rule_branch": branch, "type": "analysis", "answer": answer}
-    def _invoke_with_retry(self, payload: dict, config: dict, max_retries: int = 2, executor=None) -> dict:
-        """带重试的 executor 调用"""
-        last_err = None
-        for attempt in range(max_retries + 1):
-            try:
-                return executor.invoke(payload, config=config)
-            except Exception as e:
-                last_err = e
-                err_lower = str(e).lower()
-                is_retryable = any(kw in err_lower for kw in _RETRYABLE_ERRORS)
-                if is_retryable and attempt < max_retries:
-                    wait = 2 ** attempt
-                    logger.warning(f"可重试错误（第{attempt+1}次），{wait}s 后重试：{e}")
-                    time.sleep(wait)
-                else:
-                    raise
-        raise last_err
 
     @staticmethod
     def _memory_diagnostics(snapshot: MemorySnapshot, context: dict = None) -> dict:
@@ -3554,17 +3506,16 @@ class ToolAssistant:
                 payload["memory"] = self._memory_diagnostics(stored_snapshot, working_context)
                 return payload
 
-            executor = self._get_executor_for_query(
+            tools = self._get_tools_for_query(
                 merged_query,
-                with_history=False,
                 project_id=working_context.get("project_id", ""),
                 model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
             )
             try:
-                result = self._invoke_with_retry(
+                result = invoke_agent(
+                    self._llm, self._prompt, tools,
                     {"input": enriched_input, "chat_history": history_messages},
-                    config=config,
-                    executor=executor,
+                    max_iterations=10, config=config,
                 )
             except Exception as error:
                 compacted = self._compact_after_overflow(error, memory_snapshot, working_context, enriched_input)
@@ -3572,10 +3523,10 @@ class ToolAssistant:
                     raise
                 memory_snapshot, history_messages = compacted
                 history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
-                result = self._invoke_with_retry(
+                result = invoke_agent(
+                    self._llm, self._prompt, tools,
                     {"input": enriched_input, "chat_history": history_messages},
-                    config=config,
-                    executor=executor,
+                    max_iterations=10, config=config,
                 )
 
             # 验证：需要查数据的问题必须有工具调用记录
@@ -3590,10 +3541,10 @@ class ToolAssistant:
                 )
                 usage.inputs[retry_input] = usage.inputs[enriched_input]
                 retry_count = 1
-                result = self._invoke_with_retry(
+                result = invoke_agent(
+                    self._llm, self._prompt, tools,
                     {"input": retry_input, "chat_history": history_messages},
-                    config=config,
-                    executor=executor,
+                    max_iterations=10, config=config,
                 )
                 enriched_input = retry_input
 
@@ -3700,53 +3651,48 @@ class ToolAssistant:
                        "route_stage": "agent",
                        "tool_group": "all" if model_selects_tools or working_context.get("focus_sources") or _flag_enabled("AI_ABLATE_TOOL_GROUP") else self._tool_group_for_query(user_query),
                        "estimated_time": "通常 6-8 秒"}
-                executor = await sync_to_async(self._get_executor_for_query)(
+                tools = await sync_to_async(self._get_tools_for_query)(
                     user_query,
-                    with_history=False,
                     project_id=working_context.get("project_id", ""),
                     model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
                 )
-                tool_names = {item.name for item in TOOLS}
+                tool_names = {item.name for item in tools}
                 for attempt in (1, 2):
-                    root_id = None
                     final_result = None
                     successful_tools = 0
                     unresolved_tools = []
                     tool_inputs = {}
                     model_round = 0
                     try:
-                        async with aclosing(executor.astream_events(
-                            {"input": enriched_input, "chat_history": history_messages}, version="v2",
+                        async with aclosing(astream_agent(
+                            self._llm, self._prompt, tools,
+                            {"input": enriched_input, "chat_history": history_messages}, max_iterations=10,
                         )) as events:
                             async for event in events:
-                                kind = event.get("event")
-                                if kind == "on_chain_start" and root_id is None and not event.get('parent_ids'):
-                                    root_id = event.get('run_id')
-                                elif kind == 'on_chat_model_start':
-                                    model_round += 1
-                                elif kind == 'on_tool_start' and event.get('name') in tool_names:
-                                    if event.get('run_id'):
-                                        tool_inputs[event['run_id']] = (
-                                            event['name'], event.get('data', {}).get('input'), model_round or None,
+                                kind = event['type']
+                                if kind == 'tool_start' and event.get('name') in tool_names:
+                                    if event.get('call_id'):
+                                        tool_inputs[event['call_id']] = (
+                                            event['name'], event['args'], model_round or None,
                                         )
-                                elif kind == 'on_tool_end' and event.get('name') in tool_names:
-                                    started = tool_inputs.pop(event.get('run_id'), None)
+                                elif kind == 'tool_end' and event.get('name') in tool_names:
+                                    started = tool_inputs.pop(event.get('call_id'), None)
                                     arguments, batch = (started[1], started[2]) if started and started[0] == event['name'] else (None, None)
-                                    if not self._tool_observation_succeeded(event.get('data', {}).get('output')):
-                                        if not self._tool_argument_error(event.get('data', {}).get('output')):
+                                    if not self._tool_observation_succeeded(event['observation']):
+                                        if not self._tool_argument_error(event['observation']):
                                             raise RuntimeError("数据查询失败，无法给出完整分析，请稍后重试")
                                         unresolved_tools.append(self._tool_argument_failure(
-                                            event['name'], arguments, event.get('data', {}).get('output'), batch,
+                                            event['name'], arguments, event['observation'], batch,
                                         ))
                                     else:
                                         self._resolve_tool_argument_failure(unresolved_tools, event['name'], arguments, batch)
                                         successful_tools += 1
-                                elif kind == 'on_chain_end' and root_id is not None and event.get('run_id') == root_id:
-                                    final_result = event.get('data', {}).get('output')
-                                elif kind == "on_chat_model_stream" and (successful_tools or history_evidence) and not unresolved_tools:
-                                    chunk = event.get('data', {}).get("chunk")
-                                    text = getattr(chunk, 'content', None)
-                                    if isinstance(text, str) and text:
+                                elif kind == 'final':
+                                    final_result = event
+                                elif kind == 'model_text':
+                                    model_round = event['iteration']
+                                    text = event['content']
+                                    if (successful_tools or history_evidence) and not unresolved_tools and text:
                                         full_answer.append(text)
                                         yield {"type": "chunk", "content": text}
                         break
@@ -3777,8 +3723,7 @@ class ToolAssistant:
                         answer = event["content"]
                     yield event
                 if not answer_check.get("issues_before") and not answer_check.get("generated_tables") and answer != ''.join(full_answer):
-                    # Model rounds before further tool calls are provisional;
-                    # only the executor's final answer is persisted or restored.
+                    # 后续工具调用前的文字仍是临时输出，落库和回填只使用最终回答。
                     yield {"type": "answer", "content": answer}
                 full_answer = [answer]
 

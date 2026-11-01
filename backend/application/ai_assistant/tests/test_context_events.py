@@ -1,4 +1,5 @@
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
 import os
@@ -7,8 +8,8 @@ from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
-from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, convert_to_openai_messages
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -88,19 +89,20 @@ class ContextEventTests(SimpleTestCase):
             ("system", SYSTEM_PROMPT), MessagesPlaceholder("chat_history"),
             ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
         ])
-        executor = AgentExecutor(agent=create_tool_calling_agent(self.guard, [self.tool], prompt),
-                                 tools=[self.tool], return_intermediate_steps=True, max_iterations=3)
         self.assistant = ToolAssistant()
         self.assistant.memory = self.memory
         self.assistant._llm = self.guard
-        self.assistant._get_executor_for_query = Mock(return_value=executor)
+        self.assistant._prompt = prompt
+        self.assistant._get_tools_for_query = Mock(return_value=[self.tool])
         self.assistant._model_needs_tools = Mock(return_value=True)
 
     def snapshot(self):
         return self.memory.load(self.memory.scope_key("event-test"))
 
     def ask(self, query="查询100到200环滚刀", **context):
-        result = self.assistant.chat(query, {**self.options, **context})
+        # 派生的异步测试也复用此夹具，同步入口在没有事件循环的线程中运行。
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = pool.submit(self.assistant.chat, query, {**self.options, **context}).result()
         self.assertTrue(result["success"], result)
         return result
 
@@ -238,7 +240,8 @@ class ContextEventTests(SimpleTestCase):
 
     async def test_failed_interrupted_and_length_limited_turns_never_commit(self):
         self.model.mode = "fail"
-        self.assertFalse(self.assistant.chat("查询", self.options)["success"])
+        self.assertFalse((await sync_to_async(self.assistant.chat)("查询", self.options))["success"])
+        self.assertEqual(len(self.model.seen), 1)
         events = [event async for event in self.assistant.chat_stream("查询", self.options)]
         self.assertEqual(events[-1]["type"], "error")
         self.model.mode = "tools"

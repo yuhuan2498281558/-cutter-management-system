@@ -60,10 +60,8 @@ class ToolContractTests(SimpleTestCase):
     def test_model_selection_exposes_all_tools_without_keyword_clipping(self):
         assistant = ToolAssistant()
         assistant._ensure_agent_runtime = Mock()
-        assistant._create_executor = Mock(return_value='executor')
-        assistant._get_executor_for_query('对照不同供货商与施工参数',
-                                          project_id='PROJECT-A', model_selects_tools=True)
-        selected = assistant._create_executor.call_args.args[0]
+        selected = assistant._get_tools_for_query('对照不同供货商与施工参数',
+                                                   project_id='PROJECT-A', model_selects_tools=True)
         self.assertEqual({item.name for item in selected}, {item.name for item in TOOLS})
         self.assertTrue(all('project_id' not in item.args for item in selected))
 
@@ -154,36 +152,35 @@ class ToolContractTests(SimpleTestCase):
         })
         assistant._direct_route = Mock(side_effect=AssertionError('Model mode used rule fallback'))
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
-        assistant._get_executor_for_query = Mock()
+        assistant._get_tools_for_query = Mock(return_value=TOOLS)
         return assistant
 
     def test_sync_model_mode_does_not_fall_back_for_recent_ring_query(self):
         assistant = self.make_assistant()
-        assistant._invoke_with_retry = Mock(return_value={
+        self.enterContext(patch('application.ai_assistant.llm_service.invoke_agent', return_value={
             'output': '已查询所选范围', 'intermediate_steps': [(None, {'total_records': 2})],
-        })
+        }))
         result = assistant.chat('统计最近100环换刀情况', {'user_id': 1, 'route_mode': 'agent'})
         self.assertTrue(result['success'])
         self.assertEqual(result['tool_group'], 'all')
         assistant._direct_route.assert_not_called()
-        self.assertTrue(assistant._get_executor_for_query.call_args.kwargs['model_selects_tools'])
+        self.assertTrue(assistant._get_tools_for_query.call_args.kwargs['model_selects_tools'])
 
     async def test_stream_model_mode_matches_sync_tool_selection(self):
         assistant = self.make_assistant()
 
         async def events(*args, **kwargs):
-            yield {'event': 'on_chain_start', 'run_id': 'root', 'parent_ids': []}
-            yield {'event': 'on_tool_end', 'name': TOOLS[0].name, 'data': {'output': {'total_records': 2}}}
-            yield {'event': 'on_chain_end', 'run_id': 'root', 'data': {'output': {
+            yield {'type': 'tool_end', 'call_id': 'call-1', 'name': TOOLS[0].name, 'args': {}, 'observation': {'total_records': 2}}
+            yield {'type': 'final',
                 'output': '已查询所选范围', 'intermediate_steps': [(None, {'total_records': 2})],
-            }}}
+            }
 
-        assistant._get_executor_for_query.return_value = SimpleNamespace(astream_events=events)
+        self.enterContext(patch('application.ai_assistant.llm_service.astream_agent', side_effect=events))
         result = [item async for item in assistant.chat_stream('统计最近100环换刀情况', {'user_id': 1})]
         self.assertEqual(result[0]['tool_group'], 'all')
         self.assertEqual(result[-1]['type'], 'done')
         assistant._direct_route.assert_not_called()
-        self.assertTrue(assistant._get_executor_for_query.call_args.kwargs['model_selects_tools'])
+        self.assertTrue(assistant._get_tools_for_query.call_args.kwargs['model_selects_tools'])
 
     async def test_stream_can_recover_parameter_error_without_saving_partial_turn(self):
         assistant = self.make_assistant()
@@ -201,18 +198,17 @@ class ToolContractTests(SimpleTestCase):
         success = {'total_records': 2}
 
         async def events(*args, **kwargs):
-            yield {'event': 'on_chain_start', 'run_id': 'root', 'parent_ids': []}
-            yield {'event': 'on_chat_model_start', 'run_id': 'model1'}
-            yield {'event': 'on_tool_start', 'run_id': 'bad', 'name': name, 'data': {'input': invalid_args}}
-            yield {'event': 'on_tool_end', 'run_id': 'bad', 'name': name, 'data': {'output': error}}
-            yield {'event': 'on_chat_model_start', 'run_id': 'model2'}
-            yield {'event': 'on_tool_start', 'run_id': 'corrected', 'name': name, 'data': {'input': valid_args}}
-            yield {'event': 'on_tool_end', 'run_id': 'corrected', 'name': name, 'data': {'output': success}}
-            yield {'event': 'on_chain_end', 'run_id': 'root', 'data': {'output': {
+            yield {'type': 'model_text', 'iteration': 1, 'content': ''}
+            yield {'type': 'tool_start', 'call_id': 'bad', 'name': name, 'args': invalid_args}
+            yield {'type': 'tool_end', 'call_id': 'bad', 'name': name, 'args': invalid_args, 'observation': error}
+            yield {'type': 'model_text', 'iteration': 2, 'content': ''}
+            yield {'type': 'tool_start', 'call_id': 'corrected', 'name': name, 'args': valid_args}
+            yield {'type': 'tool_end', 'call_id': 'corrected', 'name': name, 'args': valid_args, 'observation': success}
+            yield {'type': 'final',
                 'output': '已查询所选范围', 'intermediate_steps': [(action, error), (corrected, success)],
-            }}}
+            }
 
-        assistant._get_executor_for_query.return_value = SimpleNamespace(astream_events=events)
+        self.enterContext(patch('application.ai_assistant.llm_service.astream_agent', side_effect=events))
         result = [item async for item in assistant.chat_stream('统计最近100环换刀情况', {'user_id': 1})]
         self.assertEqual(result[-1]['type'], 'done')
         assistant._store_turn_and_summarize.assert_called_once()

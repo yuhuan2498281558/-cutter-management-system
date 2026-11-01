@@ -4,11 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.test import RequestFactory, SimpleTestCase
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
 from application.ai_assistant import views
-from application.ai_assistant.llm_service import ToolAssistant
+from application.ai_assistant.llm_service import TOOLS, ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
 
@@ -26,7 +26,8 @@ class StreamContractTests(SimpleTestCase):
             for event in events:
                 yield event
 
-        assistant._get_executor_for_query = Mock(return_value=SimpleNamespace(astream_events=stream))
+        assistant._get_tools_for_query = Mock(return_value=TOOLS)
+        self.enterContext(patch('application.ai_assistant.llm_service.astream_agent', side_effect=stream))
         return assistant
 
     async def collect(self, assistant):
@@ -36,9 +37,8 @@ class StreamContractTests(SimpleTestCase):
 
     async def test_agent_without_tool_evidence_is_not_saved_as_success(self):
         assistant = self.make_assistant([
-            {"event": "on_chain_start", "run_id": "root", "parent_ids": [], "data": {}},
-            {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content="编造的统计")}},
-            {"event": "on_chain_end", "run_id": "root", "data": {"output": {"output": "编造的统计", "intermediate_steps": []}}},
+            {"type": "model_text", "iteration": 1, "content": "编造的统计"},
+            {"type": "final", "output": "编造的统计", "intermediate_steps": []},
         ])
         events = await self.collect(assistant)
         self.assertEqual(events[-1]["type"], "error")
@@ -48,12 +48,11 @@ class StreamContractTests(SimpleTestCase):
     async def test_agent_stores_final_output_and_corrects_intermediate_text(self):
         observation = json.dumps({"total_records": 3})
         assistant = self.make_assistant([
-            {"event": "on_chain_start", "run_id": "root", "parent_ids": [], "data": {}},
-            {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content="先查数据")}},
-            {"event": "on_tool_end", "name": "tool_query_tool_change_data", "data": {"output": observation}},
-            {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content="再检查一下。")}},
-            {"event": "on_chat_model_stream", "data": {"chunk": AIMessageChunk(content="共3条。")}},
-            {"event": "on_chain_end", "run_id": "root", "data": {"output": {"output": "共3条。", "intermediate_steps": [(None, observation)]}}},
+            {"type": "model_text", "iteration": 1, "content": "先查数据"},
+            {"type": "tool_end", "call_id": "call-1", "name": "tool_query_tool_change_data", "args": {}, "observation": observation},
+            {"type": "model_text", "iteration": 2, "content": "再检查一下。"},
+            {"type": "model_text", "iteration": 3, "content": "共3条。"},
+            {"type": "final", "output": "共3条。", "intermediate_steps": [(None, observation)]},
         ])
         events = await self.collect(assistant)
         self.assertEqual(events[-1]["type"], "done")
@@ -64,9 +63,8 @@ class StreamContractTests(SimpleTestCase):
     async def test_tool_failure_cannot_become_successful_answer(self):
         observation = json.dumps({"error": "query failed"})
         assistant = self.make_assistant([
-            {"event": "on_chain_start", "run_id": "root", "parent_ids": [], "data": {}},
-            {"event": "on_tool_end", "name": "tool_query_tool_change_data", "data": {"output": observation}},
-            {"event": "on_chain_end", "run_id": "root", "data": {"output": {"output": "没有数据", "intermediate_steps": [(None, observation)]}}},
+            {"type": "tool_end", "call_id": "call-1", "name": "tool_query_tool_change_data", "args": {}, "observation": observation},
+            {"type": "final", "output": "没有数据", "intermediate_steps": [(None, observation)]},
         ])
         events = await self.collect(assistant)
         self.assertEqual(events[-1]["type"], "error")
@@ -117,7 +115,7 @@ class StreamContractTests(SimpleTestCase):
             response = await views.chat_stream(request)
         self.assertEqual(response.status_code, 400)
 
-    async def test_actual_langchain_executor_preserves_tool_evidence_and_final_answer(self):
+    async def test_actual_agent_loop_preserves_tool_evidence_and_final_answer(self):
         class ToolModel(FakeMessagesListChatModel):
             def bind_tools(self, tools, **kwargs):
                 return self
@@ -136,7 +134,7 @@ class StreamContractTests(SimpleTestCase):
         self.assertEqual(json.loads(query.call_args.args[0])['project_id'], 'TEST')
         self.assertEqual(assistant._store_turn_and_summarize.call_args.args[2], '实际查询到3条记录。')
 
-    async def test_actual_executor_recovers_invalid_arguments_before_querying(self):
+    async def test_actual_agent_loop_recovers_invalid_arguments_before_querying(self):
         class ToolModel(FakeMessagesListChatModel):
             def bind_tools(self, tools, **kwargs):
                 return self
@@ -179,12 +177,12 @@ class StreamContractTests(SimpleTestCase):
         snapshot = MemorySnapshot(scope_key='user:1', backend='legacy')
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
-        assistant._get_executor_for_query = Mock(side_effect=AssertionError('Unnecessary tool request'))
+        assistant._get_tools_for_query = Mock(side_effect=AssertionError('Unnecessary tool request'))
         events = [event async for event in assistant.chat_stream(
             '你可以查询库存台账吗', {'user_id': 1, 'route_mode': 'agent', 'require_project': True},
         )]
         self.assertEqual(events[-1]['type'], 'done', events)
-        assistant._get_executor_for_query.assert_not_called()
+        assistant._get_tools_for_query.assert_not_called()
         assistant._store_turn_and_summarize.assert_called_once()
 
     async def test_close_rule_stream_before_completion_does_not_save_turn(self):
@@ -200,7 +198,7 @@ class StreamContractTests(SimpleTestCase):
         assistant = self.make_assistant()
         events = [event async for event in assistant.chat_stream('查询换刀记录', {'user_id': 1, 'require_project': True})]
         self.assertEqual(events[-1]['type'], 'error')
-        assistant._get_executor_for_query.assert_not_called()
+        assistant._get_tools_for_query.assert_not_called()
         assistant._direct_route.assert_not_called()
 
     def test_cleared_slots_are_not_restored_from_snapshot(self):
@@ -222,10 +220,11 @@ class StreamContractTests(SimpleTestCase):
 
     def test_sync_agent_still_requires_evidence_after_retry(self):
         assistant = self.make_assistant()
-        assistant._invoke_with_retry = Mock(return_value={'output': '没有查询依据的统计', 'intermediate_steps': []})
-        result = assistant.chat('查询换刀记录', {'user_id': 1, 'project_id': 'TEST', 'route_mode': 'agent'})
+        with patch('application.ai_assistant.llm_service.invoke_agent',
+                   return_value={'output': '没有查询依据的统计', 'intermediate_steps': []}) as invoke:
+            result = assistant.chat('查询换刀记录', {'user_id': 1, 'project_id': 'TEST', 'route_mode': 'agent'})
         self.assertFalse(result['success'])
-        self.assertEqual(assistant._invoke_with_retry.call_count, 2)
+        self.assertEqual(invoke.call_count, 2)
         assistant._store_turn_and_summarize.assert_not_called()
 
     def test_empty_answer_is_not_persisted(self):
@@ -253,14 +252,14 @@ class StreamContractTests(SimpleTestCase):
 
         async def stalled(*args, **kwargs):
             try:
-                yield {'event': 'on_chain_start', 'run_id': 'root', 'parent_ids': [], 'data': {}}
+                yield {'type': 'model_text', 'iteration': 1, 'content': ''}
                 waiting.set()
                 await asyncio.Event().wait()
             finally:
                 closed.append(True)
 
         assistant = self.make_assistant()
-        assistant._get_executor_for_query.return_value = SimpleNamespace(astream_events=stalled)
+        self.enterContext(patch('application.ai_assistant.llm_service.astream_agent', side_effect=stalled))
         consumer = asyncio.create_task(self.collect(assistant))
         await asyncio.wait_for(waiting.wait(), 1)
         consumer.cancel()
@@ -303,7 +302,7 @@ class StreamContractTests(SimpleTestCase):
                 events = [event async for event in assistant.chat_stream(query, {'user_id': 1, 'require_project': True})]
                 self.assertEqual(events[-1]['type'], 'error')
                 assistant._direct_route.assert_not_called()
-                assistant._get_executor_for_query.assert_not_called()
+                assistant._get_tools_for_query.assert_not_called()
 
     def test_agent_iteration_stop_is_not_a_successful_answer(self):
         assistant = self.make_assistant()

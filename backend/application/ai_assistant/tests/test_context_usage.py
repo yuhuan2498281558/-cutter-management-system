@@ -5,8 +5,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import RequestFactory, SimpleTestCase
-from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -76,10 +76,8 @@ def make_agent():
         ("system", "Preserve scope and denominator."), MessagesPlaceholder("chat_history"),
         ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
     ])
-    executor = AgentExecutor(agent=create_tool_calling_agent(guard, [tool], prompt),
-                             tools=[tool], return_intermediate_steps=True, max_iterations=3)
     options = {"tools": [convert_to_openai_tool(tool)], "max_tokens": policy.output_tokens}
-    return model, guard, executor, options
+    return model, guard, prompt, [tool], options
 
 
 class ContextUsageTests(SimpleTestCase):
@@ -108,10 +106,11 @@ class ContextUsageTests(SimpleTestCase):
         self.assertEqual(sum(info["parts"].values()), info["used"])
 
     def test_agent_peak_keeps_all_results_and_compaction_stats(self):
-        model, guard, executor, options = make_agent()
+        model, guard, prompt, tools, options = make_agent()
         assistant = self.make_assistant(guard)
         assistant._model_needs_tools = Mock(return_value=True)
-        assistant._get_executor_for_query = Mock(return_value=executor)
+        assistant._prompt = prompt
+        assistant._get_tools_for_query = Mock(return_value=tools)
         result = assistant.chat("查询换刀趋势", {"user_id": 1, "route_mode": "agent"})
         self.assertTrue(result["success"], result)
         info = result["context"]
@@ -146,18 +145,17 @@ class ContextUsageTests(SimpleTestCase):
                 ("system", "Read later pages when necessary."), ("human", "{input}"),
                 MessagesPlaceholder("agent_scratchpad"),
             ])
-            executor = AgentExecutor(agent=create_tool_calling_agent(guard, [tool], prompt),
-                                     tools=[tool], return_intermediate_steps=True, max_iterations=3)
             assistant = self.make_assistant(guard)
             assistant._model_needs_tools = Mock(return_value=True)
-            assistant._get_executor_for_query = Mock(return_value=executor)
+            assistant._prompt = prompt
+            assistant._get_tools_for_query = Mock(return_value=[tool])
             request_context = {"user_id": 1, "route_mode": "agent"}
             if streaming:
                 events = [event async for event in assistant.chat_stream("查看换刀明细", request_context)]
                 self.assertEqual(events[-1]["type"], "done", events)
                 info = events[-2]["context"]
             else:
-                result = assistant.chat("查看换刀明细", request_context)
+                result = await sync_to_async(assistant.chat)("查看换刀明细", request_context)
                 self.assertTrue(result["success"], result)
                 info = result["context"]
             self.assertGreaterEqual(info["paged_lists"], 1)
