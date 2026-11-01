@@ -6,16 +6,62 @@ import logging
 from contextlib import aclosing
 
 from asgiref.sync import async_to_sync, sync_to_async
-from langchain_core.agents import AgentAction, AgentActionMessageLog, AgentFinish
-from langchain_core.exceptions import OutputParserException
-from langchain_core.messages import AIMessage, BaseMessage, ToolCall, ToolMessage
+from pydantic import BaseModel
+
+from .messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage
 
 
 logger = logging.getLogger(__name__)
 _RETRYABLE_ERRORS = ("timeout", "connection", "rate limit", "overloaded", "503", "502")
 
 
-# 消息格式逐字沿用原实现，保证已落库历史的回放和供应商前缀缓存不变。
+class AgentAction(BaseModel):
+    """工具名、输入与模型调用日志。"""
+    tool: str
+    tool_input: str | dict
+    log: str
+    type: str = "AgentAction"
+
+    def __init__(self, tool, tool_input, log, **kwargs):
+        super().__init__(tool=tool, tool_input=tool_input, log=log, **kwargs)
+
+
+class AgentActionMessageLog(AgentAction):
+    """带原始模型消息的工具动作。"""
+    type: str = "AgentActionMessageLog"
+    message_log: list[BaseMessage]
+
+
+class AgentFinish(BaseModel):
+    """最终回答及其原文日志。"""
+    return_values: dict
+    log: str
+    type: str = "AgentFinish"
+
+
+class OutputParserException(ValueError):
+    """保留解析错误文字及模型修复所需字段。"""
+    def __init__(self, error, observation=None, llm_output=None, send_to_llm=False):
+        if isinstance(error, str):
+            error += ("\nFor troubleshooting, visit: "
+                      "https://python.langchain.com/docs/troubleshooting/errors/OUTPUT_PARSING_FAILURE ")
+        super().__init__(error)
+        if send_to_llm and (observation is None or llm_output is None):
+            raise ValueError("Arguments 'observation' & 'llm_output' are required if 'send_to_llm' is True")
+        self.observation, self.llm_output, self.send_to_llm = observation, llm_output, send_to_llm
+
+
+class AgentPrompt:
+    """按原模板顺序插入历史、问题和工具步骤。"""
+    def __init__(self, system_prompt):
+        self.system_prompt = system_prompt
+
+    def format_messages(self, *, input, chat_history=(), agent_scratchpad=()):
+        """沿用字符串模板的花括号转义规则。"""
+        system = self.system_prompt.format(input=input, chat_history=chat_history, agent_scratchpad=agent_scratchpad)
+        return [SystemMessage(system), *chat_history, HumanMessage(input), *agent_scratchpad]
+
+
 class ToolAgentAction(AgentActionMessageLog):
     """模型发出的一次工具调用：工具名、参数、调用 ID 和所在的模型消息。"""
     tool_call_id: str

@@ -12,13 +12,10 @@ from copy import deepcopy
 import json
 from hashlib import sha256
 
-from langchain_core.messages import (
-    AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, convert_to_messages, convert_to_openai_messages,
+from .messages import (
+    AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, convert_to_openai_messages,
 )
-from langchain_core.prompt_values import PromptValue
-from langchain_core.runnables import Runnable
-from langchain_core.runnables.base import RunnableBinding
-from langchain_core.utils.function_calling import convert_to_openai_tool
+from .tooling import openai_tool_schema
 
 from .context_compaction import COLUMNAR_FORMAT, compact_tool_content
 from .token_estimation import estimate_tokens
@@ -313,12 +310,7 @@ def estimate_request_tokens(messages, request_options=None, tool_protocol_tokens
 
 
 def encode_messages(value, policy):
-    if isinstance(value, PromptValue):
-        messages = value.to_messages()
-    elif isinstance(value, str):
-        messages = [HumanMessage(content=value)]
-    else:
-        messages = convert_to_messages(value)
+    messages = [HumanMessage(content=value)] if isinstance(value, str) else value
     prepared = []
     raw = compacted = 0
     for message in messages:
@@ -363,8 +355,8 @@ def prepare_messages(value, policy, request_options=None):
     return prepared
 
 
-class GuardedChatModel(Runnable):
-    """Runnable adapter retaining the real model's streaming/callback events."""
+class GuardedChatModel:
+    """为每次模型请求保留预算检查、流式片段和用量。"""
 
     def __init__(self, model, policy, request_options=None, output_parameter="max_tokens",
                  provider="", model_name=""):
@@ -379,10 +371,10 @@ class GuardedChatModel(Runnable):
         tools = list(tools)
         bound = self.model.bind_tools(tools, **kwargs)
         options = {**self.request_options, **kwargs,
-                   "tools": [convert_to_openai_tool(tool) for tool in tools]}
+                   "tools": [openai_tool_schema(tool) for tool in tools]}
         # Prefer the provider's actual converted schemas, if exposed.
         options.update(getattr(bound, "kwargs", {}))
-        if isinstance(bound, RunnableBinding) and not bound.config and not bound.config_factories:
+        if getattr(bound, "bound", None) is self.model:
             bound = bound.bound
         return type(self)(bound, self.policy, options, self.output_parameter,
                           self.provider, self.model_name)

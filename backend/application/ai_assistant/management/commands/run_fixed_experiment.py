@@ -182,7 +182,7 @@ class EphemeralPersistence:
     def append_turn(self, scope_key, question, answer, slots=None, metadata=None, **kwargs):
         from application.ai_assistant.memory_service import StoredMessage
         from application.ai_assistant.token_estimation import estimate_tokens
-        from langchain_core.messages import ToolMessage, message_to_dict
+        from application.ai_assistant.messages import ToolMessage, message_to_dict
         snapshot = self.load(scope_key)
         sequence = snapshot.last_sequence
         snapshot.messages.extend([StoredMessage(sequence + 1, "human", question, estimate_tokens(question), metadata or {}),

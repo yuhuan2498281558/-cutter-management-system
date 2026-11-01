@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
-from langchain_core.messages import AIMessage
+from application.ai_assistant.messages import AIMessage
 
 from application.ai_assistant.llm_service import TOOLS, ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot

@@ -7,11 +7,10 @@ from unittest.mock import Mock, patch
 
 from asgiref.sync import sync_to_async
 from django.test import RequestFactory, SimpleTestCase
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.outputs import ChatGenerationChunk
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import StructuredTool
-from langchain_core.utils.function_calling import convert_to_openai_tool
+from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+from application.ai_assistant.agent_loop import AgentPrompt
+from application.ai_assistant.tests.test_tooling import make_tool
+from application.ai_assistant.tooling import openai_tool_schema
 from rest_framework.test import force_authenticate
 
 from application.ai_assistant import views
@@ -51,14 +50,14 @@ class PagingModel(MultiRoundModel):
         response = self._response(messages)
         if response.tool_calls:
             call = response.tool_calls[0]
-            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+            yield AIMessageChunk(content="", tool_call_chunks=[{
                 "name": call["name"], "id": call["id"], "args": '{"page":', "index": 0,
-            }]))
-            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{
+            }])
+            yield AIMessageChunk(content="", tool_call_chunks=[{
                 "args": str(call["args"]["page"]) + "}", "index": 0,
-            }]))
+            }])
         else:
-            yield ChatGenerationChunk(message=AIMessageChunk(content=response.content))
+            yield AIMessageChunk(content=response.content)
 
 
 def make_agent():
@@ -70,13 +69,10 @@ def make_agent():
     def query_trend():
         return next(payloads)
 
-    tool = StructuredTool.from_function(query_trend, name="tool_query_tool_change_trend",
+    tool = make_tool(query_trend, name="tool_query_tool_change_trend",
                                         description="Return exact per-ring statistics.")
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Preserve scope and denominator."), MessagesPlaceholder("chat_history"),
-        ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-    ])
-    options = {"tools": [convert_to_openai_tool(tool)], "max_tokens": policy.output_tokens}
+    prompt = AgentPrompt("Preserve scope and denominator.")
+    options = {"tools": [openai_tool_schema(tool)], "max_tokens": policy.output_tokens}
     return model, guard, prompt, [tool], options
 
 
@@ -139,12 +135,9 @@ class ContextUsageTests(SimpleTestCase):
             def query_trend(page: int = 1):
                 return agent_view(json.dumps(payload), page=page)
 
-            tool = StructuredTool.from_function(query_trend, name="tool_query_tool_change_trend",
+            tool = make_tool(query_trend, name="tool_query_tool_change_trend",
                                                 description="Read one page of per-ring statistics.")
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", "Read later pages when necessary."), ("human", "{input}"),
-                MessagesPlaceholder("agent_scratchpad"),
-            ])
+            prompt = AgentPrompt("Read later pages when necessary.")
             assistant = self.make_assistant(guard)
             assistant._model_needs_tools = Mock(return_value=True)
             assistant._prompt = prompt
@@ -165,7 +158,7 @@ class ContextUsageTests(SimpleTestCase):
             self.assertTrue(any(json.loads(message.content).get("format") == COLUMNAR_FORMAT
                                 for message in model.seen[1] if isinstance(message, ToolMessage)))
             self.assertEqual(estimate_request_tokens(model.seen[-1], {
-                "tools": [convert_to_openai_tool(tool)], "max_tokens": guard.policy.output_tokens,
+                "tools": [openai_tool_schema(tool)], "max_tokens": guard.policy.output_tokens,
             }), info["used"])
             self.assert_parts(info)
 

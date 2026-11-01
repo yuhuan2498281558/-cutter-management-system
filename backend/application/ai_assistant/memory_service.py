@@ -19,7 +19,7 @@ from typing import Iterable
 from django.db import transaction
 from django.db.models import Count, Max
 
-from langchain_core.messages import AIMessage, HumanMessage, message_to_dict
+from .messages import AIMessage, HumanMessage, message_to_dict
 from sqlalchemy import (
     Column, Index, Integer, MetaData, String, Table, Text, create_engine,
     func, insert, select, update,

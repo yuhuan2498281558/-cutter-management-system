@@ -4,13 +4,9 @@ import copy
 import json
 import unittest
 
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import StructuredTool
-from pydantic import Field
+from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from application.ai_assistant.agent_loop import AgentPrompt
+from application.ai_assistant.tests.test_tooling import make_tool
 
 from application.ai_assistant.agent_loop import astream_agent, invoke_agent
 from application.ai_assistant.context_budget import (
@@ -23,28 +19,35 @@ from application.ai_assistant.token_estimation import estimate_tokens
 USAGE = {"input_tokens": 17, "output_tokens": 3, "total_tokens": 20}
 
 
-class RecordingToolModel(BaseChatModel):
-    """Local deterministic model; no provider, tokenization download or DB."""
+class FakeMessagesListChatModel:
+    """按顺序循环返回预设消息的测试假模型。"""
+    def __init__(self, responses):
+        self.responses, self.index = responses, 0
 
-    seen: list = Field(default_factory=list)
-    bound_names: list = Field(default_factory=list)
-    use_tool: bool = True
+    def invoke(self, input, config=None, **kwargs):
+        response = self.responses[self.index]
+        self.index = (self.index + 1) % len(self.responses)
+        return response
 
-    @property
-    def _llm_type(self):
-        return "offline-context-budget-integration"
+    async def ainvoke(self, input, config=None, **kwargs):
+        return self.invoke(input, config, **kwargs)
+
+    def stream(self, input, config=None, **kwargs):
+        yield self.invoke(input, config, **kwargs)
+
+    async def astream(self, input, config=None, **kwargs):
+        yield self.invoke(input, config, **kwargs)
+
+
+class RecordingToolModel:
+    """记录输入、片段和用量的离线模型。"""
+    def __init__(self, use_tool=True, **kwargs):
+        self.seen, self.bound_names, self.use_tool = [], [], use_tool
+        self.__dict__.update(kwargs)
 
     def bind_tools(self, tools, **kwargs):
         self.bound_names.extend(getattr(tool, "name", "unknown") for tool in tools)
         return self
-
-    def get_num_tokens(self, text):
-        # Defensive offline fallback only. Production guard uses estimate_tokens,
-        # so this fake tokenizer does not establish real provider token counts.
-        return len(text)
-
-    def get_num_tokens_from_messages(self, messages, tools=None):
-        return sum(len(str(message.content)) + 12 for message in messages)
 
     def _response(self, messages):
         self.seen.append(copy.deepcopy(messages))
@@ -58,19 +61,36 @@ class RecordingToolModel(BaseChatModel):
             response_metadata={"offline": True},
         )
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        return ChatResult(generations=[ChatGeneration(message=self._response(messages))])
+    def invoke(self, messages, config=None, **kwargs):
+        response = self._response(messages)
+        if collector := (config or {}).get("usage"):
+            collector.record(response)
+        return response
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return self.invoke(messages, config, **kwargs)
+
+    def stream(self, messages, config=None, **kwargs):
+        observe = (config or {}).get("observe", lambda kind, value: None)
+        observe("start", messages)
+        response = None
+        for chunk in self._stream(messages, **kwargs):
+            observe("chunk", chunk)
+            response = chunk if response is None else response + chunk
+            yield chunk
+        if collector := (config or {}).get("usage"):
+            collector.record(response)
 
     def _stream(self, messages, stop=None, run_manager=None, **kwargs):
         message = self._response(messages)
-        yield ChatGenerationChunk(message=AIMessageChunk(
+        yield AIMessageChunk(
             content=message.content, tool_calls=message.tool_calls,
             usage_metadata=message.usage_metadata,
             response_metadata=message.response_metadata,
-        ))
+        )
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        for chunk in self._stream(messages, stop=stop, **kwargs):
+    async def astream(self, messages, config=None, **kwargs):
+        for chunk in self.stream(messages, config, **kwargs):
             yield chunk
 
 
@@ -91,14 +111,11 @@ def make_agent(payload, policy=None):
     guard = GuardedChatModel(model, policy or ContextBudgetPolicy(
         context_tokens=4096, output_tokens=512, safety_margin_tokens=512,
     ))
-    tool = StructuredTool.from_function(
+    tool = make_tool(
         func=lambda: payload, name="query_trend",
         description="Return exact per-ring counts, unknown values and the denominator.",
     )
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Use query_trend for statistics. Preserve scope, null and denominator."),
-        ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-    ])
+    prompt = AgentPrompt("Use query_trend for statistics. Preserve scope, null and denominator.")
     return model, guard, prompt, [tool]
 
 
@@ -135,15 +152,11 @@ class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
         model, guard, prompt, tools = make_agent(payload)
         starts, streams = [], []
 
-        class Recorder(BaseCallbackHandler):
-            def on_chat_model_start(self, serialized, messages, **kwargs):
-                starts.append(messages)
-
-            def on_llm_new_token(self, token, **kwargs):
-                streams.append(kwargs["chunk"].message)
+        def observe(kind, value):
+            (starts if kind == "start" else streams).append(value)
 
         events = [event async for event in astream_agent(
-            guard, prompt, tools, {"input": "查询1至160环异常率"}, config={"callbacks": [Recorder()]},
+            guard, prompt, tools, {"input": "查询1至160环异常率"}, config={"observe": observe},
         )]
         self.assertEqual(len(model.seen), 2)
         self.assertGreaterEqual(len(starts), 2)

@@ -3,11 +3,10 @@ LLM服务封装 - 自己的工具循环 + OpenAI 兼容接口
 记忆由 MemoryService 统一编排；legacy 模式兼容 SQLChatMessageHistory，django 模式由 Django 迁移管理
 """
 
-from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from .agent_loop import astream_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.utils.function_calling import convert_to_openai_tool
+from .tooling import tool, openai_tool_schema
+from .messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from .agent_loop import AgentPrompt, astream_agent
+from .chat_model import UsageCollector
 from application.shield.analysis_metrics import ANALYSIS_REQUEST, scoped_queryset
 from .llm_provider import create_chat_model, get_llm_config, get_context_policy, LLMProviderError
 from .tools import (
@@ -74,11 +73,6 @@ import functools
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import replace
-
-try:  # langchain-core >= 0.3.30
-    from langchain_core.callbacks import UsageMetadataCallbackHandler
-except ImportError:  # 旧版本不提供该回调，token 统计降级为空
-    UsageMetadataCallbackHandler = None
 
 logger = logging.getLogger(__name__)
 
@@ -247,11 +241,9 @@ query_tool_mileage = _traced_tool(query_tool_mileage)
 
 
 def _new_usage_callback():
-    """返回 (callbacks列表, 取用量的函数)。旧版 langchain 下降级为空实现。"""
-    if UsageMetadataCallbackHandler is None:
-        return [], lambda: {}
-    handler = UsageMetadataCallbackHandler()
-    return [handler], lambda: getattr(handler, "usage_metadata", {}) or {}
+    """返回本轮用量收集器和读取聚合结果的函数。"""
+    collector = UsageCollector()
+    return collector, lambda: collector.usage_metadata
 
 
 # 历史记录数据库连接（使用 Django 项目同一数据库）
@@ -359,7 +351,6 @@ def _bind_tools_to_project(tools: list, project_id: str) -> list:
             description=item.description,
             args_schema=item.args_schema,
             return_direct=item.return_direct,
-            response_format=item.response_format,
             handle_validation_error=item.handle_validation_error,
             func=functools.partial(_invoke_project_bound_tool, item, project_id),
         )
@@ -367,7 +358,7 @@ def _bind_tools_to_project(tools: list, project_id: str) -> list:
     ]
 
 
-# --- 把工具函数包装成 LangChain Tool ---
+# 把业务函数包装成带参数校验的工具。
 
 def _pct_to_float(value) -> float:
     try:
@@ -960,12 +951,7 @@ class ToolAssistant:
             started_at = time.perf_counter()
             self._ensure_llm_runtime()
             try:
-                prompt = ChatPromptTemplate.from_messages([
-                    ("system", SYSTEM_PROMPT),
-                    MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"),
-                    MessagesPlaceholder("agent_scratchpad"),
-                ])
+                prompt = AgentPrompt(SYSTEM_PROMPT)
                 self._tools_cache = {"all": list(TOOLS)}
                 self._prompt = prompt
             except Exception:
@@ -1186,7 +1172,7 @@ class ToolAssistant:
         policy = self._llm.policy
         messages = [SystemMessage(content=SYSTEM_PROMPT), *history, HumanMessage(content=enriched_input)]
         prepared, _, _ = encode_messages(messages, policy)
-        count = estimate_request_tokens(prepared, {"tools": [convert_to_openai_tool(item) for item in TOOLS]},
+        count = estimate_request_tokens(prepared, {"tools": [openai_tool_schema(item) for item in TOOLS]},
                                         policy.tool_protocol_tokens)
         if anchor and anchor.get("prompt_tokens") and anchor.get("request_estimate"):
             count = int(count * min(1.5, max(0.5, anchor["prompt_tokens"] / anchor["request_estimate"])))
@@ -3060,7 +3046,7 @@ class ToolAssistant:
                 policy = get_context_policy()
                 output_parameter = "max_tokens"
                 provider, model = config.provider, getattr(config, "model", "")
-            options = {"tools": [convert_to_openai_tool(tool) for tool in TOOLS]}
+            options = {"tools": [openai_tool_schema(tool) for tool in TOOLS]}
             options[output_parameter] = policy.output_tokens
             if project_id is None:
                 project_id = next((item.metadata.get("project_id") for item in reversed(snapshot.messages)
@@ -3339,10 +3325,8 @@ class ToolAssistant:
         memory_info, tool_group = None, None
         trace_offset = 0
         answer_check = {}
-        callbacks, get_usage = _new_usage_callback()
-        config = {"configurable": {"session_id": user_id}}
-        if callbacks:
-            config["callbacks"] = callbacks
+        collector, get_usage = _new_usage_callback()
+        config = {"configurable": {"session_id": user_id}, "usage": collector}
 
         def _finish(payload, route_stage, retry_count=0):
             payload.update({

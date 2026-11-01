@@ -5,9 +5,8 @@ from unittest.mock import Mock, patch
 
 from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase, override_settings
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.runnables import Runnable
-from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+from application.ai_assistant.tests.test_context_budget_agent import FakeMessagesListChatModel
 
 from application.ai_assistant.context_budget import (
     ContextBudgetExceeded, ContextBudgetPolicy, GuardedChatModel,
@@ -19,7 +18,7 @@ from application.ai_assistant.llm_service import ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
 
-class RecordingModel(Runnable):
+class RecordingModel:
     def __init__(self, finish=None):
         self.calls = []
         self.closed = []

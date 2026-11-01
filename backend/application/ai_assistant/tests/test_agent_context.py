@@ -3,7 +3,7 @@ import json
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
-from langchain_core.prompts import ChatPromptTemplate
+from string import Formatter
 
 from application.ai_assistant import llm_service as service
 from application.ai_assistant.agent_views import AGENT_PAGE_SIZE, agent_view
@@ -130,4 +130,4 @@ class AgentViewTests(SimpleTestCase):
                 with self.subTest(name=name, params=params), patch.object(tool, 'func') as execute:
                     self.assertEqual(json.loads(tool.invoke(params))['code'], 'invalid_tool_arguments')
                     execute.assert_not_called()
-        self.assertEqual(ChatPromptTemplate.from_messages([('system', service.SYSTEM_PROMPT)]).input_variables, [])
+        self.assertEqual([field for _, field, _, _ in Formatter().parse(service.SYSTEM_PROMPT) if field], [])

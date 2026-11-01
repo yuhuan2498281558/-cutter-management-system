@@ -6,8 +6,8 @@ import httpx
 import openai
 from asgiref.sync import async_to_sync
 from django.test import SimpleTestCase
-from langchain_core.callbacks import UsageMetadataCallbackHandler
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from application.ai_assistant.chat_model import UsageCollector
+from application.ai_assistant.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from application.ai_assistant.chat_model import ChatCompletionsModel
 from application.ai_assistant.context_budget import (
@@ -96,8 +96,8 @@ class ChatModelTests(SimpleTestCase):
                                  "completion_tokens_details": {"reasoning_tokens": 0}}, ({"cache_read": 0}, {"reasoning": 0}))):
             model, requests = self._model(usage)
             expected = {**_NORMALIZED, "input_token_details": details[0], "output_token_details": details[1]}
-            handler = UsageMetadataCallbackHandler()
-            config = {"callbacks": [handler], "tags": ["offline"], "metadata": {"turn": "test"}}
+            handler = UsageCollector()
+            config = {"usage": handler, "tags": ["offline"], "metadata": {"turn": "test"}}
             messages = [model.invoke("问题", config=config), await model.ainvoke("问题", config=config)]
             for message in messages:
                 self.assertEqual(message.content, "答案")
@@ -126,8 +126,8 @@ class ChatModelTests(SimpleTestCase):
     async def test_stream_text_usage_tail_and_callbacks(self):
         for usage, details in ((_DEEPSEEK_USAGE, ({}, {})), (_OPENAI_USAGE, ({"cache_read": 24}, {"reasoning": 3}))):
             model, requests = self._model(usage)
-            handler = UsageMetadataCallbackHandler()
-            config = {"callbacks": [handler]}
+            handler = UsageCollector()
+            config = {"usage": handler}
             streams = [list(model.stream("问题", config=config)),
                        [chunk async for chunk in model.astream("问题", config=config)]]
             for chunks in streams:

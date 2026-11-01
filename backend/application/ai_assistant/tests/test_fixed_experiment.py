@@ -51,7 +51,7 @@ class FixedExperimentTests(SimpleTestCase):
 
     def fake_chat(self, assistant, question, context=None):
         from application.ai_assistant.context_budget import ContextUsage
-        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+        from application.ai_assistant.messages import AIMessage, HumanMessage, ToolMessage
         signature = {key: os.environ.get(key) for key in run.arm_environment("hybrid")}
         snapshot = assistant.memory.load(assistant.memory.scope_key(context["user_id"]))
         if snapshot.messages:

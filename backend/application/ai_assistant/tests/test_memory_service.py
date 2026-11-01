@@ -4,7 +4,7 @@ import tempfile
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
-from langchain_core.messages import HumanMessage, AIMessage
+from application.ai_assistant.messages import HumanMessage, AIMessage
 
 from application.ai_assistant.memory_service import (
     MemoryService, MemorySnapshot, StoredMessage, estimate_tokens,

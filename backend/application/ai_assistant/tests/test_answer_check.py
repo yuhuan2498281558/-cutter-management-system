@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
-from langchain_core.messages import AIMessage, AIMessageChunk
+from application.ai_assistant.messages import AIMessage, AIMessageChunk
 
 from application.ai_assistant.answer_check import answer_requirements, check_final_answer
 from application.ai_assistant.context_budget import ContextBudgetExceeded, ContextBudgetPolicy, ContextUsage, GuardedChatModel, OutputLimitExceeded, context_usage
