@@ -75,18 +75,22 @@
 
 /* Button 按钮
 ------------------------------- */
-// 第三方字体图标大小
+// 按钮里的图标大小（跟着顶栏"组件大小"缩放，见 tokens.scss 的 --dv-icon-scale）
 .el-button:not(.is-circle) i.el-icon,
 .el-button i.iconfont,
 .el-button i.fa,
 .el-button--default i.iconfont,
 .el-button--default i.fa {
-	font-size: 14px !important;
+	font-size: calc(14px * var(--dv-icon-scale)) !important;
 	margin-right: 5px;
+}
+// 图标后面没有文字时不留右边距，图标才居中（fast-crud 的图标外面还套一层 el-icon，里外两层都要去掉）
+.el-button:not(.is-circle) i.el-icon:last-child {
+	margin-right: 0;
 }
 .el-button--small i.iconfont,
 .el-button--small i.fa {
-	font-size: 12px !important;
+	font-size: calc(12px * var(--dv-icon-scale)) !important;
 	margin-right: 5px;
 }
 // 尺寸：默认 34px 高、左右 14px、11px 圆角、13px 500 字重；小号 30px 高、9px 圆角、12.5px
@@ -449,26 +453,12 @@
 .el-sub-menu.is-active.is-opened .el-sub-menu__title {
 	background-color: unset !important;
 }
-// 选中竖线：项的左内边缘一道 3px × 16px 的主题色圆角竖线，垂直居中
-@mixin dv-menu-indicator {
-	&::before {
-		content: '';
-		position: absolute;
-		top: 50%;
-		left: 0;
-		width: 3px;
-		height: 16px;
-		margin-top: -8px;
-		border-radius: 2px;
-		background-color: var(--el-color-primary);
-	}
-}
 // 侧栏的竖向菜单（侧边栏、经典、分栏布局），Win11 设置页的样式：
-// 40px 圆角项（子菜单项 36px）、14px 字、16px 图标、图标与文字间距 12px，图标跟文字同色；悬停浅灰底；
-// 选中项选中灰底、正文色 600 字重，左侧一道主题色竖线；有子菜单的父级只在收起且含当前页时显示竖线，展开时竖线在子项上
+// 36px 圆角项（子菜单项 32px，与"最近打开"一样高）、14px 字、16px 图标、图标与文字间距 12px，图标跟文字同色；悬停浅灰底；
+// 选中项选中灰底、正文色 600 字重，不加侧边竖线；有子菜单的父级只在收起且含当前页时显示选中样式
 .layout-aside .el-menu {
-	--el-menu-item-height: 40px;
-	--el-menu-sub-item-height: 36px;
+	--el-menu-item-height: 36px;
+	--el-menu-sub-item-height: 32px;
 	--el-menu-item-font-size: 14px;
 	--el-menu-base-level-padding: 12px;
 	--el-menu-level-padding: 28px; // 图标 16px + 间距 12px：子菜单项缩进到上一级的文字
@@ -505,7 +495,7 @@
 		flex: none;
 		width: var(--el-menu-icon-width);
 		margin: 0 12px 0 0;
-		font-size: 16px !important;
+		font-size: calc(16px * var(--dv-icon-scale)) !important;
 		text-align: center;
 		color: inherit;
 	}
@@ -515,11 +505,16 @@
 		font-size: 14px;
 		color: var(--dv-text-muted);
 	}
+	// 子菜单展开、收起不做高度动画，箭头直接转向
+	.el-collapse-transition-enter-active,
+	.el-collapse-transition-leave-active,
+	.el-sub-menu__icon-arrow {
+		transition: none;
+	}
 	.el-menu-item.is-active,
 	.el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title {
 		color: var(--dv-text);
 		font-weight: 600;
-		@include dv-menu-indicator;
 	}
 	.el-menu--inline {
 		background-color: transparent;
@@ -545,19 +540,18 @@
 .layout-aside:not(.layout-aside-panel) .el-menu:not(.el-menu--inline) {
 	padding: 6px 8px;
 }
-// 收起时悬停弹出的子菜单：36px 圆角项，选中项与侧栏一样带竖线
+// 收起时悬停弹出的子菜单：32px 圆角项（与侧栏子菜单项一样高），选中项与侧栏一样只有灰底
 .el-menu--vertical.el-menu--popup-container .el-menu--popup {
 	padding: 6px;
 	.el-menu-item,
 	.el-sub-menu__title {
-		height: 36px !important;
-		line-height: 36px !important;
+		height: 32px !important;
+		line-height: 32px !important;
 		padding: 0 12px;
 		border-radius: var(--dv-radius);
 	}
 	.el-menu-item.is-active {
 		color: var(--dv-text);
-		@include dv-menu-indicator;
 	}
 }
 // 子级菜单背景颜色
@@ -795,8 +789,11 @@
 .el-card__body {
 	padding: 20px 22px;
 }
+// 卡片式页签（系统配置页等）：与表格外框同样的圆角，页签头的底色跟着圆角裁掉
 .el-tabs--border-card {
 	box-shadow: none;
+	border-radius: var(--dv-radius-table);
+	overflow: hidden;
 }
 
 /* Table 表格 element plus 2.2.0 版本
@@ -814,6 +811,10 @@
 	border-radius: var(--dv-radius-table);
 	.el-button.is-text {
 		padding: 0;
+	}
+	// 行操作的文字按钮（fast-crud 的 type: 'text'）：左右各 4px，三四个按钮排得下一行，字与字之间约 12px
+	.el-button--text {
+		padding: 0 4px;
 	}
 	th.el-table__cell{
 		-webkit-user-select: text !important;
@@ -909,12 +910,11 @@
 	color: var(--dv-on-primary) !important;
 }
 
-/* Drawer 抽屉：离窗口边一个页面间距浮起来，四角大圆角、浮层阴影；标题用标题字体，标题下不画分隔线，
- * 底部操作区上边一道细线
+/* Drawer 抽屉：贴着窗口边滑出、铺满那一边，只有朝里的两个角是大圆角，浮层阴影
+ * （居中的浮层用弹窗，侧边和底部用抽屉）；标题用标题字体，标题下不画分隔线，底部操作区上边一道细线
 ------------------------------- */
 .el-drawer {
 	--el-drawer-padding-primary: unset !important;
-	border-radius: var(--dv-radius-xl);
 	box-shadow: var(--dv-shadow-overlay);
 	.el-drawer__header {
 		padding: 0 15px !important;
@@ -937,28 +937,29 @@
 	.el-drawer__footer {
 		border-top: 1px solid var(--el-border-color);
 	}
-	&.rtl,
-	&.ltr {
-		top: var(--dv-page-gutter);
-		bottom: var(--dv-page-gutter);
-		height: auto;
-	}
 	&.rtl {
-		right: var(--dv-page-gutter);
+		border-radius: var(--dv-radius-xl) 0 0 var(--dv-radius-xl);
 	}
 	&.ltr {
-		left: var(--dv-page-gutter);
-	}
-	&.ttb,
-	&.btt {
-		right: var(--dv-page-gutter);
-		left: var(--dv-page-gutter);
-		width: auto;
+		border-radius: 0 var(--dv-radius-xl) var(--dv-radius-xl) 0;
 	}
 	&.ttb {
-		top: var(--dv-page-gutter);
+		border-radius: 0 0 var(--dv-radius-xl) var(--dv-radius-xl);
 	}
 	&.btt {
-		bottom: var(--dv-page-gutter);
+		border-radius: var(--dv-radius-xl) var(--dv-radius-xl) 0 0;
+	}
+}
+
+/* Tree 树：懒加载时 Element 会在展开框和文字之间临时插一个转圈图标，整行往右挤、加载完又缩回来（重排）。
+ * 改成贴在这一行的最右侧、不占位置，文字不动
+------------------------------- */
+.el-tree-node__content {
+	position: relative;
+	> .el-tree-node__loading-icon {
+		position: absolute;
+		top: 50%;
+		right: 8px;
+		margin: calc(var(--el-font-size-base) / -2) 0 0;
 	}
 }

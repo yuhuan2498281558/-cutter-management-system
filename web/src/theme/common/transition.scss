@@ -1,11 +1,11 @@
-/* 页面切换动画
+/* 页面切换动画（离开、进入各 0.15s）
 ------------------------------- */
 .slide-right-enter-active,
 .slide-right-leave-active,
 .slide-left-enter-active,
 .slide-left-leave-active {
 	will-change: transform;
-	transition: all 0.3s ease;
+	transition: all 0.15s ease;
 }
 // slide-right
 .slide-right-enter-from {
@@ -27,27 +27,11 @@
 .opacitys-enter-active,
 .opacitys-leave-active {
 	will-change: transform;
-	transition: all 0.3s ease;
+	transition: all 0.15s ease;
 }
 .opacitys-enter-from,
 .opacitys-leave-to {
 	opacity: 0;
-}
-
-/* Breadcrumb 面包屑过渡动画
-------------------------------- */
-.breadcrumb-enter-active,
-.breadcrumb-leave-active {
-	transition: all 0.5s ease;
-}
-.breadcrumb-enter-from,
-.breadcrumb-leave-active {
-	opacity: 0;
-	transform: translateX(20px);
-}
-.breadcrumb-leave-active {
-	position: absolute;
-	z-index: -1;
 }
 
 /* logo 过渡动画

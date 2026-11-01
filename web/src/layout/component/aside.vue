@@ -2,11 +2,7 @@
 	<div class="h100" v-show="!isTagsViewCurrenFull">
 		<el-aside class="layout-aside" :class="[setCollapseStyle, { 'layout-aside-panel': isPanel, 'is-collapse': isPanelCollapse }]">
 			<Logo v-if="setShowLogo" />
-			<!-- 侧边栏布局：侧栏依次是 Logo、菜单搜索、菜单（"最近打开"插在"首页"下面，收起时不显示）、用户 -->
-			<button v-if="isPanel" type="button" class="layout-aside-search" @click="onSearchClick">
-				<el-icon :size="16"><ele-Search /></el-icon>
-				<span>搜索菜单</span>
-			</button>
+			<!-- 侧边栏布局：侧栏依次是 Logo、菜单（"最近打开"插在"首页"下面，收起时不显示）、用户 -->
 			<el-scrollbar class="flex-auto" ref="layoutAsideScrollbarRef" @mouseenter="onAsideEnterLeave(true)" @mouseleave="onAsideEnterLeave(false)">
 				<Vertical :menuList="state.menuList">
 					<template v-if="isPanel && !isPanelCollapse" #afterHome>
@@ -15,7 +11,6 @@
 				</Vertical>
 			</el-scrollbar>
 			<AsideUser v-if="isPanel" />
-			<Search v-if="isPanel" ref="searchRef" />
 		</el-aside>
 	</div>
 </template>
@@ -34,11 +29,9 @@ const Logo = defineAsyncComponent(() => import('/@/layout/logo/index.vue'));
 const Vertical = defineAsyncComponent(() => import('/@/layout/navMenu/vertical.vue'));
 const AsideRecent = defineAsyncComponent(() => import('/@/layout/component/asideRecent.vue'));
 const AsideUser = defineAsyncComponent(() => import('/@/layout/component/asideUser.vue'));
-const Search = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/search.vue'));
 
 // 定义变量内容
 const layoutAsideScrollbarRef = ref();
-const searchRef = ref();
 const stores = useRoutesList();
 const storesThemeConfig = useThemeConfig();
 const storesTagsViewRoutes = useTagsViewRoutes();
@@ -82,14 +75,10 @@ const setCollapseStyle = computed(() => {
 		}
 	}
 });
-// 侧边栏布局：侧栏带菜单搜索、最近打开和用户区（窄屏时变成抽屉）
+// 侧边栏布局：侧栏带最近打开和用户区（窄屏时变成抽屉）
 const isPanel = computed(() => themeConfig.value.layout === 'defaults');
 // 侧栏收起成 64px（窄屏时 isCollapse 表示抽屉打开，不算收起）
 const isPanelCollapse = computed(() => isPanel.value && themeConfig.value.isCollapse && state.clientWidth > 1000);
-// 菜单搜索：打开与顶栏搜索图标相同的菜单搜索弹窗
-const onSearchClick = () => {
-	searchRef.value.openSearch();
-};
 // 设置显示/隐藏 logo
 const setShowLogo = computed(() => {
 	let { layout, isShowLogo } = themeConfig.value;
@@ -98,10 +87,10 @@ const setShowLogo = computed(() => {
 // 关闭移动端蒙版
 const closeLayoutAsideMobileMode = () => {
 	const el = document.querySelector('.layout-aside-mobile-mode');
-	el?.setAttribute('style', 'animation: error-img-two 0.3s');
+	el?.setAttribute('style', 'animation: error-img-two 0.15s');
 	setTimeout(() => {
 		el?.parentNode?.removeChild(el);
-	}, 300);
+	}, 150);
 	const clientWidth = document.body.clientWidth;
 	if (clientWidth < 1000) themeConfig.value.isCollapse = false;
 	document.body.setAttribute('class', '');
@@ -178,36 +167,8 @@ watch(
 
 <style scoped lang="scss">
 // 侧边栏布局的侧栏（底色、分割线、左右 8px 内边距和宽度见 theme/app.scss 的 .layout-shell）
-// 图标列：搜索图标、菜单图标、最近打开的圆点都从侧栏左边 20px 起（8px 内边距 + 12px），Logo 方块和头像与图标列同一条中线
+// 图标列：菜单图标、最近打开的圆点都从侧栏左边 20px 起（8px 内边距 + 12px），Logo 方块和头像与图标列同一条中线
 .layout-aside-panel {
-	// 菜单搜索：轻微凹进去的按钮，点开菜单搜索弹窗
-	.layout-aside-search {
-		height: var(--dv-control-height);
-		flex: none;
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		margin-bottom: 8px;
-		padding: 0 12px;
-		border: 0;
-		border-radius: var(--dv-radius);
-		background: var(--dv-side-inset);
-		box-shadow: var(--dv-shadow-inset);
-		color: var(--dv-text-secondary);
-		font: inherit;
-		white-space: nowrap;
-		cursor: pointer;
-		&:hover {
-			color: var(--dv-text-regular);
-		}
-		span {
-			flex: 1;
-			min-width: 0;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			text-align: left;
-		}
-	}
 	// 菜单滚动区左右伸到侧栏边上，再用内边距收回 8px：滚动条贴着分割线，菜单项的键盘焦点框不被滚动区裁掉
 	> .el-scrollbar {
 		width: auto;
@@ -216,15 +177,8 @@ watch(
 			padding: 0 8px;
 		}
 	}
-	// 收起成 64px：只留图标，搜索按钮、头像、"更多"按钮都在 64px 的中线上
+	// 收起成 64px：只留图标，头像、"更多"按钮都在 64px 的中线上
 	&.is-collapse {
-		.layout-aside-search {
-			justify-content: center;
-			padding: 0;
-			span {
-				display: none;
-			}
-		}
 		:deep(.layout-aside-user) {
 			flex-direction: column;
 			gap: 6px;

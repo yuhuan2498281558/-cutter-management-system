@@ -75,7 +75,6 @@ const siteLogo = computed(() => {
 	gap: 10px;
 	padding: 4px 16px;
 	cursor: pointer;
-	animation: logoAnimation 0.3s ease-in-out;
 
 	&__mark {
 		width: 32px;
@@ -107,6 +106,8 @@ const siteLogo = computed(() => {
 		font-size: 11px;
 		line-height: 1.2;
 		color: var(--dv-text-secondary);
+		// 侧栏从收起展开时 logo 重新挂载，宽度还在 0.15s 的动画里：英文名先占位不显示，到 0.1s 再出来
+		animation: layout-logo-subtitle-in 0.1s step-end;
 	}
 
 	&-medium-img {
@@ -114,10 +115,21 @@ const siteLogo = computed(() => {
 		margin-right: 5px;
 	}
 }
+@keyframes layout-logo-subtitle-in {
+	from {
+		visibility: hidden;
+	}
+}
 // 方块左边离侧栏 12px（侧栏内边距 8px + 4px），中线与下面的菜单图标对齐
 .layout-aside-panel .layout-logo {
 	min-height: 0;
 	padding: 4px 4px 12px;
+}
+// 文字块按侧栏展开后的宽度定死（侧栏宽 - 左右内边距 16px - logo 左右内边距 8px - 方块 32px - 间距 10px）：
+// 展开动画中侧栏还窄时只是被侧栏裁掉，英文名不会跟着宽度一路折行、把下面的菜单顶得上下跳
+.layout-aside-panel.layout-aside-pc-256 .layout-logo__text {
+	flex: none;
+	width: calc(var(--dv-aside-width) - 66px);
 }
 
 .layout-logo-size {
@@ -125,17 +137,10 @@ const siteLogo = computed(() => {
 	height: 50px;
 	display: flex;
 	cursor: pointer;
-	animation: logoAnimation 0.3s ease-in-out;
 
 	&-img {
 		width: 40px;
 		margin: auto;
-	}
-
-	&:hover {
-		img {
-			animation: logoAnimation 0.3s ease-in-out;
-		}
 	}
 }
 </style>

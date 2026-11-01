@@ -6,11 +6,8 @@
 		<main class="login-page__content">
 			<section class="login-panel" aria-labelledby="login-title">
 				<header class="login-panel__header">
-					<span class="login-panel__accent" aria-hidden="true"></span>
-					<div>
-						<h1 id="login-title">刀具管理系统</h1>
-						<p>盾构刀具全生命周期管理平台</p>
-					</div>
+					<h1 id="login-title">刀具管理系统</h1>
+					<p>盾构刀具全生命周期管理平台</p>
 				</header>
 
 				<div class="login-panel__divider"></div>
@@ -132,6 +129,8 @@ onMounted(() => {
 }
 
 .login-panel {
+	// 输入框与验证码图片共用的高度
+	--login-control-height: 46px;
 	width: min(100%, 442px);
 	box-sizing: border-box;
 	padding: 42px 44px 34px;
@@ -141,18 +140,6 @@ onMounted(() => {
 	box-shadow: 0 24px 70px rgba(4, 7, 9, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);
-}
-
-.login-panel__header {
-	display: flex;
-	align-items: stretch;
-	gap: 22px;
-}
-
-.login-panel__accent {
-	flex: 0 0 7px;
-	border-radius: 7px;
-	background: #d5332f;
 }
 
 .login-panel h1 {
@@ -200,8 +187,9 @@ onMounted(() => {
 	display: none;
 }
 
+// 下边距同时是校验提示的位置：__error 绝对定位在这段间距里，必须容得下它（4px + 16px 行高）
 .login-panel :deep(.el-form-item) {
-	margin-bottom: 17px;
+	margin-bottom: 30px;
 }
 
 .login-panel :deep(.el-form-item__label) {
@@ -212,8 +200,14 @@ onMounted(() => {
 	color: #d7dde1;
 }
 
+// Element Plus 的 label-top 规则优先级更高，会把标签行高撑到 22px 并加 12px 下边距，这里压回去，让标签贴近自己的输入框
+.login-panel :deep(.el-form--label-top .el-form-item .el-form-item__label) {
+	margin-bottom: 0;
+	line-height: 1;
+}
+
 .login-panel :deep(.el-input__wrapper) {
-	min-height: 46px;
+	min-height: var(--login-control-height);
 	padding: 0 13px;
 	border-radius: 8px;
 	background: #1c2328;
@@ -255,7 +249,9 @@ onMounted(() => {
 }
 
 .login-panel :deep(.el-form-item__error) {
-	padding-top: 5px;
+	padding-top: 4px;
+	font-size: 12px;
+	line-height: 16px;
 	color: #ff807b;
 }
 
@@ -319,11 +315,8 @@ onMounted(() => {
 	}
 
 	.login-panel {
+		--login-control-height: 42px;
 		padding: 24px 36px 22px;
-	}
-
-	.login-panel__header {
-		gap: 18px;
 	}
 
 	.login-panel h1 {
@@ -343,7 +336,7 @@ onMounted(() => {
 	}
 
 	.login-panel :deep(.el-form-item) {
-		margin-bottom: 10px;
+		margin-bottom: 28px;
 	}
 
 	.login-panel :deep(.login-submit-item),
@@ -353,10 +346,6 @@ onMounted(() => {
 
 	.login-panel :deep(.el-form-item__label) {
 		padding-bottom: 5px;
-	}
-
-	.login-panel :deep(.el-input__wrapper) {
-		min-height: 42px;
 	}
 
 	.login-panel__footer {
@@ -397,17 +386,24 @@ onMounted(() => {
 		background: rgba(7, 10, 13, 0.64);
 	}
 
+	// 窄屏下页脚回到文档流、排在卡片下面：卡片比一屏高时页脚跟着下移，不会压在卡片上
+	.login-page {
+		display: flex;
+		flex-direction: column;
+	}
+
 	.login-page__content {
+		flex: 1 0 auto;
+		min-height: 0;
 		justify-content: center;
-		padding: 28px 18px 76px;
+		padding: 28px 18px 20px;
 	}
 
 	.login-authorization {
-		left: 18px;
-		right: 18px;
-		bottom: 14px;
+		position: static;
 		flex-direction: column;
 		gap: 2px;
+		padding: 0 18px 14px;
 		text-align: center;
 	}
 

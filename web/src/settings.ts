@@ -71,6 +71,17 @@ export default {
 							}
 						}
 					},
+					// 表格右上角工具栏只留"刷新"和"列设置"，用普通图标按钮：导出在左边操作栏里已经有，
+					// 显示/隐藏搜索、紧凑模式用不上
+					toolbar: {
+						buttons: {
+							refresh: { type: 'default' },
+							columns: { type: 'default' },
+							search: { show: false },
+							compact: { show: false },
+							export: { show: false },
+						},
+					},
 					// 注释编号:django-vue3-admin__settings344115:代码开始行
 					// 功能说明:table表页面中右边的查看、编辑、复制、删除四个按钮的样式全局统一
 					rowHandle: {
@@ -153,7 +164,7 @@ export default {
 					form: {
 						// 注释编号:django-vue3-admin__settings364715:代码开始行
 						// 功能说明:这里专门针对form进行全局样式排版，以免每个页面都在带这些配置
-						col: { span: 12 },	//配置成一行两个元素
+						col: { span: 12, xs: 24 },	//配置成一行两个元素；手机上（<768px）一行一个，输入框才够宽
 						labelPosition: "left",
 						labelWidth: "auto", //配置成lable的宽为自动
 						requireAsteriskPosition:"right", //星号的位置

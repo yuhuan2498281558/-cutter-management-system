@@ -16,12 +16,12 @@
 			</el-header>
 		</div>
 		<div>
-			<el-drawer v-if="tabsDrawer" title="添加分组" v-model="tabsDrawer" direction="rtl" size="30%">
+			<el-drawer v-if="tabsDrawer" title="添加分组" v-model="tabsDrawer" direction="rtl" size="30%" :close-on-click-modal="false">
 				<addTabs></addTabs>
 			</el-drawer>
 		</div>
 		<div>
-			<el-drawer v-if="contentDrawer" title="添加内容" v-model="contentDrawer" direction="rtl" size="30%">
+			<el-drawer v-if="contentDrawer" title="添加内容" v-model="contentDrawer" direction="rtl" size="30%" :close-on-click-modal="false">
 				<addContent></addContent>
 			</el-drawer>
 		</div>

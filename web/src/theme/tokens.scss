@@ -225,7 +225,17 @@ $dv-line-height: 1.54;
 	--dv-font-mono: #{inspect($dv-font-mono)};
 	--dv-font-title: var(--dv-font-serif); // 页面标题、弹窗和抽屉标题、侧栏系统名
 	--dv-font-size: #{$dv-font-size};
+	--dv-icon-scale: 1; // SvgIcon、菜单图标的缩放倍数，跟着下面的组件大小变
 	--dv-line-height: #{$dv-line-height};
+}
+// 顶栏"组件大小"选大型/小型（App.vue 写在 <html data-size> 上）：正文字号 ±1px，图标按同样的比例缩放
+:root[data-size='large'] {
+	--dv-font-size: 14px;
+	--dv-icon-scale: calc(14 / 13);
+}
+:root[data-size='small'] {
+	--dv-font-size: 12px;
+	--dv-icon-scale: calc(12 / 13);
 }
 @media (max-width: 640px) {
 	:root {

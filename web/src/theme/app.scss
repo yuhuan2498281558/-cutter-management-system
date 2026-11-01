@@ -145,20 +145,20 @@ body,
 	.layout-el-aside-br-color {
 		border-right: 1px solid var(--el-border-color-light, #ebeef5);
 	}
-	// pc端左侧导航样式
+	// pc端左侧导航样式：展开/收起的宽度动画 0.15s，和窄屏抽屉一样快
 	.layout-aside-pc-220 {
 		width: 220px !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
 	.layout-aside-pc-64 {
 		width: 64px !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
 	.layout-aside-pc-1 {
 		width: 1px !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
-	// 手机端左侧导航样式
+	// 手机端左侧导航样式：抽屉滑出/收回和遮罩淡入淡出都是 0.15s（关闭时遮罩的淡出和移除时间见 aside.vue）
 	.layout-aside-mobile {
 		position: fixed;
 		top: 0;
@@ -168,11 +168,11 @@ body,
 	}
 	.layout-aside-mobile-close {
 		left: -220px;
-		transition: all 0.3s cubic-bezier(0.39, 0.58, 0.57, 1);
+		transition: all 0.15s cubic-bezier(0.39, 0.58, 0.57, 1);
 	}
 	.layout-aside-mobile-open {
 		left: 0;
-		transition: all 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+		transition: all 0.15s cubic-bezier(0.22, 0.61, 0.36, 1);
 	}
 	.layout-aside-mobile-mode {
 		position: fixed;
@@ -183,7 +183,7 @@ body,
 		height: 100%;
 		background-color: var(--dv-scrim);
 		z-index: 9999998;
-		animation: error-img 0.3s;
+		animation: error-img 0.15s;
 	}
 	.layout-mian-height-50 {
 		height: calc(100vh - 50px);
@@ -215,7 +215,7 @@ body,
 	}
 	.layout-aside-pc-256 {
 		width: var(--dv-aside-width) !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
 	// 主内容区：面板色底，内部滚动
 	// isolation：页面里的 z-index 只在主内容区内部比较，不会盖到窄屏的侧栏抽屉上

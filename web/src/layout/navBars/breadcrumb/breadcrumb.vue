@@ -4,18 +4,16 @@
 			<SvgIcon :name="themeConfig.isCollapse ? 'ele-Expand' : 'ele-Fold'" :size="16" />
 		</button>
 		<el-breadcrumb class="layout-navbars-breadcrumb-hide" :separator-icon="ArrowRight">
-			<transition-group name="breadcrumb">
-				<el-breadcrumb-item v-for="(v, k) in state.breadcrumbList" :key="!v.meta.tagsViewName ? v.meta.title : v.meta.tagsViewName">
-					<span v-if="k === state.breadcrumbList.length - 1" class="layout-navbars-breadcrumb-span">
-						<SvgIcon :name="v.meta.icon" class="layout-navbars-breadcrumb-iconfont" v-if="themeConfig.isBreadcrumbIcon" />
-						<div v-if="!v.meta.tagsViewName">{{ $t(v.meta.title) }}</div>
-						<div v-else>{{ v.meta.tagsViewName }}</div>
-					</span>
-					<a v-else @click.prevent="onBreadcrumbClick(v)">
-						<SvgIcon :name="v.meta.icon" class="layout-navbars-breadcrumb-iconfont" v-if="themeConfig.isBreadcrumbIcon" />{{ $t(v.meta.title) }}
-					</a>
-				</el-breadcrumb-item>
-			</transition-group>
+			<el-breadcrumb-item v-for="(v, k) in state.breadcrumbList" :key="!v.meta.tagsViewName ? v.meta.title : v.meta.tagsViewName">
+				<span v-if="k === state.breadcrumbList.length - 1" class="layout-navbars-breadcrumb-span">
+					<SvgIcon :name="v.meta.icon" :size="16" class="layout-navbars-breadcrumb-iconfont" v-if="themeConfig.isBreadcrumbIcon" />
+					<div v-if="!v.meta.tagsViewName">{{ $t(v.meta.title) }}</div>
+					<div v-else>{{ v.meta.tagsViewName }}</div>
+				</span>
+				<a v-else @click.prevent="onBreadcrumbClick(v)">
+					<SvgIcon :name="v.meta.icon" :size="16" class="layout-navbars-breadcrumb-iconfont" v-if="themeConfig.isBreadcrumbIcon" />{{ $t(v.meta.title) }}
+				</a>
+			</el-breadcrumb-item>
 		</el-breadcrumb>
 	</div>
 </template>
@@ -131,19 +129,33 @@ onBeforeRouteUpdate((to) => {
 			color: var(--dv-text);
 		}
 	}
+	// 图标和文字的大小与侧栏菜单一致（图标 16px、文字 14px），整行 20px 行高、上下居中：
+	// 原来文字 13px、行高也压到 13px，图标 14px，几样东西各自的中线对不齐
 	:deep(.el-breadcrumb) {
-		font-size: 13px;
+		display: flex;
+		align-items: center;
+		font-size: 14px;
+		line-height: 20px;
 		white-space: nowrap;
+	}
+	:deep(.el-breadcrumb__item),
+	:deep(.el-breadcrumb__inner) {
+		display: inline-flex;
+		align-items: center;
 	}
 	// 当前页用正文色，前面的层级用顶栏文字色（默认是次要文字色）
 	.layout-navbars-breadcrumb-span {
 		display: flex;
+		align-items: center;
 		color: var(--el-text-color-primary);
 		font-weight: 500;
 	}
 	.layout-navbars-breadcrumb-iconfont {
-		font-size: 14px;
-		margin-right: 5px;
+		flex: none;
+		width: 16px;
+		margin-right: 6px;
+		line-height: 1;
+		text-align: center;
 	}
 	// 分隔：14px 右箭头
 	:deep(.el-breadcrumb__separator) {

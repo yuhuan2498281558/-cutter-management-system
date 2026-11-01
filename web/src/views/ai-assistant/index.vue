@@ -8,8 +8,9 @@
             刀小智 - 智能助手
           </span>
           <div class="header-actions">
-            <el-button size="small" @click="handleReset" :loading="resetting" :disabled="compacting">
-              <el-icon><RefreshRight /></el-icon>
+            <!-- 重置中只让图标转（Element 的 is-loading 旋转），按钮不换成加载圈；重复点击由 handleReset 自己挡掉 -->
+            <el-button size="small" @click="handleReset" :disabled="compacting">
+              <el-icon :class="{ 'is-loading': resetting }"><RefreshRight /></el-icon>
               重置对话
             </el-button>
           </div>

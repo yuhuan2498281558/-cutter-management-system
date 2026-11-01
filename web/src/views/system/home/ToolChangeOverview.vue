@@ -546,7 +546,6 @@ onMounted(() => {
   height: 20px;
   min-width: 52px;
   border: 1px solid #cbd5e1;
-  border-left-width: 3px;
   border-radius: 3px;
   background: #f8fafc;
   color: #1f2937;
@@ -560,23 +559,27 @@ onMounted(() => {
   line-height: 1;
 }
 
+/* 寿命状态用整块底色和文字颜色区分，与刀位图上的圆点、图例同一色系 */
 .position-tag.life-low {
-  border-left-color: #16a34a;
-  background: linear-gradient(90deg, #dcfce7 0%, #f8fafc 88%);
+  border-color: #dcfce7;
+  background: #f0fdf4;
+  color: #166534;
 }
 
 .position-tag.life-mid {
-  border-left-color: #f59e0b;
-  background: linear-gradient(90deg, #fef3c7 0%, #fffbeb 88%);
+  border-color: #fef3c7;
+  background: #fffbeb;
+  color: #92400e;
 }
 
 .position-tag.life-high {
-  border-left-color: #dc2626;
-  background: linear-gradient(90deg, #fecaca 0%, #fef2f2 88%);
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #7f1d1d;
 }
 
 .position-tag.life-unknown {
-  border-left-color: #94a3b8;
+  color: #64748b;
 }
 
 .position-tag.selected {
@@ -682,26 +685,6 @@ onMounted(() => {
 
 :deep(.change-table tbody tr:hover td) {
   background: #f8fafc;
-}
-
-:deep(.change-table tbody tr td:first-child) {
-  border-left-width: 3px;
-}
-
-:deep(.change-table tbody tr.life-low td:first-child) {
-  border-left-color: #16a34a;
-}
-
-:deep(.change-table tbody tr.life-mid td:first-child) {
-  border-left-color: #f59e0b;
-}
-
-:deep(.change-table tbody tr.life-high td:first-child) {
-  border-left-color: #dc2626;
-}
-
-:deep(.change-table tbody tr.life-unknown td:first-child) {
-  border-left-color: #94a3b8;
 }
 
 :deep(.change-table tbody tr.selected td) {

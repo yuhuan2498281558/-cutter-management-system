@@ -34,6 +34,8 @@ const CloseFull = defineAsyncComponent(() => import('/@/layout/navBars/breadcrum
 resetStaleThemeCache(Local);
 // 配色写在 <html data-scheme> 上：缓存的布局配置要到挂载后才读进 store，这里先按缓存设好，免得首屏先闪一下暖白
 applyColorScheme(Local.get('themeConfig')?.colorScheme);
+// 顶栏"组件大小"选了大型/小型时，正文字号和图标一起变（tokens.scss 按 <html data-size> 换字号和图标倍数）；切换后页面会刷新
+document.documentElement.dataset.size = other.globalComponentSize();
 
 // 定义变量内容
 const { messages, locale } = useI18n();

@@ -1,17 +1,19 @@
 <template>
   <div ref="wrapRef" class="bm-wrap">
-    <!-- 加载/错误遮罩 -->
-    <div v-if="modelState !== 'ready'" class="bm-overlay" :class="{ error: modelState === 'error' }">
-      <template v-if="modelState === 'loading'">
-        <el-icon class="spin"><Loading /></el-icon>
-        <span>正在加载 BIM 模型...</span>
-      </template>
-      <template v-else>
-        <el-icon><WarningFilled /></el-icon>
-        <span>{{ errorMsg }}</span>
-        <el-button size="small" type="primary" style="margin-top:8px" @click="retryModel">重试</el-button>
-      </template>
-    </div>
+    <!-- 加载/错误遮罩：浅底，模型就绪后淡出 -->
+    <transition name="bm-fade">
+      <div v-if="modelState !== 'ready'" class="bm-overlay" :class="{ error: modelState === 'error' }">
+        <template v-if="modelState === 'loading'">
+          <span class="bm-spinner" aria-hidden="true"></span>
+          <span class="bm-overlay-text">正在加载 BIM 模型</span>
+        </template>
+        <template v-else>
+          <el-icon class="bm-overlay-icon"><WarningFilled /></el-icon>
+          <span class="bm-overlay-text">{{ errorMsg }}</span>
+          <el-button size="small" type="primary" @click="retryModel">重试</el-button>
+        </template>
+      </div>
+    </transition>
 
     <!-- BIMFace 容器 -->
     <div ref="bimContainer" class="bm-viewer"></div>
@@ -607,7 +609,7 @@ onUnmounted(() => {
 
 /* SVG rect/text need pointer-events: all via the parent <g> */
 
-/* 遮罩 */
+/* 遮罩：与页面一致的浅底，居中一个细圆环和一行文字 */
 .bm-overlay {
   position: absolute;
   inset: 0;
@@ -616,12 +618,39 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  background: rgba(10, 10, 10, 0.82);
-  color: #aaa;
-  font-size: 14px;
+  gap: 14px;
+  padding: 24px;
+  box-sizing: border-box;
+  background: var(--dv-tile);
+  color: var(--dv-text-secondary);
+  font-size: var(--dv-font-size);
 }
-.bm-overlay.error { color: #e74c3c; }
+
+.bm-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--dv-border-strong);
+  border-top-color: var(--dv-accent);
+  box-sizing: border-box;
+  animation: spin 0.9s linear infinite;
+}
+
+.bm-overlay-text {
+  max-width: 360px;
+  line-height: var(--dv-line-height);
+  text-align: center;
+}
+
+.bm-overlay.error { color: var(--dv-text-regular); }
+.bm-overlay-icon { font-size: 26px; color: var(--dv-danger); }
+
+.bm-fade-leave-active { transition: opacity 0.2s ease; }
+.bm-fade-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bm-spinner { animation-duration: 2.4s; }
+}
 
 /* 图例 */
 .bm-legend {

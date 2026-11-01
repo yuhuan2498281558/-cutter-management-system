@@ -283,10 +283,9 @@ onMounted(refresh);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 5px 8px;
+  padding: 5px 10px;
   border-radius: 5px;
   background: #FFF8F0;
-  border-left: 3px solid #D32F2F;
   margin-bottom: 5px;
   font-size: 12px;
 }
@@ -317,8 +316,7 @@ onMounted(refresh);
   border: 0;
   background: #f7f8fc;
   border-radius: 6px;
-  padding: 7px 9px;
-  border-left: 3px solid #F57C00;
+  padding: 7px 10px;
   text-align: left;
   cursor: pointer;
 }

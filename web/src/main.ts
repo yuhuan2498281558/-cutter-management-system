@@ -66,6 +66,12 @@ app._context.components.ElDialog.props.closeOnClickModal.default = false   //配
 app._context.components.ElDialog.props.closeOnPressEscape.default = false;  //配置elmentplus之Dialog按Esc健不关闭
 // 注释编号:django-vue3-admin__main472414:代码结束行
 
+// 抽屉的这两个属性和弹窗共用同一个定义对象，上面改了弹窗也会带上抽屉；给抽屉换一份自己的，点遮罩、按 Esc 照常关闭
+// （带表单的抽屉各自写了 :close-on-click-modal="false"）
+const drawerProps = app._context.components.ElDrawer.props;
+drawerProps.closeOnClickModal = { ...drawerProps.closeOnClickModal, default: true };
+drawerProps.closeOnPressEscape = { ...drawerProps.closeOnPressEscape, default: true };
+
 // 注释编号:workspace.json__main552310:导入字段只读的配置效果就是，在添加和编辑时都看不到这个字段，而查看可以看到该字段
 import { readonlyRegisterMergeColumnPlugin } from "/@/custom/readOnyMethod";
 readonlyRegisterMergeColumnPlugin();  //导入之后执行

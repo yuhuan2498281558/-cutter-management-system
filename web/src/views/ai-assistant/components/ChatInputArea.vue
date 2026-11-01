@@ -171,7 +171,10 @@
             <span v-else>
               分析模板：{{ selectedTemplateTitle || '选择分析模板' }}
             </span>
-            <span class="trigger-arrow">{{ paletteOpen ? '收起' : '切换 ▴' }}</span>
+            <span class="trigger-arrow">
+              {{ paletteOpen ? '收起' : '切换' }}
+              <el-icon :size="12" :class="{ 'is-open': paletteOpen }"><ele-ArrowUp /></el-icon>
+            </span>
           </button>
 
           <span v-if="routeMode === 'agent' && selectedSources.length" class="sources-summary">
@@ -848,8 +851,16 @@ onUnmounted(() => document.removeEventListener('mousedown', handleDocumentClick)
     cursor: not-allowed;
   }
 
+  // 箭头朝上：选词面板从上方弹出；打开后翻成朝下，表示点击收起
   .trigger-arrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
     color: var(--dv-text-secondary);
+
+    .is-open {
+      transform: rotate(180deg);
+    }
   }
 
   &.open .trigger-arrow {

@@ -71,13 +71,14 @@ test('the sidebar recent list mirrors the tags view, which still owns the open p
   assert.match(close, /storesKeepALiveNames\.delCachedView\(v\);/);
   assert.match(tagsView, /openedPages\.close = closeFromOpenedPages;/);
   assert.match(tagsView, /if \(openedPages\.close === closeFromOpenedPages\) \{\s*openedPages\.list = \[\];\s*openedPages\.close = null;/);
-  // 侧栏读这份镜像，关闭调用登记的 close；首页等固定页已在 recentOpenedPages 里排除，每一项都能关
+  // 侧栏读这份镜像；列表里不放关闭按钮，页面只靠挤出最近 5 个关掉。点小标题折叠列表，折叠状态记在浏览器里
   const recent = read('layout/component/asideRecent.vue');
   assert.match(recent, /recentOpenedPages\(openedPages\.list\)/);
-  assert.match(recent, /openedPages\.close\?\.\(route\)/);
-  assert.match(recent, /<button type="button" class="layout-aside-recent-close" @click\.stop="onClose\(page\.route\)">/);
-  // 在关闭按钮上按 Enter 只关闭，不冒泡成"打开"
-  assert.match(recent, /@keydown\.enter\.self="onOpen\(page\.route\)"/);
+  assert.doesNotMatch(recent, /layout-aside-recent-close|onClose/);
+  assert.match(recent, /<button type="button" class="layout-aside-recent-label" :aria-expanded="!collapsed" @click="onToggle">/);
+  assert.match(recent, /<nav v-show="!collapsed" class="layout-aside-recent-list">/);
+  assert.match(recent, /Local\.set\('asideRecentCollapsed', collapsed\.value\)/);
+  assert.match(recent, /@keydown\.enter="onOpen\(page\.route\)"/);
 });
 
 test('recent pages sit right under the home menu item and look like quiet 32px rows without a selection bar', () => {
@@ -97,16 +98,15 @@ test('recent pages sit right under the home menu item and look like quiet 32px r
   assert.doesNotMatch(style, /width: 3px/);
 });
 
-test('the sidebar holds logo, menu search, menu with recent pages, and the user block', () => {
+test('the sidebar holds logo, menu with recent pages, and the user block, without a menu search box', () => {
   const aside = read('layout/component/aside.vue');
-  const order = ['<Logo v-if="setShowLogo" />', 'class="layout-aside-search"', '<Vertical :menuList="state.menuList">', '<AsideRecent />', '<AsideUser v-if="isPanel" />'];
+  const order = ['<Logo v-if="setShowLogo" />', '<Vertical :menuList="state.menuList">', '<AsideRecent />', '<AsideUser v-if="isPanel" />'];
   const at = order.map(snippet => aside.indexOf(snippet));
   for (const [k, index] of at.entries()) assert.ok(index > 0, order[k]);
   assert.deepEqual([...at].sort((a, b) => a - b), at);
-  assert.match(aside, /<span>搜索菜单<\/span>/);
+  // 菜单搜索只留顶栏右侧的搜索图标
+  assert.doesNotMatch(aside, /layout-aside-search|搜索菜单|breadcrumb\/search\.vue/);
   assert.match(aside, /layout === 'defaults' \? 'layout-aside-pc-256' : 'layout-aside-pc-220'/);
-  // 菜单搜索打开的是现有的搜索弹窗组件
-  assert.match(aside, /const Search = defineAsyncComponent\(\(\) => import\('\/@\/layout\/navBars\/breadcrumb\/search\.vue'\)\);/);
   assert.match(read('layout/component/asideRecent.vue'), />最近打开</);
   // 用户菜单：顶栏和侧栏共用同一个下拉组件；侧边栏布局顶栏不再显示头像和用户名
   assert.match(read('layout/component/asideUser.vue'), /<UserDropdown trigger="click"/);
@@ -177,7 +177,7 @@ test('the sidebar layout lays the sidebar and the main area flat against the win
   assert.doesNotMatch(glass, /border-radius/);
 });
 
-test('the sidebar menu is Win11-style: 40px items, 14px text, a grey selected fill and a 3px accent bar', () => {
+test('the sidebar menu is Win11-style: 36px items, 14px text and a grey selected fill without a side bar', () => {
   const css = themeCss();
   const rule = selector => {
     const at = css.indexOf(`\n${selector} {`);
@@ -189,21 +189,21 @@ test('the sidebar menu is Win11-style: 40px items, 14px text, a grey selected fi
     for (const decl of decls) assert.ok(block.includes(decl), `${selector} → ${decl}`);
     return block;
   };
-  has('.layout-aside .el-menu', '--el-menu-item-height: 40px;', '--el-menu-sub-item-height: 36px;', '--el-menu-item-font-size: 14px;', '--el-menu-icon-width: 16px;',
+  has('.layout-aside .el-menu', '--el-menu-item-height: 36px;', '--el-menu-sub-item-height: 32px;', '--el-menu-item-font-size: 14px;', '--el-menu-icon-width: 16px;',
     '--el-menu-base-level-padding: 12px;', '--el-menu-level-padding: 28px;', '--el-menu-active-color: var(--dv-text);', '--el-menu-hover-bg-color: var(--dv-hover) !important;');
   has('.layout-aside .el-menu .el-menu--inline .el-menu-item,\n.layout-aside .el-menu .el-menu--inline .el-sub-menu__title', 'height: var(--el-menu-sub-item-height) !important;');
-  // 图标 16px、与文字间距 12px、跟文字同色；收起时没有子菜单的项的图标在提示框触发层里，也要命中
+  // 图标 16px（跟着组件大小缩放）、与文字间距 12px、跟文字同色；收起时没有子菜单的项的图标在提示框触发层里，也要命中
   has('.layout-aside .el-menu .el-menu-item > i,\n.layout-aside .el-menu .el-menu-item > .el-menu-tooltip__trigger > i,\n.layout-aside .el-menu .el-sub-menu__title > i:not(.el-sub-menu__icon-arrow)',
-    'width: var(--el-menu-icon-width);', 'margin: 0 12px 0 0;', 'font-size: 16px !important;', 'color: inherit;');
+    'width: var(--el-menu-icon-width);', 'margin: 0 12px 0 0;', 'font-size: calc(16px * var(--dv-icon-scale)) !important;', 'color: inherit;');
+  // 子菜单展开、收起没有高度动画
+  has('.layout-aside .el-menu .el-collapse-transition-enter-active,\n.layout-aside .el-menu .el-collapse-transition-leave-active,\n.layout-aside .el-menu .el-sub-menu__icon-arrow', 'transition: none;');
   // 选中：正文色 600 字重，选中灰底来自菜单高亮背景色，不再是凸起白块
   const selected = '.layout-aside .el-menu .el-menu-item.is-active,\n.layout-aside .el-menu .el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title';
   assert.doesNotMatch(has(selected, 'color: var(--dv-text);', 'font-weight: 600;'), /box-shadow/);
   assert.match(css, /--next-bg-menuBarActiveColor: var\(--dv-selected\);/);
   assert.match(css, /\n\.el-menu-hover-bg-color, \.el-menu-item\.is-active,\s*\.el-sub-menu\.is-active \.el-sub-menu__title \{\s*background-color: var\(--next-bg-menuBarActiveColor\) !important;/);
-  // 左侧竖线：3px × 16px、2px 圆角、垂直居中、贴左内边缘、主题色；父级只在收起（含当前页）时显示
-  has('.layout-aside .el-menu .el-menu-item.is-active::before,\n.layout-aside .el-menu .el-sub-menu.is-active:not(.is-opened) > .el-sub-menu__title::before',
-    'position: absolute;', 'top: 50%;', 'left: 0;', 'width: 3px;', 'height: 16px;', 'margin-top: -8px;', 'border-radius: 2px;', 'background-color: var(--el-color-primary);');
-  has('.el-menu--vertical.el-menu--popup-container .el-menu--popup .el-menu-item.is-active::before', 'width: 3px;', 'background-color: var(--el-color-primary);');
+  // 选中项只靠灰底和字重，侧栏和收起时弹出的子菜单都不画侧边竖线
+  assert.doesNotMatch(css, /\.el-menu-item\.is-active::before|\.el-sub-menu__title::before/);
 });
 
 test('the collapsed sidebar centres every icon on the 64px column', () => {
@@ -219,11 +219,10 @@ test('the collapsed sidebar centres every icon on the 64px column', () => {
   assert.match(centred, /justify-content: center;/);
   assert.match(centred, /padding: 0 !important;/);
   assert.match(rule('.layout-aside .el-menu.el-menu--collapse > .el-menu-item > i,\n.layout-aside .el-menu.el-menu--collapse > .el-menu-item > .el-menu-tooltip__trigger > i,\n.layout-aside .el-menu.el-menu--collapse > .el-sub-menu > .el-sub-menu__title > i:not(.el-sub-menu__icon-arrow)'), /margin-right: 0;/);
-  // 64px 侧栏左右各 8px 内边距，菜单、搜索按钮、用户区都在 48px 宽的内容区里居中，中线正好在 32px
+  // 64px 侧栏左右各 8px 内边距，菜单、用户区都在 48px 宽的内容区里居中，中线正好在 32px
   assert.match(css, /\.layout-aside-pc-64 \{\s*width: 64px !important;/);
   const aside = read('layout/component/aside.vue');
   const collapse = aside.slice(aside.indexOf('&.is-collapse {'));
-  assert.match(collapse, /\.layout-aside-search \{\s*justify-content: center;\s*padding: 0;/);
   assert.match(collapse, /:deep\(\.layout-aside-user\) \{\s*flex-direction: column;[^}]*padding: 8px 0 0;/);
   assert.match(read('layout/component/asideUser.vue'), /\.layout-aside-user \{\s*display: flex;\s*align-items: center;/);
 });
