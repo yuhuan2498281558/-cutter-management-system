@@ -81,6 +81,15 @@ class ToolRecoveryTests(SimpleTestCase):
                     ],
                 })
 
+    def test_misnamed_tool_step_is_not_a_query_failure(self):
+        assistant = ToolAssistant()
+        wrong = SimpleNamespace(tool='tool_query_cost_catalog', tool_input={})
+        notice = 'tool_query_cost_catalog is not a valid tool, try one of [tool_query_tool_cost_catalog].'
+        result = {'output': 'Quotes', 'intermediate_steps': [(wrong, notice), (action({}, 'next'), SUCCESS)]}
+        self.assertEqual(assistant._validated_agent_answer(result), 'Quotes')
+        with self.assertRaises(RuntimeError):
+            assistant._validated_agent_answer({'output': 'No data', 'intermediate_steps': [(wrong, notice)]})
+
     def test_one_success_does_not_clear_two_failed_requests(self):
         assistant = ToolAssistant()
         with self.assertRaises(RuntimeError):

@@ -288,6 +288,12 @@ class RoutingRefreshTests(SimpleTestCase):
         self.assertEqual([json.loads(c.args[0])['ring_range'] for c in self.tools['query_tool_change_data'].call_args_list], [[10, 10], [100, 100]])
         self.assertIn('第 10 环', result['answer'])
         self.assertIn('第 100 环', result['answer'])
+        # 区间后面接逗号不是并列环号，曾被误拆成两个环号并无限递归
+        self.tools['query_tool_change_data'].reset_mock()
+        result = self.ask('从339环到487环，所有刀具的异常磨损记录有多少条，已分类异常率多少？', prepared=True)
+        self.assertNotEqual(result['rule_branch'], 'multiple_scopes')
+        self.assertEqual(self.assistant._extract_discrete_rings('从339环到487环，异常磨损记录有多少条'), [])
+        self.assertEqual(self.assistant._extract_ring_range('从339环到487环，异常磨损记录有多少条'), [339, 487])
 
     def test_tunneling_interval_limit_and_named_manufacturer_filter(self):
         self.ask('第100环到第300环每100环统计掘进趋势')

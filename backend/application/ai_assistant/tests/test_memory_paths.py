@@ -183,7 +183,7 @@ class MemoryPathTests(SimpleTestCase):
             StoredMessage(2, "ai", "旧答案", 5),
         ])
         working = self.assistant._prepare_query_context("那刮刀呢", snapshot)
-        self.assertTrue(self.assistant._needs_tool_call(working["effective_query"]))
+        self.assertTrue(self.assistant._model_needs_tools(working["effective_query"], working))
         self.assertNotIn("滚刀", working["effective_query"])
         with patch("application.ai_assistant.llm_service.query_tool_change_data", return_value=json.dumps({
             "total_records": 3, "replaced_count": 2, "replacement_rate": 66.7, "wear_distribution": [],

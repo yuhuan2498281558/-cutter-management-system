@@ -56,8 +56,10 @@ class EvaluationCommandTests(SimpleTestCase):
         from application.ai_assistant.baselines import TextToSQLBaseline
         baseline = object.__new__(TextToSQLBaseline)
         allowed = 'shield_project_info'
-        self.assertIn('LIMIT 200', baseline._guard(f'SELECT * FROM {allowed}'))
-        self.assertIn('LIMIT 200', baseline._guard(f'SELECT * FROM (SELECT * FROM public."{allowed}") p'))
+        # 护栏不再改写 SQL 追加 LIMIT（旧做法会在已有 LIMIT 的语句后再拼一次），行数在执行时截取
+        self.assertEqual(baseline._guard(f'SELECT * FROM {allowed} LIMIT 5'), f'SELECT * FROM {allowed} LIMIT 5')
+        self.assertEqual(baseline._guard(f'SELECT * FROM (SELECT * FROM public."{allowed}") p'),
+                         f'SELECT * FROM (SELECT * FROM public."{allowed}") p')
         for sql in ('SELECT * FROM auth_user',
                     f'SELECT * FROM {allowed} p JOIN auth_user u ON p.id=u.id',
                     f'SELECT * FROM {allowed} p, auth_user u',
@@ -82,6 +84,7 @@ class EvaluationCommandTests(SimpleTestCase):
         cursor = MagicMock()
         cursor.description = [('value',)]
         cursor.fetchall.return_value = [(2,)]
+        cursor.fetchmany.return_value = [(2,)]
         cursor.execute.side_effect = lambda *_: self.assertTrue(active)
         for module, run in (
             ('application.ai_assistant.baselines', lambda: TextToSQLBaseline._execute('SELECT 2')),
@@ -110,6 +113,7 @@ class EvaluationCommandTests(SimpleTestCase):
                 active.pop()
         cursor = MagicMock(description=[('count',)])
         cursor.fetchall.return_value = [(2,)]
+        cursor.fetchmany.return_value = [(2,)]
         cursor.execute.side_effect = lambda *_: self.assertTrue(active)
         with tempfile.TemporaryDirectory(prefix='ai-gt-test-') as directory:
             bank, output = os.path.join(directory, 'bank.json'), os.path.join(directory, 'snapshot.json')

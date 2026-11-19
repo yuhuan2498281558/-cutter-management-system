@@ -96,21 +96,46 @@ class FixedExperimentTests(SimpleTestCase):
         self.assertEqual(self.chat.call_count, before)
 
     def test_seeded_order_and_scoped_environment(self):
+        arms = [arm for arm in run.ARMS if arm != "sql_agent"]
         external = {key: "external" for key in run.arm_environment("hybrid")}
         with patch.dict(os.environ, external):
-            self.execute(200, arm=list(run.ARMS), seed=17)
+            self.execute(200, arm=arms, seed=17)
             self.assertEqual({key: os.environ[key] for key in external}, external)
         rows = run.read_records(self.path)
         self.assertFalse(any(r["arm"] == "hybrid_no_template" and r["case_id"] == "q3" for r in rows))
-        expected = [(c["id"], arm, rep) for c, arm, rep in run.make_schedule(CASES, list(run.ARMS), 1, 17)]
+        expected = [(c["id"], arm, rep) for c, arm, rep in run.make_schedule(CASES, arms, 1, 17)]
         self.assertEqual([(r["case_id"], r["arm"], r["rep"]) for r in rows], expected)
-        self.assertNotEqual(expected, [(c["id"], arm, rep) for c, arm, rep in run.make_schedule(CASES, list(run.ARMS), 1, 18)])
-        self.assertEqual(expected, [(c["id"], arm, rep) for c, arm, rep in run.make_schedule(CASES, list(run.ARMS), 1, 17)])
+        self.assertNotEqual(expected, [(c["id"], arm, rep) for c, arm, rep in run.make_schedule(CASES, arms, 1, 18)])
+        self.assertEqual(expected, [(c["id"], arm, rep) for c, arm, rep in run.make_schedule(CASES, arms, 1, 17)])
+        bare = run.arm_environment("hybrid_bare")
+        self.assertEqual((bare["AI_ABLATE_ANSWER_CHECK"], bare["AI_ABLATE_GENERATED_TABLE"], bare["AI_ASSISTANT_ROUTE_MODE"]), ("1", "1", "hybrid"))
+        self.assertEqual(run.arm_environment("agent_bare")["AI_ASSISTANT_ROUTE_MODE"], "agent")
         self.assertEqual(len({context["user_id"] for _, context, _, _ in self.seen}), len(rows))
         for row, (_, context, environment, history) in zip(rows, self.seen):
             self.assertEqual(environment, run.arm_environment(row["arm"]))
             self.assertEqual(context["route_mode"], row["config"]["route_mode"])
             self.assertEqual(history, 0)
+
+    def test_sql_agent_arm_passes_history_and_resumes(self):
+        case = {**CASES[0], "turns": ["第一轮", "第二轮"]}
+        self.suite.load_fixed_cases.return_value = [case]
+        calls = []
+
+        class FakeSqlAgent:
+            def chat(self, question, context=None):
+                calls.append((question, list(context["history"]), context["project_id"]))
+                httpx.Client._send_single_request(None, httpx.Request("POST", "https://fake.invalid/chat"))
+                return {"success": True, "answer": "答" + question, "route_stage": "sql_agent",
+                        "tool_calls": [{"tool": "run_sql", "args": {"query": "SELECT 1"}, "result": "[[1]]"}]}
+
+        with patch("application.ai_assistant.baselines.SqlAgentBaseline", FakeSqlAgent):
+            self.execute(1, arm=["sql_agent"])
+            self.execute(10, arm=["sql_agent"], resume=True)
+        self.assertEqual(calls, [("第一轮", [], "project"), ("第二轮", [["第一轮", "答第一轮"]], "project")])
+        rows = run.read_records(self.path)
+        self.assertEqual([r["tool_calls"][0]["result"] for r in rows], ["[[1]]", "[[1]]"])
+        self.assertEqual(rows[1]["sql_history"], [["第一轮", "答第一轮"], ["第二轮", "答第二轮"]])
+        self.chat.assert_not_called()
 
     def test_chain_resume_restores_history_and_switches_on_exception(self):
         case = {**CASES[0], "turns": ["第一轮", "第二轮"]}

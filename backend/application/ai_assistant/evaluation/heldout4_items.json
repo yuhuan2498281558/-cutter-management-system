@@ -1,0 +1,303 @@
+[
+ {
+  "id": "U01",
+  "family": "quotes",
+  "params": {
+   "model": "17寸常压中心滚刀"
+  },
+  "intent": "17寸常压中心滚刀各厂家的新刀报价分别多少（有报价的厂家全部列出）",
+  "question": "采购这边要比价，17寸常压中心滚刀的新刀报价各厂家分别是多少？有报价的厂家都给我列出来。"
+ },
+ {
+  "id": "U02",
+  "family": "quotes",
+  "params": {
+   "model": "螺栓型刮刀"
+  },
+  "intent": "螺栓型刮刀各厂家的新刀报价分别多少（有报价的厂家全部列出）",
+  "question": "请查询螺栓型刮刀的新刀报价，凡是有报价的厂家，请逐一列明各自的报价。"
+ },
+ {
+  "id": "U03",
+  "family": "quotes",
+  "params": {
+   "model": "19寸双联常压正滚刀200",
+   "cost_type": "REPAIR"
+  },
+  "intent": "19寸双联常压正滚刀200各厂家的维修报价分别多少（有报价的厂家全部列出）",
+  "question": "19寸双联常压正滚刀200，维修报价各家多少？报过价的全列上。"
+ },
+ {
+  "id": "U04",
+  "family": "quotes",
+  "params": {
+   "model": "可更换式刮刀H=380",
+   "cost_type": "REPAIR"
+  },
+  "intent": "可更换式刮刀H=380各厂家的维修报价分别多少（有报价的厂家全部列出）",
+  "question": "麻烦帮我看下，可更换式刮刀H=380拿去修的话，各厂家维修报价分别多少钱？只要有维修报价的厂家都列一下，谢谢。"
+ },
+ {
+  "id": "U05",
+  "family": "quotes_sorted",
+  "params": {
+   "model": "可更换式刮刀H=400"
+  },
+  "intent": "可更换式刮刀H=400各厂家的新刀报价，按报价从低到高排列（有报价的厂家全部列出）",
+  "question": "可更换式刮刀H=400买新刀哪家便宜？把有新刀报价的厂家全列出来，按报价从低到高排。"
+ },
+ {
+  "id": "U06",
+  "family": "quotes_sorted",
+  "params": {
+   "model": "19寸常压单刃滚刀",
+   "descending": true
+  },
+  "intent": "19寸常压单刃滚刀各厂家的新刀报价，按报价从高到低排列（有报价的厂家全部列出）",
+  "question": "19寸常压单刃滚刀新刀各厂家都报了多少钱？按报价从高往低排，有报价的一家都别漏。"
+ },
+ {
+  "id": "U07",
+  "family": "quotes_sorted",
+  "params": {
+   "model": "焊接型刮刀"
+  },
+  "intent": "焊接型刮刀各厂家的新刀报价，按报价从低到高排列（有报价的厂家全部列出）",
+  "question": "焊接型刮刀新刀的报价，各家从便宜到贵排一下，有报价的都列上。"
+ },
+ {
+  "id": "U08",
+  "family": "quotes_sorted",
+  "params": {
+   "model": "17寸常压中心滚刀",
+   "cost_type": "REPAIR",
+   "descending": true
+  },
+  "intent": "17寸常压中心滚刀各厂家的维修报价，按报价从高到低排列（有报价的厂家全部列出）",
+  "question": "17寸常压中心滚刀的维修报价各厂家是多少？从贵到便宜排，有维修报价的厂家全部列出来。"
+ },
+ {
+  "id": "U09",
+  "family": "supply_sorted",
+  "params": {
+   "kind": "DISC",
+   "low": 1,
+   "high": 250
+  },
+  "intent": "第1到250环，滚刀各厂家新装（供货）了多少把，按把数从多到少排列",
+  "question": "1到250环之间换刀时新装上去的滚刀，各厂家分别供了多少把？按把数从多到少排。"
+ },
+ {
+  "id": "U10",
+  "family": "supply_sorted",
+  "params": {
+   "low": 100,
+   "high": 300
+  },
+  "intent": "第100到300环，全部刀具各厂家新装（供货）了多少次，按次数从多到少排列",
+  "question": "100环到300环这一段，所有刀具算在一起，换刀新装的刀各厂家供货了多少次？按次数从多到少排一下。"
+ },
+ {
+  "id": "U11",
+  "family": "supply_sorted",
+  "params": {
+   "kind": "SCRAPER",
+   "low": 250,
+   "high": 487
+  },
+  "intent": "第250到487环，刮刀各厂家新装（供货）了多少把，按把数从多到少排列",
+  "question": "第250～487环，刮刀新装的那些各是哪家供的货、每家多少把？从多到少排。"
+ },
+ {
+  "id": "U12",
+  "family": "supply_sorted",
+  "params": {
+   "kind": "DISC",
+   "descending": false
+  },
+  "intent": "全项目滚刀各厂家新装（供货）了多少把，按把数从少到多排列",
+  "question": "整个项目下来，新装的滚刀各厂家分别供了多少把？按把数从少到多排。"
+ },
+ {
+  "id": "U13",
+  "family": "manufacturer_service_sorted",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "滚刀按原安装厂家，已确认拆下的刀平均服役多少环、各厂家样本多少，按平均服役环数从高到低排列",
+  "question": "做厂家评价用：滚刀按原安装厂家分，已经确认拆下来的刀平均能用多少环？每家样本多少也说一下，按平均服役环数从高到低排。"
+ },
+ {
+  "id": "U14",
+  "family": "manufacturer_service_sorted",
+  "params": {},
+  "intent": "全部刀具按原安装厂家，已确认拆下的刀平均服役多少环、各厂家样本多少，按平均服役环数从高到低排列",
+  "question": "请按原安装厂家统计全部刀具中已确认拆下刀具的平均服役环数及各厂家样本数量，并按平均服役环数由高到低排序。"
+ },
+ {
+  "id": "U15",
+  "family": "manufacturer_service_sorted",
+  "params": {
+   "kind": "SCRAPER",
+   "descending": false
+  },
+  "intent": "刮刀按原安装厂家，已确认拆下的刀平均服役多少环、各厂家样本多少，按平均服役环数从低到高排列",
+  "question": "刮刀按原安装厂家看，确认拆下来的平均跑了多少环，每家多少样本？从低到高排。"
+ },
+ {
+  "id": "U16",
+  "family": "manufacturer_abnormal_sorted",
+  "params": {
+   "kind": "DISC",
+   "descending": false
+  },
+  "intent": "滚刀按原安装厂家，各厂家已确认拆下的刀具中已分类异常率分别多少，按异常率从低到高排列",
+  "question": "滚刀按原安装厂家分，各家已确认拆下的刀里已分类异常率各是多少？按异常率从低到高排一下。"
+ },
+ {
+  "id": "U17",
+  "family": "manufacturer_abnormal_sorted",
+  "params": {},
+  "intent": "全部刀具按原安装厂家，各厂家已确认拆下的刀具中已分类异常率分别多少，按异常率从高到低排列",
+  "question": "全部刀具按原安装厂家统计，各厂家已确认拆下刀具的已分类异常率分别为多少？请按异常率从高到低排列。"
+ },
+ {
+  "id": "U18",
+  "family": "manufacturer_abnormal_sorted",
+  "params": {
+   "kind": "SCRAPER"
+  },
+  "intent": "刮刀按原安装厂家，各厂家已确认拆下的刀具中已分类异常率分别多少，按异常率从高到低排列",
+  "question": "刮刀这块，按原安装厂家，确认拆下的刀里已分类异常率各家多少？从高到低排。"
+ },
+ {
+  "id": "U19",
+  "family": "model_service",
+  "params": {
+   "kind": null
+  },
+  "intent": "全部刀具分型号，已确认拆下的刀平均服役多少环、各型号样本多少（所有型号都列出）",
+  "question": "所有刀具按型号分，已经确认拆下的刀平均服役多少环、每个型号样本有多少？所有型号都列出来，一个都别落。"
+ },
+ {
+  "id": "U20",
+  "family": "model_service_sorted",
+  "params": {},
+  "intent": "全部刀具分型号，已确认拆下的刀平均服役多少环、各型号样本多少，按平均服役环数从高到低排列",
+  "question": "全部刀具分型号看一下已确认拆下的平均服役环数和各型号样本数，按平均服役环数从高到低排。"
+ },
+ {
+  "id": "U21",
+  "family": "model_service_sorted",
+  "params": {
+   "kind": "DISC",
+   "descending": false
+  },
+  "intent": "滚刀分型号，已确认拆下的刀平均服役多少环、各型号样本多少，按平均服役环数从低到高排列",
+  "question": "滚刀各型号已确认拆下的平均用了多少环？样本各多少？按平均服役环数从低到高排。"
+ },
+ {
+  "id": "U22",
+  "family": "opening_replaced_positions",
+  "params": {
+   "ring": 151
+  },
+  "intent": "第151环那次开仓，按有效刀位上的换刀明细，实际更换了哪些刀位（全部列出），一共多少个",
+  "question": "第151环那次开仓，按有效刀位上的换刀明细看，实际换了哪些刀位？全部列出来，总共几个。"
+ },
+ {
+  "id": "U23",
+  "family": "opening_replaced_positions",
+  "params": {
+   "ring": 443
+  },
+  "intent": "第443环那次开仓，按有效刀位上的换刀明细，实际更换了哪些刀位（全部列出），一共多少个",
+  "question": "443环开仓那回，按有效刀位的换刀明细算，到底换了哪几个刀位？都列一下，一共多少个？"
+ },
+ {
+  "id": "U24",
+  "family": "opening_replaced_positions",
+  "params": {
+   "ring": 258,
+   "kind": "SCRAPER"
+  },
+  "intent": "第258环那次开仓，按有效刀位上的换刀明细，刮刀实际更换了哪些刀位（全部列出），一共多少个",
+  "question": "请问第258环开仓时，依据有效刀位上的换刀明细，刮刀实际更换了哪些刀位？请全部列出并给出总数。"
+ },
+ {
+  "id": "U25",
+  "family": "opening_replaced_positions",
+  "params": {
+   "ring": 400,
+   "kind": "SCRAPER"
+  },
+  "intent": "第400环那次开仓，按有效刀位上的换刀明细，刮刀实际更换了哪些刀位（全部列出），一共多少个",
+  "question": "400环开仓，按有效刀位换刀明细，刮刀实际换了哪些刀位，全列，共几个"
+ },
+ {
+  "id": "U26",
+  "family": "position_old_tools",
+  "params": {
+   "position": "12"
+  },
+  "intent": "12号刀位换下的全部旧刀：一共几把，逐把列出旧刀编号和在第几环换下",
+  "question": "设备这边要追溯一下，12号刀位前前后后换下来的旧刀一共几把？每把的旧刀编号和啥时候、第几环换下来的，逐把列一下。"
+ },
+ {
+  "id": "U27",
+  "family": "position_old_tools",
+  "params": {
+   "position": "S5R"
+  },
+  "intent": "S5R号刀位换下的全部旧刀：一共几把，逐把列出旧刀编号和在第几环换下",
+  "question": "S5R刀位换下的旧刀总共几把？逐把列出旧刀编号和换下时的环号。"
+ },
+ {
+  "id": "U28",
+  "family": "position_old_tools",
+  "params": {
+   "position": "Y3"
+  },
+  "intent": "Y3号刀位换下的全部旧刀：一共几把，逐把列出旧刀编号和在第几环换下",
+  "question": "麻烦查一下Y3号刀位，所有换下来的旧刀一共有几把？每一把的旧刀编号、在第几环换下来的，一把一把列出来。"
+ },
+ {
+  "id": "U29",
+  "family": "position_old_tools",
+  "params": {
+   "position": "70"
+  },
+  "intent": "70号刀位换下的全部旧刀：一共几把，逐把列出旧刀编号和在第几环换下",
+  "question": "70号刀位换下来的旧刀有几把？挨个列一下旧刀编号跟第几环换下来的。"
+ },
+ {
+  "id": "U30",
+  "family": "range_position_counts",
+  "params": {
+   "low": 1,
+   "high": 487
+  },
+  "intent": "第1到487环，刮刀每个刀位分别更换了几次（全部刀位都列出）",
+  "question": "1到487环，刮刀各个刀位分别换了几次？所有刀位都列出来。"
+ },
+ {
+  "id": "U31",
+  "family": "range_position_counts",
+  "params": {
+   "low": 200,
+   "high": 487
+  },
+  "intent": "第200到487环，刮刀每个刀位分别更换了几次（全部刀位都列出）",
+  "question": "请统计第200环至第487环期间刮刀每个刀位各更换了几次，全部刀位均需列出。"
+ },
+ {
+  "id": "U32",
+  "family": "range_position_counts",
+  "params": {
+   "low": 1,
+   "high": 250
+  },
+  "intent": "第1到250环，刮刀每个刀位分别更换了几次（全部刀位都列出）",
+  "question": "1到250环里，刮刀每个刀位换了几次？全部刀位都要列上。"
+ }
+]

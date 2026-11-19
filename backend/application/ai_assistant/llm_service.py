@@ -31,6 +31,7 @@ from .tools import (
 from .prompts import SYSTEM_PROMPT, ANSWER_POLICY, CHECKPOINT_PROMPT
 from .agent_views import AGENT_PAGE_SIZE, agent_view
 from .answer_check import answer_requirements, check_final_answer
+from .route_coverage import coverage_gaps
 from .context_budget import (
     ContextBudgetExceeded, ContextUsage, GuardedChatModel, context_usage, mark_context_message,
     encode_messages, estimate_request_tokens, request_fingerprint,
@@ -128,6 +129,8 @@ def _query_number(value: str) -> int:
 
 
 _QUERY_NUMBER = r"[0-9零〇一二两三四五六七八九十百千万]+"
+# 并列的离散环号，如“第10环和第100环”；“339环到487环，……”这类区间后接逗号的不算
+_DISCRETE_RINGS = rf"第?\s*{_QUERY_NUMBER}\s*环(?:\s*(?:和|及|与|、|，|,)\s*第?\s*{_QUERY_NUMBER}\s*环)+"
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +283,8 @@ def _flag_enabled(name: str, default: str = "0") -> bool:
 #   AI_ABLATE_TEMPLATE     关闭模板化格式化，规则路由改为把工具原始返回交给 LLM 复述
 #   AI_ABLATE_MEMORY       关闭多轮记忆与追问合并，每轮独立
 #   AI_ABLATE_ANSWER_CHECK 关闭模型终答检查与一次补全
+#   AI_ABLATE_GENERATED_TABLE 关闭模型路径上由程序生成的完整大表（如逐家报价表）
+#   AI_ABLATE_ROUTE_COVERAGE  关闭规则直答的覆盖检查，模板没答到的要求也不转交智能体
 #   AI_TRACE_TOOL_RESULTS  在响应里带上工具原始返回（仅评测用，会显著增大响应体）
 _ABLATION_FLAGS = (
     "AI_STRICT_AGENT",
@@ -287,6 +292,8 @@ _ABLATION_FLAGS = (
     "AI_ABLATE_TEMPLATE",
     "AI_ABLATE_MEMORY",
     "AI_ABLATE_ANSWER_CHECK",
+    "AI_ABLATE_GENERATED_TABLE",
+    "AI_ABLATE_ROUTE_COVERAGE",
     "AI_ASSISTANT_POLISH_DIRECT",
 )
 
@@ -1736,32 +1743,15 @@ class ToolAssistant:
 
         return "【当前上下文】" + "；".join(parts) if parts else None
 
-    # 触发工具调用的关键词
-    _DATA_QUERY_KEYWORDS = (
-        "查询", "查一下", "分析", "统计", "换刀", "开仓", "磨损", "刀位",
-        "厂家", "地层", "环号", "更换", "多少", "哪个", "最近", "趋势",
-        "记录", "次数", "情况", "数据",
-        "返修", "报废", "反馈", "追溯", "报价", "登记金额", "费用", "成本", "检查", "需关注", "需要关注",
-    )
-
-    def _needs_tool_call(self, query: str) -> bool:
-        return any(kw in query for kw in self._DATA_QUERY_KEYWORDS) or any((
-            self._is_position_followup_query(query),
-            self._is_tool_recommendation_query(query),
-            self._is_tool_performance_query(query),
-            self._is_opening_efficiency_query(query),
-            self._is_tunneling_query(query),
-        ))
-
     def _model_needs_tools(self, query: str, context: dict = None) -> bool:
         """Model mode does not gate data access on a finite keyword list.
 
         Only explicit general-knowledge/greeting requests use direct chat.
         Ambiguous project queries enter the tool-capable path and must acquire
         evidence; an unrecognized phrase must not silently become project facts.
+        双路径模式下规则没有接住的问题（含覆盖检查转交的问题、只改环号的追问）同样按此判断，
+        不再用关键词表把数据问题当成闲聊直接回答。
         """
-        if self._route_mode_for_context(context) != "agent":
-            return self._needs_tool_call(query)
         # Complete, unsupported requests may explain the capability boundary.
         # Mixed requests still enter the evidence path for supported data parts.
         capability_only = re.fullmatch(
@@ -2100,9 +2090,11 @@ class ToolAssistant:
 
     @staticmethod
     def _extract_discrete_rings(query: str) -> list:
-        if not re.search(r"环\s*(?:和|及|与|、|，|,)\s*第?", query):
+        # 只取并列写法里的环号，拆分查询时用同一个模式替换，保证每个子查询都确实缩小了范围
+        match = re.search(_DISCRETE_RINGS, query)
+        if not match:
             return []
-        return list(dict.fromkeys(_query_number(value) for value in re.findall(rf"第?\s*({_QUERY_NUMBER})\s*环", query)))
+        return list(dict.fromkeys(_query_number(value) for value in re.findall(rf"({_QUERY_NUMBER})\s*环", match.group())))
 
     @staticmethod
     def _extract_stratum_types(query: str) -> list:
@@ -2674,7 +2666,7 @@ class ToolAssistant:
                             if other != tool_type:
                                 query = query.replace(other, "")
                     if ring is not None:
-                        query = re.sub(rf"第?\s*{_QUERY_NUMBER}\s*环(?:\s*(?:和|及|与|、|，|,)\s*第?\s*{_QUERY_NUMBER}\s*环)+", f"第{ring}环", query)
+                        query = re.sub(_DISCRETE_RINGS, f"第{ring}环", query)
                     child_context = {**(context or {}), "query_context_resolved": False}
                     result = self._direct_route(query, child_context)
                     if result is None:
@@ -2908,6 +2900,26 @@ class ToolAssistant:
             return {"rule_branch": "tool_change_summary", "type": "analysis", "_empty_domain": "换刀" if data.get("total_records", data.get("total")) == 0 else None, "answer": self._prepend_query_scope(answer, params, user_query)}
 
         return None
+
+    @staticmethod
+    def _coverage_question(query: str, context: dict) -> str:
+        """覆盖检查用的问句：追问往往只说变化的部分（“那刮刀呢”），所问指标要沿用上一问。"""
+        if context.get("resolved_context_mode") != "continue":
+            return query
+        messages = getattr(context.get("memory_snapshot"), "messages", None) or []
+        previous = next((item.content for item in reversed(messages) if item.role == "human"), "")
+        return f"{previous}\n{query}" if previous else query
+
+    def _rule_coverage_gaps(self, query: str, direct: dict) -> list:
+        """规则直答没有覆盖的问句要求；文字类直答（如无库存台账的说明）不检查。"""
+        if _flag_enabled("AI_ABLATE_ROUTE_COVERAGE") or direct.get("type") != "analysis":
+            return []
+        models = []
+        # 型号名称只有“X寸…滚刀”“…刮刀H=…”“…型刮刀”三种写法，问句里没有这些字样时不必查库
+        if re.search(r"寸|型刮刀|H\s*=", query):
+            from application.shield.models import ToolInfo
+            models = [name for name in scoped_queryset(ToolInfo.objects.order_by()).values_list("tool_type_name", flat=True).distinct() if name]
+        return coverage_gaps(query, direct.get("answer", ""), models)
 
     @staticmethod
     def _is_actual_total_cost_query(query: str) -> bool:
@@ -3211,8 +3223,12 @@ class ToolAssistant:
             if self._tool_observation_succeeded(observation):
                 successful_tools += 1
                 self._resolve_tool_argument_failure(unresolved, name, arguments, batch)
+            elif isinstance(observation, str) and observation.startswith(f"{name} is not a valid tool"):
+                # 模型写错了工具名，提示已回给模型改正，这一步没有查询数据，与流式循环一样不算查询失败
+                continue
             else:
                 if not self._tool_argument_error(observation):
+                    logger.warning(f"工具步骤未成功：{name} {str(observation)[:300]}")
                     raise RuntimeError("部分数据查询失败，无法给出完整分析，请稍后重试")
                 unresolved.append(self._tool_argument_failure(name, arguments, observation, batch))
         if unresolved or not (successful_tools or history_evidence):
@@ -3252,7 +3268,8 @@ class ToolAssistant:
                                                     grouped=bool(GROUPED_SORT.search(question))))
 
     def _revise_agent_answer(self, question, answer, query_spec, tool_results, trace, config=None, project_id=""):
-        table = self._manufacturer_price_table(question, query_spec, tool_results, project_id)
+        table = ("" if _flag_enabled("AI_ABLATE_GENERATED_TABLE") else
+                 self._manufacturer_price_table(question, query_spec, tool_results, project_id))
         suffix = "\n\n" + table if table else ""
         if table:
             trace["generated_tables"] = ["manufacturer_prices"]
@@ -3325,6 +3342,7 @@ class ToolAssistant:
         memory_info, tool_group = None, None
         trace_offset = 0
         answer_check = {}
+        rule_declined = []
         collector, get_usage = _new_usage_callback()
         config = {"configurable": {"session_id": user_id}, "usage": collector}
 
@@ -3340,6 +3358,8 @@ class ToolAssistant:
             })
             if answer_check:
                 payload["answer_check"] = answer_check
+            if rule_declined:
+                payload["rule_declined"] = rule_declined
             return payload
 
         try:
@@ -3365,7 +3385,21 @@ class ToolAssistant:
             needs_tools = self._model_needs_tools(merged_query, working_context)
             if working_context.get('require_project') and not working_context.get('project_id') and needs_tools:
                 raise RuntimeError("当前无法确定查询项目，请先明确项目；存在多个项目时需要从指定项目入口查询")
-            direct = await sync_to_async(self._direct_route)(merged_query, working_context) if not model_selects_tools else None
+            direct = None
+            if not model_selects_tools:
+                saved_context = dict(working_context)
+                direct = await sync_to_async(self._direct_route)(merged_query, working_context)
+                rule_declined = await sync_to_async(self._rule_coverage_gaps)(
+                    self._coverage_question(merged_query, working_context), direct) if direct else []
+                if rule_declined:
+                    # 模板没有答到问句的全部要求时改走智能体，规则分支改写过的会话条件和工具记录都不带过去
+                    logger.info("[%s] 规则直答未覆盖：%s，转交智能体", user_id, "、".join(rule_declined))
+                    working_context.clear()
+                    working_context.update(saved_context)
+                    direct = None
+                    trace_offset = len(_trace_calls())
+                    # 按关键词裁剪的工具组同样依据了没接住的意图，转交时给全部工具
+                    tool_group = "all"
             if not direct:
                 due, history_messages, _ = await sync_to_async(self._compaction_check)(
                     memory_snapshot, working_context, enriched_input,
@@ -3425,7 +3459,7 @@ class ToolAssistant:
                 yield {"type": "meta", **route_info}
                 tools = await sync_to_async(self._get_tools_for_query)(
                     merged_query, project_id=working_context.get("project_id", ""),
-                    model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")),
+                    model_selects_tools=model_selects_tools or bool(working_context.get("focus_sources")) or bool(rule_declined),
                 )
                 tool_names = {item.name for item in tools}
                 overflow_retried = False

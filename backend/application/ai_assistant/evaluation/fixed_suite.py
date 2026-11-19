@@ -36,9 +36,9 @@ LABELS = {key.removeprefix("AREA_"): value for key, value in AREA_LABELS.items()
 REFERENCE_PENETRATION_MM = 16.67
 
 
-def load_fixed_cases() -> list[dict]:
-    """读取 fixed_cases.json，返回题目列表（字段见任务说明第 1 节）。"""
-    return json.loads(Path(__file__).with_name("fixed_cases.json").read_text(encoding="utf-8"))
+def load_fixed_cases(name="fixed_cases.json") -> list[dict]:
+    """读取题单（默认 fixed_cases.json），返回题目列表（字段见任务说明第 1 节）。"""
+    return json.loads(Path(__file__).with_name(name).read_text(encoding="utf-8"))
 
 
 def _position(value):

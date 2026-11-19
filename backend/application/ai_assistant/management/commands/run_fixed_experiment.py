@@ -1,4 +1,4 @@
-"""V2 固定题实验：原始记录与评分分离，不在本命令计算正确率。"""
+"""V2 固定题实验与同条件对照实验：原始记录与评分分离，不在本命令计算正确率。"""
 
 import copy
 import hashlib
@@ -20,8 +20,14 @@ from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
-ARMS = ("hybrid", "agent", "hybrid_no_template", "agent_no_check")
-FLAGS = ("AI_ABLATE_TOOL_GROUP", "AI_ABLATE_TEMPLATE", "AI_ABLATE_MEMORY", "AI_ABLATE_ANSWER_CHECK")
+# sql_agent：只读 SQL 工具 + 书面口径（A0）；agent_bare / hybrid_bare：关回答核对和程序生成表格（A1 / A2）
+# hybrid_ungated：完整系统但关闭规则直答的覆盖检查，即改进前的路由
+ARMS = ("hybrid", "agent", "hybrid_no_template", "agent_no_check", "sql_agent", "agent_bare", "hybrid_bare", "hybrid_ungated")
+FLAGS = ("AI_ABLATE_TOOL_GROUP", "AI_ABLATE_TEMPLATE", "AI_ABLATE_MEMORY", "AI_ABLATE_ANSWER_CHECK", "AI_ABLATE_GENERATED_TABLE",
+         "AI_ABLATE_ROUTE_COVERAGE")
+SUITES = {"fixed": "fixed_cases.json", "heldout": "heldout_cases.json", "calibration": "calibration_cases.json",
+          "heldout2": "heldout2_cases.json", "heldout3": "heldout3_cases.json",
+          "heldout4": "heldout4_cases.json"}
 TOKEN_KEYS = ("prompt_tokens", "completion_tokens", "cache_hit_tokens")
 
 
@@ -74,8 +80,14 @@ def data_fingerprint():
 def git_info():
     root = Path(__file__).resolve().parents[5]
     def git(*args):
-        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
-    return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain"))}
+        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True,
+                              encoding="utf-8").stdout
+    # 未提交的改动和本模块下未跟踪的文件一起算哈希，补丁另存到输出目录
+    patch = git("diff", "HEAD", "--", "backend/application/ai_assistant")
+    for name in sorted(git("ls-files", "--others", "--exclude-standard", "--", "backend/application/ai_assistant").split()):
+        patch += f"\n--- untracked {name}\n" + (root / name).read_text(encoding="utf-8", errors="replace")
+    return {"commit": git("rev-parse", "HEAD").strip(), "dirty": bool(git("status", "--porcelain").strip()),
+            "patch_sha256": hashlib.sha256(patch.encode("utf-8")).hexdigest(), "patch": patch}
 
 
 def project_id(value):
@@ -95,15 +107,18 @@ def case_turns(case):
 
 def make_schedule(cases, arms, repeat, seed):
     schedule = [(case, arm, rep) for case in cases for arm in arms for rep in range(repeat)
-                if arm != "hybrid_no_template" or case["expected_path"] == "rule"]
+                if arm != "hybrid_no_template" or case.get("expected_path") == "rule"]
     random.Random(seed).shuffle(schedule)
     return schedule
 
 
 def arm_environment(arm):
-    mode = "agent" if arm.startswith("agent") else "hybrid"
+    mode = "agent" if arm.startswith(("agent", "sql")) else "hybrid"
+    bare = arm in ("agent_bare", "hybrid_bare")
     return {**dict.fromkeys(FLAGS, "0"), "AI_ABLATE_TEMPLATE": str(int(arm == "hybrid_no_template")),
-            "AI_ABLATE_ANSWER_CHECK": str(int(arm == "agent_no_check")), "AI_ASSISTANT_ROUTE_MODE": mode,
+            "AI_ABLATE_ANSWER_CHECK": str(int(arm == "agent_no_check" or bare)),
+            "AI_ABLATE_GENERATED_TABLE": str(int(bare)), "AI_ABLATE_ROUTE_COVERAGE": str(int(arm == "hybrid_ungated")),
+            "AI_ASSISTANT_ROUTE_MODE": mode,
             "AI_STRICT_AGENT": "0", "AI_ASSISTANT_POLISH_DIRECT": "0", "AI_TRACE_TOOL_RESULTS": "1"}
 
 
@@ -112,8 +127,8 @@ class ModelBudgetReached(BaseException):
 
 
 class RequestCapture:
-    def __init__(self, directory, maximum):
-        self.path, self.maximum = directory / "model_requests.json", maximum
+    def __init__(self, directory, maximum, offline=False):
+        self.path, self.maximum, self.offline = directory / "model_requests.json", maximum, offline
         self.ledger = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else []
         self.current, self.responses = {}, []
 
@@ -129,6 +144,8 @@ class RequestCapture:
         def send(client, request):
             entry = self.before_request()
             try:
+                if self.offline:
+                    raise httpx.ConnectError("实验模拟模型服务不可用", request=request)
                 response = original(client, request)
                 entry["http_status"] = response.status_code
                 return response
@@ -143,6 +160,8 @@ class RequestCapture:
         async def send(client, request):
             entry = self.before_request()
             try:
+                if self.offline:
+                    raise httpx.ConnectError("实验模拟模型服务不可用", request=request)
                 response = await original(client, request)
                 entry["http_status"] = response.status_code
                 return response
@@ -256,10 +275,12 @@ class Command(BaseCommand):
         parser.add_argument("--allow-dirty", action="store_true")
         parser.add_argument("--project")
         parser.add_argument("--estimate", action="store_true")
+        parser.add_argument("--suite", choices=tuple(SUITES), default="fixed")
+        parser.add_argument("--offline", action="store_true", help="模拟模型服务不可用，所有模型请求在发送时失败")
 
     def handle(self, *args, **options):
         from application.ai_assistant.evaluation.fixed_suite import load_fixed_cases
-        cases = [c for c in load_fixed_cases() if (not options["kind"] or c["kind"] in options["kind"])
+        cases = [c for c in load_fixed_cases(SUITES[options["suite"]]) if (not options["kind"] or c["kind"] in options["kind"])
                  and (not options["case_id"] or c["id"] in options["case_id"])]
         arms = sorted(set(options["arm"] or ARMS), key=ARMS.index)
         directory = Path(options["output_dir"]).resolve()
@@ -273,9 +294,10 @@ class Command(BaseCommand):
         if code["dirty"] and not options["allow_dirty"]:
             raise CommandError("工作区有未提交改动；确认后用 --allow-dirty 放行")
         project = project_id(options["project"])
+        patch_text = code.pop("patch", "")
         signature = {**code, "project_id": project, "configured_model": get_llm_config().model, "arms": arms,
-                     "repeat": options["repeat"], "seed": options["seed"], "cases": cases,
-                     "environments": {arm: arm_environment(arm) for arm in arms}}
+                     "repeat": options["repeat"], "seed": options["seed"], "cases": cases, "suite": options["suite"],
+                     "offline": options["offline"], "environments": {arm: arm_environment(arm) for arm in arms}}
         fingerprint = data_fingerprint()
         meta_path = directory / "run_meta.json"
         records = read_records(directory)
@@ -288,12 +310,13 @@ class Command(BaseCommand):
             if meta_path.exists() or records or (directory / "model_requests.json").exists():
                 raise CommandError("输出目录已有实验；请用 --resume 或选择空目录")
             directory.mkdir(parents=True, exist_ok=True)
+            (directory / "code.patch").write_text(patch_text, encoding="utf-8")
             meta = {**signature, "signature": signature, "run_id": uuid4().hex, "started_at": now(),
                     "data_fingerprint_start": fingerprint, "data_fingerprint_end": None, "arguments": sys.argv[1:],
                     "invocations": []}
         meta["invocations"].append({"started_at": now(), "arguments": sys.argv[1:], "options": options})
         save_json(meta_path, meta)
-        capture = RequestCapture(directory, options["max_model_calls"])
+        capture = RequestCapture(directory, options["max_model_calls"], options["offline"])
         save_json(capture.path, capture.ledger)
         schedule = make_schedule(cases, arms, options["repeat"], options["seed"])
         total = sum(len(case_turns(case)) for case, _, _ in schedule)
@@ -320,9 +343,12 @@ class Command(BaseCommand):
 
     def run_schedule(self, directory, schedule, records, meta, capture):
         from application.ai_assistant.context_budget import ContextUsage
+        from application.ai_assistant.baselines import SqlAgentBaseline
         from application.ai_assistant.llm_service import ToolAssistant
         from application.ai_assistant.views import _build_project_snapshot
         assistant, memory = ToolAssistant(), EphemeralPersistence()
+        sql_agent = SqlAgentBaseline() if "sql_agent" in meta["arms"] else None
+        sql_history = {}
         done = {(r["case_id"], r["arm"], r["rep"], r["turn"]): r for r in records}
         with ExitStack() as stack, (directory / "records.jsonl").open("a", encoding="utf-8") as sink:
             for name in ("load", "append_turn", "append_compaction"):
@@ -339,7 +365,10 @@ class Command(BaseCommand):
                         order += 1
                         key = (case["id"], arm, rep, turn)
                         if key in done:
-                            memory.restore(done[key]["memory_snapshot"])
+                            if arm == "sql_agent":
+                                sql_history[session] = done[key]["sql_history"]
+                            else:
+                                memory.restore(done[key]["memory_snapshot"])
                             continue
                         # 上限为 0 时不预停：规则题照常回放，任何模型请求在发送时被拦下
                         if capture.maximum and len(capture.ledger) >= capture.maximum:
@@ -354,13 +383,23 @@ class Command(BaseCommand):
                                        "focus_sources": case.get("focus_sources", [])}
                             try:
                                 with patch.dict(os.environ, environment):
-                                    response = assistant.chat(question, context=context)
+                                    if arm == "sql_agent":
+                                        # 与助手相同的项目上下文消息；多轮时带上本会话前几轮的问答
+                                        response = sql_agent.chat(question, context={
+                                            "project_id": meta["project_id"], "history": sql_history.get(session, []),
+                                            "context_message": assistant._build_context_message(context)})
+                                        if response.get("success"):
+                                            sql_history[session] = sql_history.get(session, []) + [(question, response["answer"])]
+                                    else:
+                                        response = assistant.chat(question, context=context)
                             except Exception as exc:
                                 response = {"success": False, "error": type(exc).__name__, "answer": ""}
                         row = dict(arm=arm, case_id=case["id"], kind=case["kind"], rep=rep, turn=turn, question=question,
                                    answer=response.get("answer", ""), success=response.get("success", False), error=response.get("error"),
                                    route=response.get("route"), route_stage=response.get("route_stage"), rule_branch=response.get("rule_branch"),
-                                   tool_calls=[{"tool": c.get("tool"), "args": c.get("args")} for c in response.get("tool_calls", [])],
+                                   rule_declined=response.get("rule_declined"),
+                                   tool_calls=[{key: c.get(key) for key in ("tool", "args", "result", "error", "row_count", "truncated") if key in c}
+                                               for c in response.get("tool_calls", [])],
                                    latency_ms=round((time.perf_counter() - started) * 1000, 3), model_requests=len(capture.ledger) - before,
                                    provider_usage=capture.usage(), actual_models=sorted({r["model"] for r in capture.responses if r["model"]}) or None,
                                    model_responses=capture.responses, answer_check=response.get("answer_check"), context=response.get("context"),
@@ -368,10 +407,12 @@ class Command(BaseCommand):
                                            "AI_STRICT_AGENT": "0", "AI_ASSISTANT_POLISH_DIRECT": "0", "memory_backend": "ephemeral_legacy"},
                                    run_id=meta["run_id"], execution_order=order,
                                    run_metadata={k: meta[k] for k in ("commit", "dirty", "seed", "configured_model", "data_fingerprint_start")},
-                                   memory_snapshot=asdict(memory.load(assistant.memory.scope_key(session))))
+                                   memory_snapshot=None if arm == "sql_agent" else asdict(memory.load(assistant.memory.scope_key(session))),
+                                   sql_history=sql_history.get(session, []) if arm == "sql_agent" else None)
                         sink.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
                         sink.flush()
                         records.append(row)
                 finally:
                     memory.snapshots.clear()
+                    sql_history.pop(session, None)
                     assistant._context_cache.clear()

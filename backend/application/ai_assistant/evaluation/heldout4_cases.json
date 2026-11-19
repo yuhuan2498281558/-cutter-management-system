@@ -1,0 +1,194 @@
+[
+ {
+  "id": "U01",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "采购这边要比价，17寸常压中心滚刀的新刀报价各厂家分别是多少？有报价的厂家都给我列出来。"
+ },
+ {
+  "id": "U02",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请查询螺栓型刮刀的新刀报价，凡是有报价的厂家，请逐一列明各自的报价。"
+ },
+ {
+  "id": "U03",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "19寸双联常压正滚刀200，维修报价各家多少？报过价的全列上。"
+ },
+ {
+  "id": "U04",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "麻烦帮我看下，可更换式刮刀H=380拿去修的话，各厂家维修报价分别多少钱？只要有维修报价的厂家都列一下，谢谢。"
+ },
+ {
+  "id": "U05",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "可更换式刮刀H=400买新刀哪家便宜？把有新刀报价的厂家全列出来，按报价从低到高排。"
+ },
+ {
+  "id": "U06",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "19寸常压单刃滚刀新刀各厂家都报了多少钱？按报价从高往低排，有报价的一家都别漏。"
+ },
+ {
+  "id": "U07",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "焊接型刮刀新刀的报价，各家从便宜到贵排一下，有报价的都列上。"
+ },
+ {
+  "id": "U08",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "17寸常压中心滚刀的维修报价各厂家是多少？从贵到便宜排，有维修报价的厂家全部列出来。"
+ },
+ {
+  "id": "U09",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "1到250环之间换刀时新装上去的滚刀，各厂家分别供了多少把？按把数从多到少排。"
+ },
+ {
+  "id": "U10",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "100环到300环这一段，所有刀具算在一起，换刀新装的刀各厂家供货了多少次？按次数从多到少排一下。"
+ },
+ {
+  "id": "U11",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "第250～487环，刮刀新装的那些各是哪家供的货、每家多少把？从多到少排。"
+ },
+ {
+  "id": "U12",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "整个项目下来，新装的滚刀各厂家分别供了多少把？按把数从少到多排。"
+ },
+ {
+  "id": "U13",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "做厂家评价用：滚刀按原安装厂家分，已经确认拆下来的刀平均能用多少环？每家样本多少也说一下，按平均服役环数从高到低排。"
+ },
+ {
+  "id": "U14",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请按原安装厂家统计全部刀具中已确认拆下刀具的平均服役环数及各厂家样本数量，并按平均服役环数由高到低排序。"
+ },
+ {
+  "id": "U15",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "刮刀按原安装厂家看，确认拆下来的平均跑了多少环，每家多少样本？从低到高排。"
+ },
+ {
+  "id": "U16",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "滚刀按原安装厂家分，各家已确认拆下的刀里已分类异常率各是多少？按异常率从低到高排一下。"
+ },
+ {
+  "id": "U17",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "全部刀具按原安装厂家统计，各厂家已确认拆下刀具的已分类异常率分别为多少？请按异常率从高到低排列。"
+ },
+ {
+  "id": "U18",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "刮刀这块，按原安装厂家，确认拆下的刀里已分类异常率各家多少？从高到低排。"
+ },
+ {
+  "id": "U19",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "所有刀具按型号分，已经确认拆下的刀平均服役多少环、每个型号样本有多少？所有型号都列出来，一个都别落。"
+ },
+ {
+  "id": "U20",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "全部刀具分型号看一下已确认拆下的平均服役环数和各型号样本数，按平均服役环数从高到低排。"
+ },
+ {
+  "id": "U21",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "滚刀各型号已确认拆下的平均用了多少环？样本各多少？按平均服役环数从低到高排。"
+ },
+ {
+  "id": "U22",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "第151环那次开仓，按有效刀位上的换刀明细看，实际换了哪些刀位？全部列出来，总共几个。"
+ },
+ {
+  "id": "U23",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "443环开仓那回，按有效刀位的换刀明细算，到底换了哪几个刀位？都列一下，一共多少个？"
+ },
+ {
+  "id": "U24",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请问第258环开仓时，依据有效刀位上的换刀明细，刮刀实际更换了哪些刀位？请全部列出并给出总数。"
+ },
+ {
+  "id": "U25",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "400环开仓，按有效刀位换刀明细，刮刀实际换了哪些刀位，全列，共几个"
+ },
+ {
+  "id": "U26",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "设备这边要追溯一下，12号刀位前前后后换下来的旧刀一共几把？每把的旧刀编号和啥时候、第几环换下来的，逐把列一下。"
+ },
+ {
+  "id": "U27",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "S5R刀位换下的旧刀总共几把？逐把列出旧刀编号和换下时的环号。"
+ },
+ {
+  "id": "U28",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "麻烦查一下Y3号刀位，所有换下来的旧刀一共有几把？每一把的旧刀编号、在第几环换下来的，一把一把列出来。"
+ },
+ {
+  "id": "U29",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "70号刀位换下来的旧刀有几把？挨个列一下旧刀编号跟第几环换下来的。"
+ },
+ {
+  "id": "U30",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "1到487环，刮刀各个刀位分别换了几次？所有刀位都列出来。"
+ },
+ {
+  "id": "U31",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请统计第200环至第487环期间刮刀每个刀位各更换了几次，全部刀位均需列出。"
+ },
+ {
+  "id": "U32",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "1到250环里，刮刀每个刀位换了几次？全部刀位都要列上。"
+ }
+]

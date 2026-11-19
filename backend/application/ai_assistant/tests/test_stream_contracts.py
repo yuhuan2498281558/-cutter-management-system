@@ -19,7 +19,6 @@ class StreamContractTests(TestCase):
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._resolve_memory_slots = Mock(return_value={})
         assistant._direct_route = Mock(return_value=None)
-        assistant._needs_tool_call = Mock(return_value=True)
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
 
         async def stream(*args, **kwargs):
@@ -34,6 +33,23 @@ class StreamContractTests(TestCase):
         return [event async for event in assistant.chat_stream(
             "查询换刀记录", {"user_id": 1, "project_id": "TEST", "route_mode": "agent"},
         )]
+
+    def test_rule_answer_missing_asked_metric_is_handed_to_agent(self):
+        observation = json.dumps({"total_records": 584, "abnormal_rate_pct": 37.3})
+        assistant = self.make_assistant([
+            {"type": "tool_end", "call_id": "call-1", "name": "tool_query_tool_change_data", "args": {}, "observation": observation},
+            {"type": "model_text", "iteration": 2, "content": "已分类异常率 37.3%。"},
+            {"type": "final", "output": "已分类异常率 37.3%。", "intermediate_steps": [(None, observation)]},
+        ])
+        assistant._direct_route = Mock(return_value={"rule_branch": "tool_change_summary", "type": "analysis",
+                                                     "answer": "共 584 条现场观测记录，实际更换 293 次。"})
+        result = assistant.chat("339到487环的已分类异常率是多少？", {"user_id": 1, "project_id": "TEST", "route_mode": "hybrid"})
+        self.assertEqual(result["route_stage"], "agent")
+        self.assertEqual(result["rule_declined"], ["已分类异常率"])
+        self.assertIn("37.3%", result["answer"])
+        # 关键词裁剪的工具组依据的正是没接住的意图，转交时给全部工具
+        self.assertEqual(result["tool_group"], "all")
+        self.assertTrue(assistant._get_tools_for_query.call_args.kwargs["model_selects_tools"])
 
     async def test_agent_without_tool_evidence_is_not_saved_as_success(self):
         assistant = self.make_assistant([

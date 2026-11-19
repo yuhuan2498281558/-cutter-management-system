@@ -52,10 +52,23 @@ def answer_requirements(question, query_spec, tool_results, generated_tables=())
     if ("滚刀" in question) != ("刮刀" in question):
         tool_type = "DISC" if "滚刀" in question else "SCRAPER"
     all_objects = bool(re.search(r"全部|所有|每个|逐条|逐把|各型号|按(?:刀位|型号).*列出", question))
+    # 只问把数、金额（"所有旧刀里面轴承失效的有几把"）时，"所有/全部"只是限定范围，不要求逐个列出；
+    # "待反馈、已确认、已归档各多少把"里的"各/分别"指前面列举的类别，也不是要逐个列对象。
+    # 单说"是多少"（"全部旧刀的编号是多少"）问的是每个对象的值，仍要列全。
+    per_object = re.search(r"列|哪些|哪几|哪个|逐|每|明细|清单|名单", question) or (
+        re.search(r"分别|各", question) and not re.search(r"、[^，。？；]{0,8}(?:分别|各)", question))
+    counted = re.search(r"(?:多少|几)(?:把|个|次|条|家|种)|总共|一共|合计|总数|总额", question) or re.search(
+        r"、[^，。？；]{0,8}(?:分别|各)[^，。？；]{0,4}多少", question)
+    if counted and not per_object:
+        all_objects = False
     limited = re.search(r"(?:前\s*|最多的\s*|TOP\s*)(\d+)\s*个?刀位", question, re.I)
     top_n = re.search(r"(?:前|TOP)\s*(\d+)\s*(?:个|名|种|家|把|条)", question, re.I)
-    # 刀位统计的全集含只有观测的刀位，问"更换过/有异常"等子集时算不准，就不查列全。
-    position_filter = re.search(r"更换过|已更换|有更换|未更换|没换|异常|未检查|没检查|需关注|需要关注", question)
+    # 刀位统计的全集含只有观测的刀位：问"未更换/有异常"等子集时算不准，就不查列全；
+    # 问"实际换了哪些/更换过的刀位"只算有更换的刀位，问"更换最多的是哪些刀位"只算并列第一的刀位。
+    position_filter = re.search(r"未更换|没换|没有更换|没有换|异常|未检查|没检查|需关注|需要关注", question)
+    replaced_only = re.search(r"(?:更换|换)(?:了|过)?(?:哪些|哪几)|实际(?:更换|换)|更换过|已更换|有更换", question)
+    tied_top = not limited and re.search(r"最(?:多|高)的?(?:是)?(?:哪些|哪几个|哪个)?(?:滚刀|刮刀)?刀位"
+                                         r"|(?:哪些|哪几个|哪个)(?:滚刀|刮刀)?刀位[^，。？；]{0,10}最(?:多|高)", question)
     for data in payloads:
         summary = data.get("summary")
         summaries.append({**data, **(summary if isinstance(summary, dict) else {})})
@@ -78,19 +91,31 @@ def answer_requirements(question, query_spec, tool_results, generated_tables=())
                 requested = all_objects and obj in question
                 if field == "position_counts" and re.search(r"列出.*旧刀.*刀位", question):
                     requested = True
-                if field == "top_positions" and position_filter:
-                    requested = False
+                subset = None
+                if field == "top_positions" and isinstance(rows, list):
+                    if position_filter:
+                        requested = False
+                    elif replaced_only:
+                        subset = [row for row in rows if row.get("replacement_count")]
+                    elif tied_top:
+                        # 工具按排序字段降序返回，并列第一都在前面；返回不全时以已返回的为准。
+                        rank = "abnormal_observation_count" if node.get("sort_by") == "abnormal" else "replacement_count"
+                        best = max((row.get(rank) or 0 for row in rows), default=0)
+                        subset = [row for row in rows if (row.get(rank) or 0) == best]
                 if requested and isinstance(rows, list) and any(identity in row for row in rows):
-                    entry = objects.setdefault(obj, {"ids": set(), "total": 0})
+                    entry = objects.setdefault(obj, {"ids": set(), "total": 0, "exact": False})
+                    if subset is not None:
+                        # 全集是子集时，回答顺带列出的其他刀位不能顶数，核对时只认子集里的编号。
+                        rows, entry["exact"] = subset, True
                     entry["ids"].update(str(row[identity]) for row in rows if row.get(identity) is not None)
-                    total = node.get("_paging", {}).get(field, {}).get("total", 0)
+                    total = 0 if subset is not None else node.get("_paging", {}).get(field, {}).get("total", 0)
                     if field == "recommendations":
                         total = max(total, node.get("tool_model_count", 0))
                     if field == "records":
                         total = max(total, data.get("scope", {}).get("record_count", 0))
                     if field == "by_manufacturer":
                         total = 0  # 该列表按型号×厂家计行，不能把行数当厂家数。
-                    if field == "top_positions":
+                    if field == "top_positions" and subset is None:
                         total = max(total, node.get("matched_position_count", 0))
                         if limited:
                             total = min(total, int(limited[1]))
@@ -98,6 +123,12 @@ def answer_requirements(question, query_spec, tool_results, generated_tables=())
             for field, obj in (("ring_range", "环段"), ("cutter_position_no", "刀位"), ("manufacturer", "厂家")):
                 if field in node and isinstance(node[field], (str, int)):
                     keyed.setdefault((obj, _key(node[field])), []).append(node)
+    # 问句点名的对象（"12号刀位换下的旧刀逐把列出"里的刀位）是查询条件，不是要列全的对象。
+    for obj, entry in list(objects.items()):
+        if entry["ids"] and len(entry["ids"]) >= entry["total"] and all(
+                re.search(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])\s*号?\s*{obj}|{obj}\s*{re.escape(name)}(?![A-Za-z0-9])",
+                          question, re.I) for name in entry["ids"]):
+            del objects[obj]
     order = re.search(r"按([^，。；\n]{1,30}?)(从低到高|从高到低|升序|降序)", question)
     sort = None
     if order:
@@ -133,6 +164,40 @@ def _display(value):
     return f"{value:.8f}".rstrip("0").rstrip(".")
 
 
+def _unfold(tables):
+    """左右并排的表（表头按周期重复，如"刀位|次数|刀位|次数"）拆成每行一个对象的普通表。"""
+    unfolded = []
+    for headers, rows in tables:
+        names = [re.sub(r"[（(][^）)]*[）)]", "", header) for header in headers]
+        width = next((w for w in range(1, len(names) // 2 + 1)
+                      if len(names) % w == 0 and names == names[:w] * (len(names) // w)), None)
+        if width is None:
+            unfolded.append((headers, rows))
+            continue
+        parts = [row[i:i + width] for row in rows if len(row) == len(headers) for i in range(0, len(row), width)]
+        unfolded.append((headers[:width], [part for part in parts if any(part)]))
+    return unfolded
+
+
+def _object_columns(headers, obj):
+    """对象列：优先取以对象名结尾的列（"刀位""更换刀位""旧刀编号"），没有时取第一个含对象名的列；
+    "刀位数""旧刀记录数"这类计数列和"该刀位记录中的磨损描述"这类说明列不算。"""
+    names = [re.sub(r"[（(][^）)]*[）)]", "", header).strip() for header in headers]
+    candidates = [index for index, name in enumerate(names) if obj in name and not re.search(r"(?:数|率|占比)$", name)]
+    return [index for index in candidates if re.search(rf"{obj}(?:编号|号|名称|名)?$", names[index])] or candidates[:1]
+
+
+def _items(cell):
+    """一个单元格里可能用顿号列了好几个对象，去掉"（共 19 个）"这类括注后逐个取出。"""
+    cell = re.sub(r"[（(][^）)]*[）)]", "", cell)
+    return [item for item in re.split(r"[、，,；;/／]+", cell) if item.strip() not in ("", "合计", "—", "…", "...")]
+
+
+def _norm(value):
+    """比对对象编号时不计空格、大小写和"第…号"。"""
+    return re.sub(r"^第|号$", "", re.sub(r"\s+", "", _key(value))).upper()
+
+
 def check_final_answer(question, answer, requirements, tool_results) -> list[str]:
     issues, tables = [], _tables(answer)
     names = requirements["manufacturers"]
@@ -166,9 +231,17 @@ def check_final_answer(question, answer, requirements, tool_results) -> list[str
                     issues.append(f"“{headers[col]}”没有按{direction}排列：{empty or _display(previous)} 排在 {_display(current)} 前面。")
                     break
                 previous = current
+    unfolded = _unfold(tables)
+    prose = "\n".join(line for line in answer.replace("**", "").splitlines() if "|" not in line)
     for obj, expected in requirements["objects"].items():
-        seen = {_key(row[col]) for headers, rows in tables if (col := _column(headers, obj)) is not None
-                for row in rows if len(row) == len(headers) and row[col] not in ("合计", "—", "…", "...")}
+        seen = {_norm(item) for headers, rows in unfolded for col in _object_columns(headers, obj)
+                for row in rows if len(row) == len(headers) for item in _items(row[col])}
+        ids = {_norm(name) for name in expected["ids"]}
+        if expected.get("exact"):
+            seen &= ids
+        # 正文里用顿号列举的也算列出；只认查询结果里有的编号，免得把环号等数字算进去。
+        seen |= {item for segment in re.split(r"[，,；;。：:（）()\n]", prose) if "、" in segment
+                 for item in map(_norm, re.split(r"[、\s]+", segment)) if item in ids}
         total = max(len(expected["ids"]), expected["total"])
         if requirements["limit"]:
             total = min(total, requirements["limit"])
@@ -178,7 +251,7 @@ def check_final_answer(question, answer, requirements, tool_results) -> list[str
         disclosed = disclosed or re.search(rf"(?:下表|本表)[^。\n]{{0,16}}(?:列出|展示|显示)\s*第\s*\d+\s*页(?:全部)?\s*\d+\s*(?:个|种|家)[^。；\n]{{0,16}}{obj}", text)
         if len(seen) < total and not disclosed:
             issues.append(f"{obj}只列出 {len(seen)} 个，查询结果共有 {total} 个。")
-    for headers, rows in tables:
+    for headers, rows in unfolded:
         for row in rows:
             if len(row) != len(headers):
                 continue
@@ -203,7 +276,6 @@ def check_final_answer(question, answer, requirements, tool_results) -> list[str
                         issues.append(f"“{header}”列填的是观测数，不是更换数。")
                     else:
                         issues.append(f"“{header}”写的是 {_display(actual)}，查询结果是 {_display(expected)}。")
-    prose = "\n".join(line for line in answer.replace("**", "").splitlines() if "|" not in line)
     for pattern, fields, _ in requirements["metrics"]:
         expected = _value(requirements["summaries"], fields)
         if expected is None:
