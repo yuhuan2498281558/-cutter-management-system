@@ -78,7 +78,7 @@ class ContextEventStore:
         return [message_chunk_to_message(item) if isinstance(item, AIMessageChunk) else item for item in messages]
 
     @classmethod
-    def append(cls, connection, scope_key, generation, project_id, sequences, messages, usage=None):
+    def append(cls, connection, scope_key, generation, project_id, sequences, messages, usage=None, *, access_stamp=None):
         turn_id = uuid4().hex
         entries = []
         for message in messages:
@@ -88,7 +88,7 @@ class ContextEventStore:
             entries.append(("message", payload))
         if usage is not None:
             entries.append(("usage", usage))
-        entries.append(("turn_commit", {"sequences": sequences}))
+        entries.append(("turn_commit", {"sequences": sequences, "access_stamp": access_stamp}))
         connection.execute(cls.table.insert(), [dict(
             schema_version=1, event_id=uuid4().hex, scope_key=scope_key,
             generation=generation, turn_id=turn_id, seq=seq, kind=kind,
@@ -146,6 +146,7 @@ class ContextEventStore:
 
     @classmethod
     def replay(cls, turns, events, project_id):
+        events = [turn for turn in events if turn["project_id"] == str(project_id or "")]
         committed = {}
         for turn in events:
             for event in turn["events"]:
@@ -162,14 +163,16 @@ class ContextEventStore:
                      summarized_turns=0, pruned_results=0)
         for question, answer in turns:
             stats["turns"] += 1
+            turn = committed.get((question.sequence, answer.sequence))
+            saved_project = turn["project_id"] if turn else question.metadata.get("project_id", "")
+            if str(saved_project) != str(project_id or ""):
+                stats["other_project_turns"] += 1
+                continue
             if answer.sequence <= summarized_through:
                 stats["summarized_turns"] += 1
                 continue
-            turn = committed.get((question.sequence, answer.sequence))
-            saved_project = turn["project_id"] if turn else question.metadata.get("project_id", "")
-            other_project = bool(saved_project) and str(saved_project) != str(project_id or "")
             replayed = None
-            if turn and not other_project:
+            if turn:
                 try:
                     payloads = [json.loads(event["payload"]) for event in turn["events"] if event["kind"] == "message"]
                     if any(event["schema_version"] != 1 for event in turn["events"]):
@@ -201,13 +204,8 @@ class ContextEventStore:
                     logger.warning("AI 历史工具配对不完整，退回问答，sequence=%s", question.sequence)
                     replayed = None
             if replayed is None:
-                text = question.content
-                if other_project:
-                    text = f"（以下为项目 {saved_project} 的对话，结果不能作为当前项目的证据）\n{text}"
-                    stats["other_project_turns"] += 1
-                else:
-                    stats["legacy_qa_turns"] += 1
-                replayed = [HumanMessage(content=text), AIMessage(content=answer.content)]
+                stats["legacy_qa_turns"] += 1
+                replayed = [HumanMessage(content=question.content), AIMessage(content=answer.content)]
             if answer.sequence <= pruned_through:
                 for index, message in enumerate(replayed):
                     if isinstance(message, ToolMessage) and estimate_tokens(message.content) >= PRUNE_MIN_TOKENS:

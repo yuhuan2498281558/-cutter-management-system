@@ -10,7 +10,8 @@ from unittest.mock import Mock, patch
 
 import httpx
 from asgiref.sync import sync_to_async
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase, RequestFactory
+from rest_framework.test import force_authenticate
 from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage, convert_to_openai_messages
 from application.ai_assistant.agent_loop import AgentPrompt
 from application.ai_assistant.tests.test_tooling import make_tool
@@ -18,9 +19,14 @@ from sqlalchemy import func, select
 
 from application.ai_assistant.context_budget import ContextBudgetPolicy, ContextUsage, GuardedChatModel, context_usage
 from application.ai_assistant.context_events import ContextEventStore
+from application.ai_assistant.history_access import access_stamp, authorized_snapshot
+from application.ai_assistant import views
 from application.ai_assistant.llm_provider import create_chat_model
 from application.ai_assistant.llm_service import SYSTEM_PROMPT, ToolAssistant
-from application.ai_assistant.memory_service import MemoryService
+from application.ai_assistant.memory_service import MemoryService, MemorySnapshot, StoredMessage
+from application.shield.analysis_metrics import ANALYSIS_REQUEST
+from application.shield.models import ProjectInfo
+from dvadmin.system.models import Dept, Menu, MenuButton, Role, RoleMenuButtonPermission, Users
 from application.ai_assistant.tests.test_context_budget_agent import RecordingToolModel, trend_payload
 
 
@@ -164,18 +170,87 @@ class ContextEventTests(SimpleTestCase):
         self.assertTrue(history[0].content.endswith("什么是滚刀"))
         self.assertEqual(anchor["prompt_tokens"], 15000)
 
-    def test_other_project_gets_qa_warning_without_tool_evidence(self):
+    def test_other_project_is_not_replayed_or_used_as_evidence(self):
         self.ask()
         history, stats, _ = self.memory.protocol_history(self.snapshot(), "P2")
-        self.assertEqual(len(history), 2)
-        self.assertTrue(history[0].content.startswith("（以下为项目 P1 的对话，结果不能作为当前项目的证据）\n"))
-        self.assertEqual(history[0].content.split("\n")[-1], "查询100到200环滚刀")
+        self.assertEqual(history, [])
         self.assertEqual(stats["other_project_turns"], 1)
         self.assertEqual(stats["tool_results"], 0)
         self.model.mode = "answer"
         result = self.assistant.chat("解释结果", {**self.options, "project_id": "P2"})
         self.assertFalse(result["success"])
         self.assertEqual(self.snapshot().message_count, 2)
+        self.assertNotIn("P1", str(convert_to_openai_messages(self.model.seen[-1])))
+
+    def test_project_switch_filters_model_history_and_history_pages(self):
+        self.ask("P1的独有问题")
+        self.ask("P2的独有问题", project_id="P2")
+        self.assertNotIn("P1", str(convert_to_openai_messages(self.model.seen[-1])))
+        for project in ("P2", "P1"):
+            page = self.assistant.get_history("event-test", project_id=project)
+            self.assertEqual([item["content"] for item in page["messages"] if item["role"] == "user"],
+                             [f"{project}的独有问题"])
+            self.assertEqual(page["context"]["history"]["other_project_turns"], 1)
+        self.ask("P1的第二问")
+        self.assertNotIn("P2", str(convert_to_openai_messages(self.model.seen[-1])))
+        page = self.assistant.get_history("event-test", project_id="P1", limit=2)
+        earlier = self.assistant.get_history("event-test", project_id="P1", limit=2,
+                                             before_sequence=page["next_before_sequence"])
+        self.assertTrue(page["has_more"])
+        self.assertFalse(earlier["has_more"])
+        self.assertIsNone(earlier["next_before_sequence"])
+        self.assertEqual([item["sequence"] for item in earlier["messages"] + page["messages"]],
+                         [item.sequence for item in self.snapshot().messages if item.sequence not in (3, 4)])
+
+    def test_changed_scope_withholds_history_slots_and_evidence(self):
+        self.ask("旧范围100到200环滚刀换刀情况")
+        self.assertTrue(self.snapshot().slots)
+        self.assertEqual(authorized_snapshot(self.snapshot(), "P1", "narrower-scope").slots, {})
+        with patch("application.ai_assistant.llm_service.access_stamp", return_value="narrower-scope"):
+            page = self.assistant.get_history("event-test", project_id="P1")
+            self.assertEqual(page["messages"], [])
+            self.assertEqual(page["memory"]["active_slots"], {})
+            self.assertEqual(page["context"]["history"]["other_project_turns"], 1)
+            self.model.mode = "answer"
+            result = self.assistant.chat("为什么换得这么多", self.options)
+            self.assertFalse(result["success"])
+            request = str(convert_to_openai_messages(self.model.seen[-1][1:]))
+            for forbidden in ("旧范围", "100", "DISC", "原始结果"):
+                self.assertNotIn(forbidden, request)
+            self.model.mode = "tools"
+            self.ask("新范围问题")
+            self.assertEqual(len(self.assistant.get_history("event-test", project_id="P1")["messages"]), 2)
+
+    def test_unstamped_or_unidentified_turns_never_reach_model_or_page(self):
+        for metadata in ({}, {"project_id": "P1"}, {"access_stamp": access_stamp("P1")}):
+            self.memory.append_turn(self.snapshot().scope_key, "未标记旧问题", "未标记旧答案", metadata=metadata,
+                                    slots={"ring_range": [100, 200], "tool_type": "DISC"})
+        page = self.assistant.get_history("event-test", project_id="P1")
+        self.assertEqual(page["messages"], [])
+        self.assertEqual(page["memory"]["active_slots"], {})
+        self.assertEqual(page["context"]["history"]["other_project_turns"], 3)
+        self.ask("新问题", context_mode="continue")
+        self.assertNotIn("未标记", str(convert_to_openai_messages(self.model.seen[-1])))
+        self.assertEqual(self.snapshot().slots, {})
+
+    def test_foreign_checkpoints_do_not_hide_authorized_turns(self):
+        self.ask()
+        for project, stamp in (("P2", access_stamp("P2")), ("P1", "old-scope")):
+            self.memory.append_compaction(self.snapshot(), project, {
+                "mode": "checkpoint", "through_sequence": self.snapshot().last_sequence,
+                "summary": "不应出现的摘要", "access_stamp": stamp,
+            })
+        full = self.snapshot()
+        filtered = authorized_snapshot(full, "P1", access_stamp("P1"))
+        self.assertEqual((filtered.message_count, filtered.latest_sequence, filtered.generation),
+                         (full.message_count, full.latest_sequence, full.generation))
+        history, stats, _ = self.memory.protocol_history(filtered, "P1")
+        self.assertEqual((stats["turns"], stats["summarized_turns"], stats["tool_results"]), (1, 0, 2))
+        self.assertNotIn("不应出现的摘要", str(convert_to_openai_messages(history)))
+        self.assertEqual(ContextEventStore.compactions(filtered.context_events), [])
+        self.model.mode = "answer"
+        self.ask("为什么换得这么多")
+        self.assertNotIn("不应出现的摘要", str(convert_to_openai_messages(self.model.seen[-1])))
 
     def test_legacy_qa_and_rule_turns_do_not_invent_evidence(self):
         self.memory.append_turn(self.memory.scope_key("event-test"), "旧问题", "旧回答")
@@ -184,9 +259,10 @@ class ContextEventTests(SimpleTestCase):
         self.ask("规则问题", route_mode="rule")
         snapshot = self.snapshot()
         self.assertEqual(snapshot.context_events, [])
-        history, stats, anchor = self.memory.protocol_history(snapshot, "P1")
-        self.assertEqual([message.content for message in history], ["旧问题", "旧回答", "规则问题", "规则回答"])
-        self.assertEqual(stats["legacy_qa_turns"], 2)
+        history, stats, anchor = self.memory.protocol_history(authorized_snapshot(snapshot, "P1", access_stamp("P1")), "P1")
+        self.assertEqual([message.content for message in history], ["规则问题", "规则回答"])
+        self.assertEqual(stats["legacy_qa_turns"], 1)
+        self.assertEqual(stats["other_project_turns"], 1)
         self.assertIsNone(anchor)
 
     def test_broken_pairs_or_hash_fall_back_to_qa(self):
@@ -356,12 +432,13 @@ class ContextEventTests(SimpleTestCase):
 
     def test_history_answers_only_what_an_earlier_query_covers(self):
         self.queried("查询100到200环换刀情况", ring_range=[100, 200])
-        for query in ("查询120到150环换刀情况", "为什么换得这么多", "查询100到200环刮刀换刀情况"):
+        for query in ("查询100到200环换刀情况", "为什么换得这么多"):
             result = self.assistant.chat(query, self.options)
             self.assertTrue(result["success"], (query, result))
             self.assertEqual(result["context"]["model_calls"], 1, query)
         turns = self.snapshot().message_count
-        for query in ("查询300到400环换刀情况", "全部环段的换刀情况", "最新的换刀情况"):
+        for query in ("查询120到150环换刀情况", "查询100到200环刮刀换刀情况", "查询100到200环换刀趋势",
+                      "查询300到400环换刀情况", "全部环段的换刀情况", "最新的换刀情况"):
             result = self.assistant.chat(query, self.options)
             self.assertFalse(result["success"], query)
         self.assertEqual(self.snapshot().message_count, turns)
@@ -371,12 +448,52 @@ class ContextEventTests(SimpleTestCase):
         self.assertFalse(self.assistant.chat("查询100到200环刮刀换刀情况", self.options)["success"])
         self.assertTrue(self.assistant.chat("查询100到200环滚刀换刀情况", self.options)["success"])
 
+    def test_history_requires_matching_intent_and_controls_from_the_calling_turn(self):
+        question = "查询100到200环换刀趋势，按50环分段"
+        self.queried(question, ring_range=[200, 100])
+        snapshot = authorized_snapshot(self.snapshot(), "P1", access_stamp("P1"))
+        history = self.assistant._memory_messages(snapshot, self.options)
+        spec = snapshot.messages[0].metadata["query_intent"]
+        context = {**self.options, "memory_snapshot": snapshot, "memory_slots": {"ring_range": [100, 200]},
+                   "query_spec": spec}
+        self.assertTrue(self.assistant._history_evidence_covers(history, context, question))
+        self.assertTrue(self.assistant._history_evidence_covers(history, context, " 查询100到200环换刀趋势 按50环分段？"))
+        self.assertFalse(self.assistant._history_evidence_covers(history, context, "查询100到200环草稿换刀趋势，按50环分段"))
+        self.assertFalse(self.assistant._history_evidence_covers(history, context, "查询100到200环换刀趋势，按5.0环分段"))
+        self.assertFalse(self.assistant._history_evidence_covers(history, context, "查询100到200环换刀趋势，按5，0环分段"))
+        for change in ({"interval": 100}, {"details": True}, {"concentrated": True}, {"intent": "tool_change_summary"}):
+            self.assertFalse(self.assistant._history_evidence_covers(history, {**context, "query_spec": {**spec, **change}},
+                                                                   question))
+        self.assertFalse(self.assistant._history_evidence_covers(history, {**context, "query_spec": {}}, question))
+        snapshot.messages[0].metadata.pop("query_intent")
+        self.assertFalse(self.assistant._history_evidence_covers(history, context, question))
+
+    def test_history_does_not_cover_a_question_with_an_unscoped_condition(self):
+        # 草稿/已确认这类条件不在范围槽位和意图里，问句不同就要重查
+        self.queried("查询100到200环已确认开仓记录", ring_range=[100, 200])
+        self.assertFalse(self.assistant.chat("查询100到200环草稿开仓记录", self.options)["success"])
+        self.assertTrue(self.assistant.chat("查询100到200环已确认开仓记录", self.options)["success"])
+
+    def test_slots_need_the_last_stored_turn_to_be_authorized(self):
+        messages = [StoredMessage(1, "human", "P1问题", metadata={"project_id": "P1", "access_stamp": "s1"}),
+                    StoredMessage(2, "ai", "P1回答"),
+                    StoredMessage(3, "human", "P2问题", metadata={"project_id": "P2", "access_stamp": "s2"})]
+        slots = {"ring_range": [300, 400]}
+        # P2 的回答行损坏未解码：存储里最后一条是序号 4，槽位由 P2 那一轮写入
+        tail_damaged = MemorySnapshot(scope_key="user:1", backend="legacy", slots=slots, messages=messages, latest_sequence=4)
+        self.assertEqual(authorized_snapshot(tail_damaged, "P1", "s1").slots, {})
+        complete = MemorySnapshot(scope_key="user:1", backend="legacy", slots=slots, messages=messages[:2], latest_sequence=2)
+        self.assertEqual(authorized_snapshot(complete, "P1", "s1").slots, slots)
+
     async def test_stream_requires_a_query_for_a_new_range(self):
         self.queried("查询100到200环换刀情况", ring_range=[100, 200])
         events = [event async for event in self.assistant.chat_stream("查询300到400环换刀情况", self.options)]
         self.assertEqual(events[-1]["type"], "error", events)
         self.assertFalse(any(event["type"] == "chunk" for event in events))
         events = [event async for event in self.assistant.chat_stream("查询120到150环换刀情况", self.options)]
+        self.assertEqual(events[-1]["type"], "error", events)
+        self.assertFalse(any(event["type"] == "chunk" for event in events))
+        events = [event async for event in self.assistant.chat_stream("查询100到200环换刀情况", self.options)]
         self.assertEqual(events[-1]["type"], "done", events)
         memory = next(event for event in events if event["type"] == "memory")
         self.assertEqual(memory["turn_sequences"], [item.sequence for item in self.snapshot().messages[-2:]])
@@ -403,7 +520,8 @@ class ContextEventTests(SimpleTestCase):
         self.assertEqual(snapshot.message_count, 2)
 
     def test_full_history_asks_for_a_reset_instead_of_a_smaller_range(self):
-        self.memory.append_turn(self.memory.scope_key("event-test"), "旧问题", "长" * 300000)
+        self.memory.append_turn(self.memory.scope_key("event-test"), "旧问题", "长" * 300000,
+                                metadata={"project_id": "P1", "access_stamp": access_stamp("P1")})
         self.model.mode = "answer"
         # 整理不出空间时（如 Django 后端）才走到这条提示；能整理的情况见 test_history_compaction
         self.assistant._compaction_check = lambda snapshot, context, text: (
@@ -416,3 +534,69 @@ class ContextEventTests(SimpleTestCase):
         self.assistant.reset_memory("event-test")
         self.assistant._model_needs_tools = Mock(return_value=False)
         self.assertTrue(self.assistant.chat("你好", self.options)["success"])
+
+
+class HistoryAccessTests(TestCase):
+    def setUp(self):
+        self.dept = Dept.objects.create(name="历史授权部门")
+        self.user = Users.objects.create(username="history-user", dept=self.dept)
+        role = Role.objects.create(name="历史授权角色", key="history-role", status=True)
+        self.user.role.add(role)
+        menu = Menu.objects.create(name="历史授权测试")
+        button = MenuButton.objects.create(menu=menu, name="总览", value="HistoryOverview", method=0,
+                                           api="/api/shield/analysis/overview/")
+        self.permission = RoleMenuButtonPermission.objects.create(role=role, menu_button=button, data_range=2)
+        ProjectInfo.objects.create(project_id="P1", project_name="项目一", dept_belong_id=self.dept.pk, creator=self.user)
+        token = ANALYSIS_REQUEST.set(views._analysis_scope_request(self.user))
+        self.addCleanup(ANALYSIS_REQUEST.reset, token)
+
+    def test_stamp_tracks_filter_sql_and_empty_scope(self):
+        original = access_stamp("P1")
+        self.assertEqual(original, access_stamp("P1"))
+        self.assertNotEqual(original, access_stamp("P2"))
+        self.permission.data_range = 0
+        self.permission.save()
+        own = access_stamp("P1")
+        self.assertNotEqual(original, own)
+        self.user.dept = Dept.objects.create(name="新部门")
+        self.assertNotEqual(own, access_stamp("P1"))
+        self.user.is_superuser = True
+        unrestricted = access_stamp("P1")
+        self.assertNotEqual(original, unrestricted)
+        token = ANALYSIS_REQUEST.set(None)
+        try:
+            self.assertEqual(unrestricted, access_stamp("P1"))
+        finally:
+            ANALYSIS_REQUEST.reset(token)
+        self.user.is_superuser = False
+        self.permission.delete()
+        empty = access_stamp("P1")
+        self.assertEqual(empty, access_stamp("P1"))
+        self.assertNotEqual(empty, original)
+
+    def test_history_endpoint_resolves_project_and_rechecks_permissions(self):
+        snapshot = MemorySnapshot(scope_key=f"user:{self.user.pk}", slots={"ring_range": [100, 200]}, messages=[
+            StoredMessage(1, "human", "授权问题", metadata={"project_id": "P1", "access_stamp": access_stamp("P1")}),
+            StoredMessage(2, "ai", "授权答案"),
+        ])
+        assistant = ToolAssistant()
+        assistant._load_memory = Mock(return_value=snapshot)
+        assistant._baseline_context = Mock(return_value=None)
+        request = RequestFactory().get("/api/ai/history/")
+        force_authenticate(request, user=self.user)
+        with patch.object(views, "get_assistant", return_value=assistant):
+            response = views.conversation_history(request)
+            self.assertEqual(response.data["code"], 2000)
+            self.assertEqual(len(response.data["data"]["messages"]), 2)
+            self.assertEqual(assistant._baseline_context.call_args.args[1], "P1")
+            self.permission.data_range = 0
+            self.permission.save()
+            response = views.conversation_history(request)
+            self.assertEqual(response.data["code"], 2000)
+            self.assertEqual(response.data["data"]["messages"], [])
+            self.assertEqual(response.data["data"]["memory"]["active_slots"], {})
+            denied = RequestFactory().get("/api/ai/history/", {"project_id": "P2"})
+            force_authenticate(denied, user=self.user)
+            self.assertEqual(views.conversation_history(denied).status_code, 403)
+            with self.assertRaisesMessage(PermissionError, "无权查看该项目的数据"):
+                views._context_for_user(self.user, {"project_id": "P2"})

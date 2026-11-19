@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 
 from application.ai_assistant.llm_service import ToolAssistant
 from application.ai_assistant.memory_service import MemoryService, MemorySnapshot, StoredMessage
+from application.ai_assistant.history_access import access_stamp
 
 
 class MemoryPathTests(SimpleTestCase):
@@ -201,7 +202,9 @@ class MemoryPathTests(SimpleTestCase):
 
     async def test_sync_and_stream_save_same_effective_slots_and_original_question(self):
         snapshot = MemorySnapshot(scope_key="user:1", slots={"ring_range": [100, 300], "tool_type": "DISC", "cutter_position_no": "30"})
-        snapshot.messages = [StoredMessage(1, "human", "统计100环到300环滚刀换刀情况", 5), StoredMessage(2, "ai", "旧回答", 5)]
+        snapshot.messages = [StoredMessage(1, "human", "统计100环到300环滚刀换刀情况", 5,
+                                           metadata={"project_id": "TEST", "access_stamp": access_stamp("TEST")}),
+                             StoredMessage(2, "ai", "旧回答", 5)]
         assistant = ToolAssistant()
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._direct_route = Mock(return_value={"answer": "已查询", "type": "analysis", "rule_branch": "tool_change_summary"})

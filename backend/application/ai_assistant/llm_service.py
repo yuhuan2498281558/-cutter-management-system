@@ -55,6 +55,7 @@ from .tool_contracts import (
     CostCatalogQuery, RegisteredAmountsQuery, DataCatalogQuery, ToolMileageQuery,
 )
 from .memory_service import MemoryService, MemorySnapshot
+from .history_access import access_stamp, authorized_snapshot
 from .summary_worker import schedule_summary
 from .answer_reporting import (render_report, render_abnormal_cause, display, number, percent,
                                requested_sections, opening_positions, opening_means,
@@ -816,20 +817,24 @@ _SCOPE_KEYS = ("ring_range", "tool_type", "cutter_position_no")
 
 
 def _call_covers(args: dict, scope: dict) -> bool:
-    """一次历史查询覆盖本轮范围：它带的每个筛选条件，本轮都有且落在其内。"""
-    ring = args.get("ring_range")
-    if ring:
+    # 全段合计不能推出子段合计，筛选条件必须完全相同。
+    if args.get("ring_range") or scope.get("ring_range"):
         try:
-            low, high = sorted(int(value) for value in ring)
+            low, high = sorted(int(value) for value in args.get("ring_range") or ())
             start, end = sorted(int(value) for value in scope.get("ring_range") or ())
         except (TypeError, ValueError):
             return False
-        if start < low or end > high:
+        if (start, end) != (low, high):
             return False
     for key in ("tool_type", "cutter_position_no"):
-        if args.get(key) and str(args[key]).upper() != str(scope.get(key) or "").upper():
+        if str(args.get(key) or "").upper() != str(scope.get(key) or "").upper():
             return False
     return True
+
+
+def _question_key(text: str) -> str:
+    # 空白和标点归成一个空格而不是删掉，小数点保留：“1.5万”与“15万”、“10，20环”与“1020环”不能算同一句
+    return re.sub(r"[\s，。,？?！!、；;：:]+", " ", text or "").strip()
 
 
 # 供应商报上下文超长的说法；命中时整理历史后重试一次
@@ -1226,7 +1231,8 @@ class ToolAssistant:
             trial_history, trial_anchor = self._replayed_history(candidate, working_context)
             return trial_history, self._first_request_tokens(trial_history, enriched_input, trial_anchor)
 
-        payload = {"mode": "prune", "through_sequence": boundary, "before": before}
+        payload = {"mode": "prune", "through_sequence": boundary, "before": before,
+                   "access_stamp": working_context["access_stamp"]}
         if boundary > pruned:
             pruned_history, after = trial(payload)
             if after > policy.trigger_tokens or force:
@@ -1237,13 +1243,15 @@ class ToolAssistant:
             material = [item for item in _history_turns(history) if item[0] is None or item[0] <= boundary]
         if payload is None:
             summary = self._write_checkpoint(material, snapshot, config)
-            payload = {"mode": "checkpoint", "through_sequence": boundary, "summary": summary, "before": before}
+            payload = {"mode": "checkpoint", "through_sequence": boundary, "summary": summary, "before": before,
+                       "access_stamp": working_context["access_stamp"]}
             _, after = trial(payload)
         payload["after"] = after
         saved = self.memory.append_compaction(snapshot, project_id, payload)
         if saved is None:
             # 对话已被重置：不改历史，本轮按原样继续，保存时会因 generation 变化而拒绝
             return snapshot, self._replayed_history(snapshot, working_context)[0]
+        saved = authorized_snapshot(saved, project_id, working_context["access_stamp"])
         logger.info("AI 历史已整理 mode=%s through=%s before=%s after=%s",
                     payload["mode"], boundary, before, after)
         return saved, self._replayed_history(saved, working_context)[0]
@@ -3108,7 +3116,7 @@ class ToolAssistant:
         return isinstance(observation, dict) and bool(observation) and not observation.get('error')
 
     def _history_evidence_covers(self, history_messages, working_context, query) -> bool:
-        """同项目历史里有一次成功查询覆盖本轮的类型和范围时，本轮才可以不重新查库。"""
+        """获授权的历史调用与本轮筛选和指标一致时，才可免于重查。"""
         if not working_context.get("project_id") or _LATEST_STATE.search(query):
             return False
         succeeded = {
@@ -3116,7 +3124,8 @@ class ToolAssistant:
             if isinstance(message, ToolMessage) and self._tool_observation_succeeded(message)
         }
         calls = [
-            call for message in history_messages if isinstance(message, AIMessage)
+            (sequence, call) for sequence, messages in _history_turns(history_messages)
+            for message in messages if isinstance(message, AIMessage)
             for call in message.tool_calls
             if call.get("id") in succeeded and call.get("name") != tool_query_data_catalog.name
         ]
@@ -3128,11 +3137,20 @@ class ToolAssistant:
         # 没写范围、针对上一个回答的追问（为什么、解释、这些刀位里……）直接用历史
         if not scope and (not working_context.get("query_spec") or _REFERS_TO_ANSWER.search(query)):
             return True
+        spec = self._validated_query_spec(working_context.get("query_spec"))
+        if not spec:
+            return False
+        # 状态、厂家、地层等条件不在范围槽位和意图里，只能要求问句本身相同（忽略空白和标点）
+        asked = (spec, _question_key(query))
+        turns = {answer.sequence: (self._validated_query_spec(question.metadata.get("query_intent")),
+                                   _question_key(question.content))
+                 for question, answer in self.memory._complete_turns(working_context["memory_snapshot"].messages)}
         group = self._tool_group_for_query(query)
         names = None if group == "all" else {item.name for item in TOOL_GROUPS[group]}
         return any(
-            (names is None or call["name"] in names) and _call_covers(call.get("args") or {}, scope)
-            for call in calls
+            turns.get(sequence) == asked and (names is None or call["name"] in names)
+            and _call_covers(call.get("args") or {}, scope)
+            for sequence, call in calls
         )
 
     @staticmethod
@@ -3363,8 +3381,12 @@ class ToolAssistant:
             return payload
 
         try:
+            project_id = (context or {}).get("project_id", "")
+            stamp = await sync_to_async(access_stamp)(project_id)
             memory_snapshot = await sync_to_async(self._load_memory)(user_id)
+            memory_snapshot = authorized_snapshot(memory_snapshot, project_id, stamp)
             working_context = await sync_to_async(self._prepare_query_context)(user_query, memory_snapshot, context)
+            working_context["access_stamp"] = stamp
             if self._route_mode_for_context(working_context) == "rule":
                 working_context.pop("focus_sources", None)
             resolved_slots = working_context["memory_slots"]
@@ -3506,6 +3528,7 @@ class ToolAssistant:
                         if compacted is None:
                             raise error
                         memory_snapshot, history_messages = compacted
+                        working_context["memory_snapshot"] = memory_snapshot
                         history_evidence = self._history_evidence_covers(history_messages, working_context, user_query)
                         overflow_retried = True
                         continue
@@ -3544,7 +3567,8 @@ class ToolAssistant:
             if not answer.strip():
                 raise RuntimeError("未生成完整回答，请重试")
             metadata = {"route": route_info["route"], "route_stage": route_stage,
-                        "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", "")}
+                        "query_intent": working_context["query_spec"], "project_id": working_context.get("project_id", ""),
+                        "access_stamp": stamp}
             if direct:
                 metadata["rule_branch"] = direct.get("rule_branch")
             elif needs_tools:
@@ -3596,16 +3620,19 @@ class ToolAssistant:
 
     def get_history(self, user_id: str, *, before_sequence=None, limit=50, project_id=None) -> dict:
         """返回用户记忆中的对话消息与诊断信息，用于前端刷新后回填。只读，不触发模型调用。"""
-        snapshot = self._load_memory(str(user_id))
+        project_id = str(project_id or "")
+        snapshot = authorized_snapshot(self._load_memory(str(user_id)), project_id, access_stamp(project_id))
         context = self._baseline_context(snapshot, project_id)
         if snapshot.backend == 'ablate':
             return {"messages": [], "memory": self._memory_diagnostics(snapshot), "context": context,
                     "has_more": False, "next_before_sequence": None}
-        page = self.memory.history_page(
-            self.memory.scope_key(user_id),
-            owner_id=int(user_id) if str(user_id).isdigit() else None,
-            before_sequence=before_sequence, limit=limit,
-        )
+        limit = max(1, min(int(limit), 100))
+        if before_sequence is not None and int(before_sequence) < 1:
+            raise ValueError("before_sequence must be positive")
+        messages = [item for item in reversed(snapshot.messages)
+                    if before_sequence is None or item.sequence < int(before_sequence)]
+        selected = list(reversed(messages[:limit]))
+        has_more = len(messages) > limit
         return {
             "messages": [
                 {
@@ -3613,12 +3640,12 @@ class ToolAssistant:
                     "content": item.content,
                     "sequence": item.sequence,
                 }
-                for item in page['messages']
+                for item in selected
             ],
             "memory": self._memory_diagnostics(snapshot),
             "context": context,
-            "has_more": page['has_more'],
-            "next_before_sequence": page['next_before_sequence'],
+            "has_more": has_more,
+            "next_before_sequence": selected[0].sequence if has_more else None,
         }
 
     def reset_memory(self, user_id: str = None):

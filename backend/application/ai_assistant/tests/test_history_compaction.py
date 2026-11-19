@@ -9,6 +9,7 @@ from application.ai_assistant.context_events import (
     CHECKPOINT_HEADER, PRUNED_HEADER, ContextEventStore, prune_tool_content,
 )
 from application.ai_assistant.llm_service import _history_turns, _unsupported_numbers
+from application.ai_assistant.history_access import access_stamp
 # 只引用模块：把测试类导入到本模块会让测试运行器把它的用例再跑一遍
 from application.ai_assistant.tests import test_context_events as events_module
 
@@ -17,7 +18,7 @@ LARGE = json.dumps({
     "summary": {"total_records": 300, "unit": "把", "ring_range": [100, 399]},
     "rows": [{"ring_no": 100 + i, "cutter_position_no": f"S{i % 19 + 1}L", "count": i % 7} for i in range(300)],
 }, ensure_ascii=False)
-CONTEXT = {"project_id": "P1"}
+CONTEXT = {"project_id": "P1", "access_stamp": access_stamp("P1")}
 
 
 class HistoryCompactionTests(SimpleTestCase):

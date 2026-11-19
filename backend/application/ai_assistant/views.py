@@ -45,6 +45,13 @@ def _resolve_request_project_id(project_id=None) -> str:
     return str(project_ids[0]) if len(project_ids) == 1 else ""
 
 
+def _authorized_project_id(project_id=None) -> str:
+    project_id = _resolve_request_project_id(project_id)
+    if project_id and not scoped_queryset(ProjectInfo.objects.filter(project_id=project_id)).exists():
+        raise PermissionError("无权查看该项目的数据")
+    return project_id
+
+
 def success(data):
     return Response({'code': 2000, 'data': data, 'msg': 'success'})
 
@@ -131,10 +138,8 @@ def _context_for_user(user, body, token=None) -> dict:
     }
     scope_token = ANALYSIS_REQUEST.set(ctx["data_scope"])
     try:
-        project_id = _resolve_request_project_id(body.get("project_id"))
+        project_id = _authorized_project_id(body.get("project_id"))
         if project_id:
-            if not scoped_queryset(ProjectInfo.objects.filter(project_id=project_id)).exists():
-                raise PermissionError("无权查看该项目的数据")
             ctx["project_id"] = project_id
             ctx.update(_build_project_snapshot(project_id))
     finally:
@@ -360,8 +365,15 @@ def conversation_history(request):
         except (TypeError, ValueError):
             return error('历史分页参数格式错误')
         memory_user_id = _memory_user_id(request.user, request.auth)
-        return success(assistant.get_history(str(memory_user_id), before_sequence=before, limit=limit,
-                                             project_id=request.query_params.get('project_id')))
+        scope_token = ANALYSIS_REQUEST.set(_analysis_scope_request(request.user))
+        try:
+            project_id = _authorized_project_id(request.query_params.get('project_id'))
+            return success(assistant.get_history(str(memory_user_id), before_sequence=before, limit=limit,
+                                                 project_id=project_id))
+        finally:
+            ANALYSIS_REQUEST.reset(scope_token)
+    except PermissionError:
+        return Response({'code': 4030, 'data': None, 'msg': '无权查看该项目的数据'}, status=403)
     except Exception as e:
         logger.error(f"获取对话历史失败：{e}")
         return error(f"获取历史失败：{str(e)}")

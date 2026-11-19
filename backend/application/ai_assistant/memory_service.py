@@ -92,6 +92,7 @@ class MemorySnapshot:
     summary_messages: list[StoredMessage] | None = field(default=None, repr=False)
     summary_source_truncated: bool = field(default=False, repr=False)
     context_events: list = field(default_factory=list, repr=False)
+    withheld_turns: int = 0
 
     @property
     def last_sequence(self) -> int:
@@ -348,9 +349,11 @@ class MemoryService:
         return replace(snapshot, context_events=[*snapshot.context_events, turn])
 
     def protocol_history(self, snapshot, project_id=None):
-        return ContextEventStore.replay(
+        messages, stats, anchor = ContextEventStore.replay(
             self._complete_turns(snapshot.messages), snapshot.context_events, project_id,
         )
+        stats["other_project_turns"] += snapshot.withheld_turns
+        return messages, stats, anchor
 
     def context_info(self, snapshot: MemorySnapshot, include_recent: bool = True) -> dict:
         recent = self.context_messages(snapshot) if include_recent else []
@@ -566,7 +569,7 @@ class MemoryService:
             if context_messages is not None:
                 ContextEventStore.append(
                     connection, scope_key, scope["generation"], (metadata or {}).get("project_id"),
-                    sequences, context_messages, usage,
+                    sequences, context_messages, usage, access_stamp=(metadata or {}).get("access_stamp"),
                 )
         return True
 

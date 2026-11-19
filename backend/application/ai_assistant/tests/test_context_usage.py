@@ -23,6 +23,7 @@ from application.ai_assistant.context_compaction import COLUMNAR_FORMAT
 from application.ai_assistant.llm_provider import LLMProviderError
 from application.ai_assistant.llm_service import ToolAssistant
 from application.ai_assistant.memory_service import MemoryService, MemorySnapshot, StoredMessage
+from application.ai_assistant.history_access import access_stamp
 from application.ai_assistant.tests.test_context_budget import RecordingModel
 from application.ai_assistant.tests.test_context_budget_agent import RecordingToolModel, trend_payload
 from application.ai_assistant.token_estimation import estimate_tokens
@@ -222,7 +223,8 @@ class ContextUsageTests(SimpleTestCase):
     def test_history_baseline_reports_selected_memory_for_both_backends(self):
         for backend in ("legacy", "django"):
             snapshot = MemorySnapshot(scope_key="user:1", backend=backend, summary="已有摘要", messages=[
-                StoredMessage(index, "human" if index % 2 else "ai", "历史内容", 12) for index in range(1, 9)
+                StoredMessage(index, "human" if index % 2 else "ai", "历史内容", 12,
+                              metadata={"project_id": "P1", "access_stamp": access_stamp("P1")}) for index in range(1, 9)
             ])
             model = RecordingToolModel(use_tool=False)
             assistant = self.make_assistant(GuardedChatModel(model, ContextBudgetPolicy(32768)), snapshot)
@@ -231,7 +233,9 @@ class ContextUsageTests(SimpleTestCase):
                                                               "has_more": False, "next_before_sequence": None})
             request = RequestFactory().get("/api/ai/history/")
             force_authenticate(request, user=SimpleNamespace(id=1, username="test-user", is_authenticated=True))
-            with patch.object(views, "get_assistant", return_value=assistant):
+            with (patch.object(views, "get_assistant", return_value=assistant),
+                  patch.object(views, "_authorized_project_id", return_value="P1"),
+                  patch.object(views, "_analysis_scope_request", return_value=None)):
                 response = views.conversation_history(request)
             self.assertEqual(response.data["code"], 2000)
             info = response.data["data"]["context"]
