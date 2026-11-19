@@ -1,5 +1,5 @@
 <template>
-	<div v-show="!showCount" class="dept-user-com-box dept-info">
+	<div v-show="!showCount" ref="deptInfoRef" class="dept-user-com-box dept-info">
 		<div class="di-left">
 			<h3>{{ deptInfo.dept_name || '' }}</h3>
 			<div class="di-cell">
@@ -27,8 +27,8 @@
 				/>
 			</div>
 		</div>
-		<div style="height: 180px; width: 380px" ref="deptCountBar"></div>
-		<div style="height: 180px; width: 200px" ref="deptSexPie"></div>
+		<div v-show="infoWidth >= BAR_MIN_WIDTH" ref="deptCountBar" class="di-chart di-chart--bar"></div>
+		<div v-show="infoWidth >= PIE_MIN_WIDTH" ref="deptSexPie" class="di-chart di-chart--pie"></div>
 	</div>
 
 	<fs-crud
@@ -59,19 +59,26 @@
 </template>
 
 <script lang="ts" setup name="user">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useExpose, useCrud } from '@fast-crud/fast-crud';
 import { Md5 } from 'ts-md5';
 import { createCrudOptions } from './crud';
-;
-import * as echarts from 'echarts';
+import importExcel from '/@/components/importExcel/index.vue';
 import { ECharts, EChartsOption, init } from 'echarts';
+import { CHART_COLORS, DV_PALETTE } from '/@/views/shield/analysis/utils/chartTheme';
 import { getDeptInfoById, resetPwd } from './api';
 import { warningNotification, successNotification } from '/@/utils/message';
 import { HeadDeptInfoType } from '../../types';
 
 let deptCountChart: ECharts;
 let deptSexChart: ECharts;
+let chartResizeObserver: ResizeObserver | null = null;
+
+// 部门信息区放不下时先收起柱状图，再窄就只留文字（柱状图至少约 260px 宽，饼图 200px）
+const BAR_MIN_WIDTH = 720;
+const PIE_MIN_WIDTH = 440;
+const deptInfoRef = ref<HTMLElement>();
+const infoWidth = ref(0);
 
 // crud组件的ref
 const crudRef = ref();
@@ -124,23 +131,21 @@ const initDeptCountBarChart = () => {
 			},
 		],
 		grid: {
-			top: '6%',
-			right: '5%',
-			bottom: '10%',
-			left: '10%',
+			top: 12,
+			right: 8,
+			bottom: 4,
+			left: 4,
+			containLabel: true,
 		},
 		series: [
 			{
 				data: yAxisData,
 				type: 'bar',
 				barWidth: '60%',
-				showBackground: true,
+				barMaxWidth: 32,
 				itemStyle: {
-					color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-						{ offset: 0, color: '#83bff6' },
-						{ offset: 0.5, color: '#188df0' },
-						{ offset: 1, color: '#188df0' },
-					]),
+					color: CHART_COLORS.primary,
+					borderRadius: [3, 3, 0, 0],
 				},
 			},
 		],
@@ -174,7 +179,7 @@ const initDeptSexPieChart = () => {
 					show: false,
 					position: 'center',
 				},
-				color: ['#188df0', '#f56c6c', '#dcdfe6'],
+				color: [CHART_COLORS.primary, DV_PALETTE[6], CHART_COLORS.neutral],
 				data: [
 					{ value: deptInfo.value.gender?.male || 0, name: '男' },
 					{ value: deptInfo.value.gender?.female || 0, name: '女' },
@@ -250,11 +255,28 @@ const handleResetPwdSubmit = async () => {
 	}
 };
 
-onMounted(() => {
-	deptCountChart = init(deptCountBar.value as HTMLElement);
-	deptSexChart = init(deptSexPie.value as HTMLElement);
+onMounted(async () => {
+	// 先按当前宽度定好显示哪些图，再初始化，免得在隐藏的元素上建图
+	infoWidth.value = deptInfoRef.value?.clientWidth || 0;
+	await nextTick();
+	deptCountChart = init(deptCountBar.value as HTMLElement, 'dv');
+	deptSexChart = init(deptSexPie.value as HTMLElement, 'dv');
+	// 信息区变宽变窄（窗口缩放、侧栏收起、隐藏后再显示）时，按新宽度决定显示哪些图并重排；隐藏着的图不重排
+	chartResizeObserver = new ResizeObserver(() => {
+		infoWidth.value = deptInfoRef.value?.clientWidth || 0;
+		[deptCountChart, deptSexChart].forEach((chart) => {
+			if (chart.getDom().clientWidth) chart.resize();
+		});
+	});
+	[deptInfoRef.value, deptCountBar.value, deptSexPie.value].forEach((el) => el && chartResizeObserver?.observe(el));
 	getDeptInfo();
-  crudExpose.doRefresh();
+	crudExpose.doRefresh();
+});
+
+onBeforeUnmount(() => {
+	chartResizeObserver?.disconnect();
+	deptCountChart?.dispose();
+	deptSexChart?.dispose();
 });
 
 defineExpose({
@@ -285,15 +307,32 @@ const { resetCrudOptions } = useCrud({
 .dept-user-com-table-cover {
 	height: 100%;
 }
+// 左边文字固定宽，柱状图占剩下的宽度，饼图（带右侧图例）固定 200px
 .dept-info {
 	width: 100%;
 	height: 200px;
 	display: flex;
 	align-items: center;
-	justify-content: space-around;
+	gap: 16px;
 	margin-bottom: 10px;
 
+	.di-chart {
+		height: 180px;
+		min-width: 0;
+	}
+
+	.di-chart--bar {
+		flex: 1 1 0;
+	}
+
+	.di-chart--pie {
+		flex: 0 0 200px;
+	}
+
 	.di-left {
+		flex: 0 0 210px;
+		min-width: 0;
+
 		h3 {
 			font-size: 18px;
 			font-weight: 900;

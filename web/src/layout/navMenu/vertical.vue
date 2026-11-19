@@ -7,7 +7,9 @@
 		:unique-opened="getThemeConfig.isUniqueOpened"
 		:collapse-transition="false"
 	>
-		<template v-for="val in menuLists">
+		<!-- 插槽 afterHome：紧跟在"首页"下面（侧边栏布局放"最近打开"）；菜单里没有首页时放在最上面 -->
+		<li v-if="$slots.afterHome && homeIndex < 0" class="layout-menu-after-home" role="none"><slot name="afterHome" /></li>
+		<template v-for="(val, k) in menuLists">
 			<el-sub-menu :index="val.path" v-if="val.children && val.children.length > 0" :key="val.path">
 				<template #title>
 					<SvgIcon :name="val.meta.icon" />
@@ -26,6 +28,7 @@
 					</template>
 				</el-menu-item>
 			</template>
+			<li v-if="$slots.afterHome && k === homeIndex" :key="`${val.path}-after`" class="layout-menu-after-home" role="none"><slot name="afterHome" /></li>
 		</template>
 	</el-menu>
 </template>
@@ -63,6 +66,8 @@ const state = reactive({
 const menuLists = computed(() => {
 	return <RouteItems>props.menuList;
 });
+// "首页"在一级菜单里的位置，插槽 afterHome 放在它后面
+const homeIndex = computed(() => menuLists.value.findIndex((val) => val.path === '/home'));
 // 获取布局配置信息
 const getThemeConfig = computed(() => {
 	return themeConfig.value;

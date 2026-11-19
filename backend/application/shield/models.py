@@ -1,4 +1,7 @@
-from django.core.validators import RegexValidator
+import math
+
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator, RegexValidator
 from django.db import models, transaction
 from django.conf import settings
 from django.db.models import IntegerField
@@ -7,6 +10,12 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from dvadmin.utils.models import CoreModel
 from .cutter_position_scope import is_active_cutter_position
+
+
+def validate_finite(value):
+    # NaN、Infinity 能通过 MinValueValidator，存进去后接口无法序列化成 JSON
+    if value is not None and not math.isfinite(value):
+        raise ValidationError("必须是有限的数值")
 
 
 TOOL_TYPES = [
@@ -336,6 +345,11 @@ class ShieldTunnelingData(CoreModel):
     torque = models.FloatField(verbose_name="torque", null=True, blank=True)
     cutterhead_speed = models.FloatField(verbose_name="cutterhead speed", null=True, blank=True)
     penetration = models.FloatField(verbose_name="penetration", null=True, blank=True)
+    advance_speed = models.FloatField(verbose_name="advance speed", null=True, blank=True)
+    # 本段刀盘圈数（右转 + 左转）：counter 取 CSV 累计旋转数之差，integrated 取推进速度 ÷ 贯入度逐点积分。
+    # 各段首尾相接，一环各段相加即整环圈数；整环取不到时为空。
+    counter_revolutions = models.FloatField(verbose_name="counter revolutions", null=True, blank=True)
+    integrated_revolutions = models.FloatField(verbose_name="integrated revolutions", null=True, blank=True)
     record_time = models.DateTimeField(verbose_name="record time", null=True, blank=True)
     raw_parameters = models.JSONField(verbose_name="raw parameters", default=dict, blank=True)
     point_count = models.IntegerField(verbose_name="point count", default=0)
@@ -547,6 +561,15 @@ class WarehouseOpeningBasicInfo(CoreModel):
     tool_change_date = models.DateField(verbose_name="tool change date", blank=True, null=True)
     tool_change_duration = models.FloatField(verbose_name="tool change duration", blank=True, null=True)
     usage_distance = models.FloatField(verbose_name="usage distance", blank=True, null=True)
+    # 开仓时盾构机上刀盘右转、左转累计旋转数的读数；与同机上一次开仓相减得到期间刀盘圈数
+    right_revolution_reading = models.FloatField(
+        verbose_name="cutterhead right revolution reading", blank=True, null=True,
+        validators=[MinValueValidator(0), validate_finite],
+    )
+    left_revolution_reading = models.FloatField(
+        verbose_name="cutterhead left revolution reading", blank=True, null=True,
+        validators=[MinValueValidator(0), validate_finite],
+    )
 
     class Meta:
         verbose_name = "warehouse opening basic info"

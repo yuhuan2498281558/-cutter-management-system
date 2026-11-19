@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
+from decimal import Decimal
 
 from django.test import SimpleTestCase
 
@@ -67,7 +68,7 @@ class CurrentDataEvaluationTests(SimpleTestCase):
         cases = build_cases(evidence())
         self.assertEqual(len(cases), len({case.id for case in cases}))
         self.assertGreaterEqual(len(cases), 45)
-        self.assertLessEqual(len(cases), 60)
+        self.assertLessEqual(len(cases), 90)
         self.assertEqual(len(build_chains(evidence())), 10)
         inventory = next(case for case in cases if case.id == "inventory_available")
         self.assertTrue(inventory.gap)
@@ -114,9 +115,10 @@ class CurrentDataEvaluationTests(SimpleTestCase):
         connection.cursor.return_value.__exit__ = Mock(return_value=False)
         with patch("application.ai_assistant.evaluation.current_data_suite.connections", {"default": connection}), patch(
             "application.ai_assistant.evaluation.current_data_suite.transaction.atomic", return_value=nullcontext()
-        ):
+        ), patch('application.ai_assistant.evaluation.current_data_suite.transaction.set_rollback') as rollback:
             with readonly_database(timeout_ms=2345):
                 pass
+        rollback.assert_called_once_with(True, using='default')
         statements = [call.args[0] for call in cursor.execute.call_args_list]
         self.assertIn("READ ONLY", statements[0])
         self.assertIn("REPEATABLE READ", statements[0])
@@ -129,14 +131,15 @@ class CurrentDataEvaluationTests(SimpleTestCase):
             with self.assertRaisesMessage(RuntimeError, "forbids memory"):
                 assistant.memory.load("experiment:fixture")
 
-    def test_unsupported_cost_must_not_be_marked_correct_when_answering_recommendations(self):
+    def test_actual_cost_question_must_not_pass_unrelated_recommendations(self):
         assistant = SimpleNamespace(_direct_route=lambda question, context: {
             "rule_branch": "tool_recommendation", "answer": "fixture recommendation",
         })
         case = next(case for case in build_cases(evidence()) if case.id == "cost_project_total")
         row, _ = evaluate_case(assistant, [], evidence(), case)
-        self.assertEqual(row["status"], "coverage_gap")
-        self.assertTrue(row["correctness_errors"])
+        self.assertEqual(row["status"], "fail")
+        self.assertIn('Expected rule_branch registered_amounts', ' '.join(row['failures']))
+        self.assertTrue(row['expected_facts'])
 
     def test_long_chain_checks_intent_and_interval_after_original_question_expires(self):
         chain = next(chain for chain in build_chains(evidence()) if chain["id"] == "chain_trend_interval")
@@ -145,3 +148,77 @@ class CurrentDataEvaluationTests(SimpleTestCase):
             self.assertEqual(step["case"].tool, "query_tool_change_trend")
             self.assertEqual(step["case"].expected_branch, "change_trend")
             self.assertEqual(step["case"].params["interval"], 100)
+
+    def test_trend_tail_uses_last_observed_ring(self):
+        dataset = evidence([detail('1', ring='15'), detail('2', ring='487', replaced=True)])
+        case = QuestionCase('tail', 'trend', 'fixture', 'query_tool_change_trend', {'interval': 50})
+        self.assertEqual(expected_facts(dataset, case)['segments'][-1],
+                         {'ring_range': '465-487', 'total': 1, 'replaced': 1})
+        case.params['ring_range'] = [1, 300]
+        self.assertEqual(expected_facts(dataset, case)['segments'][0]['ring_range'], '15-15')
+
+    def test_new_cases_have_branch_and_explicit_specialized_parameters(self):
+        cases = {case.id: case for case in build_cases(evidence())}
+        self.assertEqual(cases['area_boulder'].params, {'rings': [2199], 'basis': 'longitudinal_area'})
+        self.assertEqual(cases['area_cross'].params['basis'], 'cross_section')
+        self.assertIn('manufacturers', cases['manufacturer_named'].params)
+        branches = {case.expected_branch for case in cases.values()}
+        self.assertTrue({'stratum_area', 'opening_stratum', 'tool_inspections', 'old_tool_repairs',
+                         'tool_lifecycle', 'manufacturer_service', 'tool_cost_catalog',
+                         'registered_amounts', 'data_catalog'} <= branches)
+        self.assertFalse(cases['repair_pending_total'].gap)
+        self.assertEqual(cases['confirmed_openings'].params['summary_status'], 'CONFIRMED')
+
+    def test_new_oracles_recompute_repairs_amounts_and_inspections(self):
+        row = detail('1', replaced=True)
+        row.update(price=Decimal('12.50'), check_result='NORMAL', mobile_status='SAVED')
+        attention = dict(detail('2'), id=2, check_result='ATTENTION', mobile_status='SAVED')
+        dataset = evidence([row, attention])
+        dataset.installations = [{'tool_change_detail_id': 1}]
+        dataset.repairs = [{'tool_change_detail_id': 1, 'inspection_status': 'PENDING_VENDOR_FEEDBACK',
+                            'disposition': 'SCRAP', 'repair_price': Decimal('7.50')}]
+        with patch('application.shield.analysis_metrics.confirmed_service_segments', side_effect=AssertionError('oracle reuse')), patch(
+            'application.shield.analysis_metrics.cost_source_rows', side_effect=AssertionError('oracle reuse')):
+            repairs = expected_facts(dataset, QuestionCase('r', '', '', 'query_old_tool_repairs'))
+            amounts = expected_facts(dataset, QuestionCase('a', '', '', 'query_registered_amounts'))
+            checks = expected_facts(dataset, QuestionCase('i', '', '', 'query_tool_inspections'))
+        self.assertEqual((repairs['scrapped_count'], repairs['scrap_suggestion_count']), (0, 1))
+        self.assertEqual(amounts['total_registered_cost_yuan'], 12.5)
+        self.assertEqual(amounts['pending_repair']['amount_yuan'], 7.5)
+        self.assertEqual(checks['attention_not_replaced']['record_count'], 1)
+
+    def test_area_oracle_keeps_two_bases_separate_and_first_opening_starts_at_one(self):
+        dataset = evidence()
+        dataset.strata = [{'ring_no': '100', 'stratum_type_codes': 'CLAY_SAND',
+                          'longitudinal_type_ratios': {'AREA_CLAY_SAND': 80, 'AREA_BOULDER': 20},
+                          'stratum_type_ratios': {'CLAY_3_3': 100}}]
+        case = QuestionCase('a', '', '', 'query_stratum_area', {'rings': [100], 'basis': 'longitudinal_area'})
+        with patch('application.shield.longitudinal_ratios.validate_longitudinal_ratios', side_effect=AssertionError('oracle reuse')):
+            area = expected_facts(dataset, case)
+        self.assertEqual(area['area_classes']['AREA_BOULDER']['share_pct'], 20)
+        case.params['basis'] = 'cross_section'
+        self.assertEqual(set(expected_facts(dataset, case)['area_classes']), {'CLAY_3_3'})
+        opening = expected_facts(dataset, QuestionCase('o', '', '', 'query_opening_stratum', {'ring_no': 100}))
+        self.assertEqual(opening['openings'][0]['interval'], [1, 100])
+
+    def test_manual_review_does_not_count_as_pass(self):
+        case = QuestionCase('m', '', '', 'query_tool_change_data', manual_review='服役环数需人工验收')
+        dataset = evidence()
+        calls = []
+        def route(question, context):
+            calls.append({'tool': case.tool, 'params': {'project_id': dataset.project_id}, 'result': {'total_records': 0}})
+            return {'answer': '未找到换刀记录。'}
+        row, _ = evaluate_case(SimpleNamespace(_direct_route=route), calls, dataset, case)
+        self.assertEqual(row['status'], 'coverage_gap')
+        self.assertEqual(row['coverage_gap'], case.manual_review)
+
+    def test_lifecycle_checks_removal_ring_from_business_relations(self):
+        start = dict(detail('1', ring='100', replaced=True), id=1)
+        end = dict(detail('1', ring='487', warehouse=2, replaced=True), id=2)
+        dataset = evidence([start, end])
+        dataset.lifecycle_samples = {'INSPECTED': {'tool_uid': 'FIXTURE-UID', 'instance_id': 7, 'lifecycle_status': 'INSPECTED'}}
+        dataset.installations = [{'tool_change_detail_id': 1, 'tool_instance_id': 7}]
+        dataset.repairs = [{'tool_change_detail_id': 2, 'confirmed_tool_instance_id': 7}]
+        result = expected_facts(dataset, QuestionCase('l', '', '', 'trace_tool_lifecycle', {'tool_ids': ['FIXTURE-UID']}))
+        self.assertEqual(result['results'][0]['service_segments'], [{'install_ring': 100, 'removal_ring': 487}])
+        self.assertNotIn('service_rings', result['results'][0]['service_segments'][0])

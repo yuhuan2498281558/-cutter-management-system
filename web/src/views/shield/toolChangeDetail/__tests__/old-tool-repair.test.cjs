@@ -367,6 +367,37 @@ test('draft preserves identity, false/zero values, arrays and files in the multi
   assert.equal(s.visible.value, false);
 });
 
+test('clearing a loaded select, number or boolean submits an empty string; fields empty on load stay omitted', async t => {
+  const loaded = {
+    old_tool_number: 'OLD-1', disposition: 'SCRAP', bearing_failed: true, scraper_chipped: false,
+    ring_wear_amount: 1.5, repair_price: 300, hub_damaged: null, bias_wear_amount: null,
+  };
+  const { state: s, writes } = setup(t, {
+    GetOldToolRecord: async id => ({ data: { old_tool_record_data: id === 1 ? loaded : { old_tool_number: 'OLD-2' } } }),
+  });
+  await s.open({ id: 1 });
+  // Element Plus clears a single select to undefined and an input-number to null.
+  Object.assign(s.form, {
+    disposition: undefined, bearing_failed: undefined, scraper_chipped: undefined,
+    ring_wear_amount: null, repair_price: null, hub_damaged: undefined,
+  });
+  await s.save('SAVE_DRAFT');
+  const data = writes[0].data;
+  for (const key of ['disposition', 'bearing_failed', 'scraper_chipped', 'ring_wear_amount', 'repair_price']) {
+    assert.equal(data.has(key), true, key);
+    assert.equal(data.get(key), '', key);
+  }
+  assert.equal(data.has('hub_damaged'), false);
+  assert.equal(data.has('bias_wear_amount'), false);
+  assert.equal(data.get('old_tool_number'), 'OLD-1');
+
+  await s.open({ id: 2 });
+  Object.assign(s.form, { disposition: undefined, repair_price: null });
+  await s.save('SAVE_DRAFT');
+  assert.equal(writes[1].data.has('disposition'), false);
+  assert.equal(writes[1].data.has('repair_price'), false);
+});
+
 test('save lock prevents duplicates and switching records while saving', async t => {
   const pending = deferred();
   let count = 0;

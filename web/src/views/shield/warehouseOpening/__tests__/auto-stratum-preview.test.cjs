@@ -47,6 +47,28 @@ test('missing inputs clear stale automatic fields without requesting and keep st
   assert.equal(Object.keys(form).some(key => /status|preview/i.test(key)), false);
 });
 
+test('non-digit ring numbers fail the form rule and wait without requesting a preview', () => {
+  const s = setup();
+  const rule = s.options.columns.ring_no.form.rules.find(item => item.pattern);
+  assert.equal(rule.message, '环号必须是纯数字');
+  assert.equal(rule.pattern.test('500'), true);
+  for (const ringNo of ['500环', '-5', '５００']) {
+    assert.equal(rule.pattern.test(ringNo), false, ringNo);
+    const form = { project: 1, ring_no: ringNo, ...data() };
+    s.open(form);
+    assert.equal(s.status(), 'waiting', ringNo);
+    assert.equal(s.timers.size, 0, ringNo);
+    assert.equal(form.geological_conditions, '', ringNo);
+  }
+  const form = { project: 1, ring_no: '500' };
+  s.open(form);
+  assert.equal(s.timers.size, 1);
+  form.ring_no = '500环'; s.change(form);
+  assert.equal(s.status(), 'waiting');
+  assert.equal(s.timers.size, 0);
+  assert.equal(s.calls.length, 0);
+});
+
 test('debounce sends only the newest project/ring/machine/record parameters', async () => {
   const s = setup(), form = { project: 1, ring_no: '100', shield_model: 11, id: 3, ...data() };
   s.open(form);

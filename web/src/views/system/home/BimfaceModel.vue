@@ -1,17 +1,19 @@
 <template>
   <div ref="wrapRef" class="bm-wrap">
-    <!-- 加载/错误遮罩 -->
-    <div v-if="modelState !== 'ready'" class="bm-overlay" :class="{ error: modelState === 'error' }">
-      <template v-if="modelState === 'loading'">
-        <el-icon class="spin"><Loading /></el-icon>
-        <span>正在加载 BIM 模型...</span>
-      </template>
-      <template v-else>
-        <el-icon><WarningFilled /></el-icon>
-        <span>{{ errorMsg }}</span>
-        <el-button size="small" type="primary" style="margin-top:8px" @click="initModel">重试</el-button>
-      </template>
-    </div>
+    <!-- 加载/错误遮罩：浅底，模型就绪后淡出 -->
+    <transition name="bm-fade">
+      <div v-if="modelState !== 'ready'" class="bm-overlay" :class="{ error: modelState === 'error' }">
+        <template v-if="modelState === 'loading'">
+          <span class="bm-spinner" aria-hidden="true"></span>
+          <span class="bm-overlay-text">正在加载 BIM 模型</span>
+        </template>
+        <template v-else>
+          <el-icon class="bm-overlay-icon"><WarningFilled /></el-icon>
+          <span class="bm-overlay-text">{{ errorMsg }}</span>
+          <el-button size="small" type="primary" @click="retryModel">重试</el-button>
+        </template>
+      </div>
+    </transition>
 
     <!-- BIMFace 容器 -->
     <div ref="bimContainer" class="bm-viewer"></div>
@@ -55,89 +57,17 @@
     </svg>
 
     <!-- 图例 -->
-    <div v-if="modelState === 'ready' && hasPositions" class="bm-legend">
-      <div v-for="item in LEGEND" :key="item.label" class="legend-item">
-        <span class="legend-dot" :style="{ background: item.fill, border: `1px solid ${item.stroke}` }"></span>
-        <span>{{ item.label }}</span>
-      </div>
+    <div v-if="modelState === 'ready' && (hasPositions || dataError)" class="bm-legend">
+      <div v-if="dataError" class="legend-error">刀位数据加载失败</div>
+      <template v-if="hasPositions">
+        <div v-for="item in LEGEND" :key="item.label" class="legend-item">
+          <span class="legend-dot" :style="{ background: item.fill, border: `1px solid ${item.stroke}` }"></span>
+          <span>{{ item.label }}</span>
+        </div>
+      </template>
     </div>
 
     <!-- 刀位信息面板 -->
-    <transition name="panel-slide">
-      <div v-if="false" class="bm-panel">
-        <div class="bm-panel-header">
-          <span>刀位详情 — {{ selectedCutter.code }}</span>
-          <button class="bm-close" @click="selectedCutter = null; selectedCode = ''">×</button>
-        </div>
-        <div v-if="infoLoading" class="bm-loading">
-          <el-icon class="spin"><Loading /></el-icon> 加载中...
-        </div>
-        <div v-else class="bm-panel-body">
-          <section>
-            <h6>基本信息</h6>
-            <div class="row"><span>刀位编号</span><span>{{ selectedCutter.code }}</span></div>
-            <div class="row"><span>刀具类型</span><span>{{ selectedCutter.type }}</span></div>
-            <div class="row">
-              <span>磨损状态</span>
-              <span :style="{ color: statusColor(selectedCutter.code) }">{{ wearLabel(selectedCutter.code) }}</span>
-            </div>
-          </section>
-          <section>
-            <h6>当前刀具</h6>
-            <template v-if="selectedCutter.current">
-              <div class="row"><span>刀具名称</span><span>{{ selectedCutter.current.name }}</span></div>
-              <div class="row"><span>刀具编号</span><span>{{ selectedCutter.current.serialNumber }}</span></div>
-              <div class="row"><span>开始环号</span><span>{{ selectedCutter.current.startRing }}</span></div>
-              <div v-if="selectedCutter.current.installDate" class="row">
-                <span>安装日期</span><span>{{ selectedCutter.current.installDate }}</span>
-              </div>
-            </template>
-            <div v-else class="empty">暂无数据</div>
-          </section>
-          <section>
-            <h6>历史记录</h6>
-            <div v-if="selectedCutter.history?.length" class="history">
-              <div v-for="(h, i) in selectedCutter.history" :key="i" class="history-item">
-                <div class="history-title">
-                  <span class="badge">{{ i + 1 }}</span>{{ h.serialNumber }}
-                </div>
-                <div class="detail">使用环号：{{ h.startRing }} → {{ h.endRing }}</div>
-                <div v-if="h.ringsUsed != null" class="detail">使用环数：{{ h.ringsUsed }} 环</div>
-                <div v-if="h.replacePart" class="detail">更换部位：{{ h.replacePart }}</div>
-                <div v-if="h.wearType" class="detail">磨损类型：{{ h.wearType }}</div>
-                <div v-if="h.wearDegree" class="detail">磨损程度：{{ h.wearDegree }}</div>
-                <div class="detail">更换日期：{{ h.replaceDate }}</div>
-              </div>
-            </div>
-            <div v-else class="empty">暂无历史记录</div>
-          </section>
-          <section class="structured-history">
-            <h6>更换历史</h6>
-            <div v-if="selectedCutter.history?.length" class="history">
-              <div v-for="(h, i) in selectedCutter.history" :key="`clean-${i}`" class="history-item">
-                <div class="history-title">
-                  <span class="badge">{{ i + 1 }}</span>
-                  <span class="history-name">{{ h.toolTypeName || '刀具' }} / {{ h.serialNumber || '-' }}</span>
-                </div>
-                <div class="history-grid">
-                  <div class="detail"><span>厂家来源</span><b>{{ h.manufacturer || '-' }}</b></div>
-                  <div v-if="h.brand" class="detail"><span>品牌</span><b>{{ h.brand }}</b></div>
-                  <div class="detail"><span>环号区间</span><b>{{ h.startRing }} - {{ h.endRing }}</b></div>
-                  <div class="detail"><span>使用环数</span><b>{{ h.ringsUsed ?? '-' }}</b></div>
-                  <div class="detail"><span>成本类型</span><b>{{ costTypeText(h) }}</b></div>
-                  <div v-if="h.wearType" class="detail"><span>磨损程度</span><b>{{ h.wearType }}</b></div>
-                  <div v-if="h.replacePart" class="detail"><span>维修部件</span><b>{{ h.replacePart }}</b></div>
-                  <div class="detail"><span>费用</span><b>{{ moneyText(h.price) }}</b></div>
-                  <div class="detail"><span>更换时间</span><b>{{ h.replaceDate }}</b></div>
-                  <div v-if="h.remark" class="detail"><span>备注</span><b>{{ h.remark }}</b></div>
-                </div>
-              </div>
-            </div>
-            <div v-else class="empty">暂无更换历史</div>
-          </section>
-        </div>
-      </div>
-    </transition>
     <transition name="panel-slide">
       <div v-if="selectedCutter" class="bm-panel">
         <div class="bm-panel-header">
@@ -173,7 +103,7 @@
                 </div>
               </div>
             </template>
-            <div v-else class="empty">暂无当前刀具数据</div>
+            <div v-else class="empty">{{ selectedCutter.loadFailed ? '刀位数据加载失败' : '暂无当前刀具数据' }}</div>
           </section>
           <section>
             <h6>更换历史</h6>
@@ -197,7 +127,7 @@
                 </div>
               </div>
             </div>
-            <div v-else class="empty">暂无更换历史</div>
+            <div v-else class="empty">{{ selectedCutter.loadFailed ? '刀位数据加载失败' : '暂无更换历史' }}</div>
           </section>
         </div>
       </div>
@@ -205,10 +135,33 @@
   </div>
 </template>
 
+<script lang="ts">
+// 模块级缓存：同一个 SDK 脚本在页面里只下载一次。加载中的重复调用共用同一个过程，
+// 加载失败时移除标签并删掉缓存，点"重试"才会真正重新下载。
+const scriptLoads = new Map<string, Promise<void>>();
+
+function loadScript(src: string): Promise<void> {
+  const loading = scriptLoads.get(src);
+  if (loading) return loading;
+  const next = new Promise<void>((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.charset = 'utf-8';
+    s.onload = () => resolve();
+    s.onerror = () => {
+      s.remove();
+      scriptLoads.delete(src);
+      reject(new Error('BIMFace SDK 脚本加载失败'));
+    };
+    document.head.appendChild(s);
+  });
+  scriptLoads.set(src, next);
+  return next;
+}
+</script>
+
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { Close, Loading, WarningFilled } from '@element-plus/icons-vue';
-import { request } from '/@/utils/service';
 import { isActiveCutterPosition } from '/@/constants/cutterPositions';
 import {
   getCutterInfo,
@@ -258,6 +211,20 @@ const wrapRef = ref<HTMLDivElement>();
 const bimContainer = ref<HTMLDivElement>();
 const modelState = ref<'loading' | 'ready' | 'error'>('loading');
 const errorMsg = ref('');
+// 刀位状态或模型映射接口失败：和"没有数据"区分开显示。
+const dataError = ref(false);
+
+// 遮罩上给用户看的错误提示，原始错误只在开发环境输出到控制台。
+const BIM_ERRORS = {
+  webgl: '当前浏览器无法创建 WebGL 上下文，请释放系统内存后完全退出并重启浏览器，并确认硬件加速已开启',
+  sdkNotReady: 'BIM 组件未就绪，请点击重试',
+  initFailed: 'BIM 模型初始化失败，请点击重试',
+  loadFailed: 'BIM 模型加载失败，请点击重试',
+};
+
+// 60 秒内 WebGL 上下文丢失超过 2 次就不再自动重建，避免在 GPU 资源不足时反复加载。
+const WEBGL_LOSS_WINDOW_MS = 60 * 1000;
+const MAX_WEBGL_REBUILDS = 2;
 
 const svgW = ref(0);
 const svgH = ref(0);
@@ -275,6 +242,9 @@ let bimApp: any = null;
 let viewer: any = null;
 let ro: ResizeObserver | null = null;
 let initSeq = 0;
+// 刀位详情请求序号：只采用最新一次点击的结果，关闭面板后迟到的结果也丢弃。
+let infoSeq = 0;
+let webglLossTimes: number[] = [];
 let viewAddedTimer: ReturnType<typeof setTimeout> | null = null;
 let contextRestoreTimer: ReturnType<typeof setTimeout> | null = null;
 let webglCanvas: HTMLCanvasElement | null = null;
@@ -291,20 +261,10 @@ function statusColor(code: string) { return getWearColors(code).fill; }
 function wearLabel(code: string) { return getWearColors(code).label; }
 
 function closePanel() {
+  infoSeq += 1;
+  infoLoading.value = false;
   selectedCutter.value = null;
   selectedCode.value = '';
-}
-
-function costTypeText(h: any) {
-  const type = h.replacementTypeDisplay || h.wearDegree || '-';
-  if (h.replacePart) return `${type} (repair cost, part: ${h.replacePart})`;
-  if (type.includes('REPAIR') || type.includes('repair')) return type + ' (repair cost)';
-  if (type.includes('COMPLETE') || type.includes('complete')) return type + ' (whole cutter cost)';
-  return type;
-}
-
-function moneyText(value: number | undefined) {
-  return value ? String(value) + ' CNY' : '-';
 }
 
 function syncSize() {
@@ -339,17 +299,6 @@ function fitModelToView() {
   }
 }
 
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = src; s.charset = 'utf-8';
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error('BIMFace SDK 脚本加载失败'));
-    document.head.appendChild(s);
-  });
-}
-
 async function loadBimfaceSdk() {
   let lastError: unknown = null;
   for (const src of BIMFACE_SDK_URLS) {
@@ -361,13 +310,6 @@ async function loadBimfaceSdk() {
     }
   }
   throw lastError ?? new Error('BIMFace SDK load failed');
-}
-
-async function fetchViewToken(): Promise<string> {
-  const res = await request({ url: '/api/bimface/view-token/', method: 'get' });
-  const token = res?.viewToken ?? res?.data?.viewToken;
-  if (!token) throw new Error('未获取到 viewToken');
-  return token;
 }
 
 function scheduleModelReinit(seq: number, delay = 800) {
@@ -384,6 +326,15 @@ function scheduleModelReinit(seq: number, delay = 800) {
 
 function handleWebglContextLost(event: Event) {
   event.preventDefault();
+  const now = Date.now();
+  webglLossTimes = [...webglLossTimes.filter(time => now - time < WEBGL_LOSS_WINDOW_MS), now];
+  if (webglLossTimes.length > MAX_WEBGL_REBUILDS) {
+    initSeq += 1;
+    destroyBimfaceInstance();
+    modelState.value = 'error';
+    errorMsg.value = BIM_ERRORS.webgl;
+    return;
+  }
   modelState.value = 'loading';
   errorMsg.value = '';
   scheduleModelReinit(initSeq);
@@ -443,26 +394,46 @@ function canCreateWebglContext() {
   return true;
 }
 
+function showModelError(seq: number, message: string, error?: unknown) {
+  if (seq !== initSeq) return;
+  modelState.value = 'error';
+  errorMsg.value = message;
+  if (import.meta.env.DEV && error) console.warn('BIMFace error:', error);
+}
+
+function retryModel() {
+  webglLossTimes = [];
+  initModel();
+}
+
 async function initModel() {
   const seq = ++initSeq;
   destroyBimfaceInstance();
   modelState.value = 'loading';
   errorMsg.value = '';
+  if (!canCreateWebglContext()) {
+    showModelError(seq, BIM_ERRORS.webgl);
+    return;
+  }
+  // 当前这一步失败时给用户看的提示。
+  let failureMessage = BIM_ERRORS.sdkNotReady;
   try {
-    if (!canCreateWebglContext()) {
-      throw new Error('当前浏览器无法创建 WebGL 上下文，请释放系统内存后完全退出并重启浏览器，并确认硬件加速已开启');
-    }
     await loadBimfaceSdk();
+    if (seq !== initSeq) return;
+    failureMessage = BIM_ERRORS.loadFailed;
     const viewToken = await getBimfaceViewToken(true);
+    if (seq !== initSeq) return;
 
     const W = window as any;
     if (!W.BimfaceSDKLoaderConfig || !W.BimfaceSDKLoader || !W.Glodon?.Bimface) {
-      throw new Error('BIMFace SDK not ready');
+      showModelError(seq, BIM_ERRORS.sdkNotReady);
+      return;
     }
     const loaderConfig = new W.BimfaceSDKLoaderConfig();
     loaderConfig.viewToken = viewToken;
 
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    if (seq !== initSeq) return;
 
     W.BimfaceSDKLoader.load(
       loaderConfig,
@@ -498,32 +469,28 @@ async function initModel() {
             errorMsg.value = 'BIM 模型加载超时，请检查 BIMFace 模型资源网络或 viewToken 是否有效';
           }, 8000);
         } catch (e: any) {
-          if (seq !== initSeq) return;
-          modelState.value = 'error';
-          errorMsg.value = `${initStage}失败：${e?.message || '未知错误'}`;
+          showModelError(seq, BIM_ERRORS.initFailed, `${initStage}: ${e?.message || e}`);
         }
       },
-      (err: any) => {
-        if (seq !== initSeq) return;
-        modelState.value = 'error';
-        errorMsg.value = `BIMFace init failed: ${JSON.stringify(err)}`;
-      },
+      (err: any) => showModelError(seq, BIM_ERRORS.initFailed, err),
     );
   } catch (e: any) {
-    if (seq !== initSeq) return;
-    modelState.value = 'error';
-    errorMsg.value = e.message ?? 'Model load failed';
+    showModelError(seq, failureMessage, e);
   }
 }
 
 async function onHotspotClick(pos: { code: string; type: string }) {
+  // 同一刀位正在加载时不再重复请求。
+  if (infoLoading.value && selectedCode.value === pos.code) return;
+  const seq = ++infoSeq;
   selectedCode.value = pos.code;
   selectedCutter.value = { code: pos.code, type: pos.type };
   infoLoading.value = true;
   try {
-    selectedCutter.value = await getCutterInfo(pos.code);
+    const info = await getCutterInfo(pos.code);
+    if (seq === infoSeq) selectedCutter.value = info;
   } finally {
-    infoLoading.value = false;
+    if (seq === infoSeq) infoLoading.value = false;
   }
 }
 
@@ -559,7 +526,8 @@ function readSelectedComponentId(): string {
 
 function bindModelSelection(W: any) {
   const events = W?.Glodon?.Bimface?.Viewer?.Viewer3DEvent ?? {};
-  const eventNames = [
+  // SDK 的枚举值可能就是同名字符串，去重后再注册，避免一次点击发多次请求。
+  const eventNames = [...new Set([
     events.SelectionChanged,
     events.ComponentsSelectionChanged,
     events.MouseClicked,
@@ -568,7 +536,7 @@ function bindModelSelection(W: any) {
     'ComponentsSelectionChanged',
     'MouseClicked',
     'MouseClick',
-  ].filter(Boolean);
+  ].filter(Boolean))];
 
   const handler = (payload: any) => {
     const componentId = extractComponentId(payload) || readSelectedComponentId();
@@ -585,9 +553,10 @@ function bindModelSelection(W: any) {
 
 onMounted(async () => {
   initModel();
+  const markDataError = () => { dataError.value = true; };
   const [mappings, status] = await Promise.all([
-    getActiveCutterModelMappings(),
-    getAllCutterStatus(),
+    getActiveCutterModelMappings(markDataError),
+    getAllCutterStatus(markDataError),
   ]);
   screenPositions.value = mappings
     .filter(item => isActiveCutterPosition(item.cutter_position_no) && item.screen_x != null && item.screen_y != null)
@@ -615,6 +584,7 @@ onMounted(async () => {
 onUnmounted(() => {
   ro?.disconnect();
   initSeq += 1;
+  infoSeq += 1;
   destroyBimfaceInstance();
 });
 </script>
@@ -639,7 +609,7 @@ onUnmounted(() => {
 
 /* SVG rect/text need pointer-events: all via the parent <g> */
 
-/* 遮罩 */
+/* 遮罩：与页面一致的浅底，居中一个细圆环和一行文字 */
 .bm-overlay {
   position: absolute;
   inset: 0;
@@ -648,12 +618,39 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  background: rgba(10, 10, 10, 0.82);
-  color: #aaa;
-  font-size: 14px;
+  gap: 14px;
+  padding: 24px;
+  box-sizing: border-box;
+  background: var(--dv-tile);
+  color: var(--dv-text-secondary);
+  font-size: var(--dv-font-size);
 }
-.bm-overlay.error { color: #e74c3c; }
+
+.bm-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--dv-border-strong);
+  border-top-color: var(--dv-accent);
+  box-sizing: border-box;
+  animation: spin 0.9s linear infinite;
+}
+
+.bm-overlay-text {
+  max-width: 360px;
+  line-height: var(--dv-line-height);
+  text-align: center;
+}
+
+.bm-overlay.error { color: var(--dv-text-regular); }
+.bm-overlay-icon { font-size: 26px; color: var(--dv-danger); }
+
+.bm-fade-leave-active { transition: opacity 0.2s ease; }
+.bm-fade-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bm-spinner { animation-duration: 2.4s; }
+}
 
 /* 图例 */
 .bm-legend {
@@ -669,6 +666,11 @@ onUnmounted(() => {
   padding: 8px 12px;
   z-index: 25;
   pointer-events: none;
+}
+
+.legend-error {
+  font-size: 11px;
+  color: #ff8a80;
 }
 
 .legend-item {
@@ -743,7 +745,6 @@ section {
   border-bottom: 1px solid rgba(255,255,255,0.07);
 }
 section:last-child { border-bottom: none; }
-.bm-panel-body > section:nth-of-type(3):not(.structured-history) { display: none; }
 
 h6 {
   margin: 0 0 8px;

@@ -1,10 +1,16 @@
 <template>
 	<div class="h100" v-show="!isTagsViewCurrenFull">
-		<el-aside class="layout-aside" :class="setCollapseStyle">
+		<el-aside class="layout-aside" :class="[setCollapseStyle, { 'layout-aside-panel': isPanel, 'is-collapse': isPanelCollapse }]">
 			<Logo v-if="setShowLogo" />
+			<!-- 侧边栏布局：侧栏依次是 Logo、菜单（"最近打开"插在"首页"下面，收起时不显示）、用户 -->
 			<el-scrollbar class="flex-auto" ref="layoutAsideScrollbarRef" @mouseenter="onAsideEnterLeave(true)" @mouseleave="onAsideEnterLeave(false)">
-				<Vertical :menuList="state.menuList" />
+				<Vertical :menuList="state.menuList">
+					<template v-if="isPanel && !isPanelCollapse" #afterHome>
+						<AsideRecent />
+					</template>
+				</Vertical>
 			</el-scrollbar>
+			<AsideUser v-if="isPanel" />
 		</el-aside>
 	</div>
 </template>
@@ -21,6 +27,8 @@ import mittBus from '/@/utils/mitt';
 // 引入组件
 const Logo = defineAsyncComponent(() => import('/@/layout/logo/index.vue'));
 const Vertical = defineAsyncComponent(() => import('/@/layout/navMenu/vertical.vue'));
+const AsideRecent = defineAsyncComponent(() => import('/@/layout/component/asideRecent.vue'));
+const AsideUser = defineAsyncComponent(() => import('/@/layout/component/asideUser.vue'));
 
 // 定义变量内容
 const layoutAsideScrollbarRef = ref();
@@ -61,12 +69,16 @@ const setCollapseStyle = computed(() => {
 			if (isCollapse) return [asideBrColor, 'layout-aside-pc-1'];
 			else return [asideBrColor, 'layout-aside-pc-220'];
 		} else {
-			// 其它布局给 64px
+			// 其它布局给 64px；侧边栏布局展开时是 256px
 			if (isCollapse) return [asideBrColor, 'layout-aside-pc-64'];
-			else return [asideBrColor, 'layout-aside-pc-220'];
+			else return [asideBrColor, layout === 'defaults' ? 'layout-aside-pc-256' : 'layout-aside-pc-220'];
 		}
 	}
 });
+// 侧边栏布局：侧栏带最近打开和用户区（窄屏时变成抽屉）
+const isPanel = computed(() => themeConfig.value.layout === 'defaults');
+// 侧栏收起成 64px（窄屏时 isCollapse 表示抽屉打开，不算收起）
+const isPanelCollapse = computed(() => isPanel.value && themeConfig.value.isCollapse && state.clientWidth > 1000);
 // 设置显示/隐藏 logo
 const setShowLogo = computed(() => {
 	let { layout, isShowLogo } = themeConfig.value;
@@ -75,10 +87,10 @@ const setShowLogo = computed(() => {
 // 关闭移动端蒙版
 const closeLayoutAsideMobileMode = () => {
 	const el = document.querySelector('.layout-aside-mobile-mode');
-	el?.setAttribute('style', 'animation: error-img-two 0.3s');
+	el?.setAttribute('style', 'animation: error-img-two 0.15s');
 	setTimeout(() => {
 		el?.parentNode?.removeChild(el);
-	}, 300);
+	}, 150);
 	const clientWidth = document.body.clientWidth;
 	if (clientWidth < 1000) themeConfig.value.isCollapse = false;
 	document.body.setAttribute('class', '');
@@ -152,3 +164,29 @@ watch(
 	}
 );
 </script>
+
+<style scoped lang="scss">
+// 侧边栏布局的侧栏（底色、分割线、左右 8px 内边距和宽度见 theme/app.scss 的 .layout-shell）
+// 图标列：菜单图标、最近打开的圆点都从侧栏左边 20px 起（8px 内边距 + 12px），Logo 方块和头像与图标列同一条中线
+.layout-aside-panel {
+	// 菜单滚动区左右伸到侧栏边上，再用内边距收回 8px：滚动条贴着分割线，菜单项的键盘焦点框不被滚动区裁掉
+	> .el-scrollbar {
+		width: auto;
+		margin: 0 -8px;
+		:deep(.el-scrollbar__view) {
+			padding: 0 8px;
+		}
+	}
+	// 收起成 64px：只留图标，头像、"更多"按钮都在 64px 的中线上
+	&.is-collapse {
+		:deep(.layout-aside-user) {
+			flex-direction: column;
+			gap: 6px;
+			padding: 8px 0 0;
+			.layout-aside-user-who {
+				display: none;
+			}
+		}
+	}
+}
+</style>

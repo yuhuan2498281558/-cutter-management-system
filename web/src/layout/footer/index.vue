@@ -3,7 +3,7 @@
 	<!-- 功能说明:dvadmin3所写的版权位置，可以注释它或者修改为其它-->
 	<div class="layout-footer pb5 pt2">
 		<div class="layout-footer-warp">
-			<div>盾构刀具信息管理系统</div>
+			<div>盾构刀具管理系统</div>
 		</div>
 	</div>
 </template>
@@ -19,6 +19,9 @@
 <style scoped lang="scss">
 .layout-footer {
 	width: 100%;
+	// 固定高度：--dv-main-height（整页铺满的页面用它算高度）要减去这一行
+	height: var(--dv-footer-height);
+	flex: none;
 	display: flex;
 	&-warp {
 		margin: auto;

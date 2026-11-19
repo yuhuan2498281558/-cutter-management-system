@@ -1,0 +1,176 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const vue = require('vue');
+const { setup, plain, descendants, textOf: text } = require('./helpers.cjs');
+
+const byClass = (nodes, name) => nodes.find(node => node.props?.class === name);
+
+test('shell puts tabs under the title, filters above the page and hands the action area to the active page', t => {
+  const h = setup(t, 'index.vue');
+  const nodes = h.nodes();
+  const heading = byClass(nodes, 'analysis-heading');
+  assert.equal(text(heading), '数据分析', 'no subtitle under the title');
+  const actions = descendants(heading).find(node => node.props?.class === 'analysis-actions');
+  assert.equal(actions.ref.r, 'actionsRef');
+
+  const tabs = nodes.find(node => node.type?.name === 'el-tabs');
+  const panes = descendants(tabs).filter(node => node.type?.name === 'el-tab-pane');
+  assert.deepEqual(panes.map(node => node.props.label), ['概览', '成本', '磨损', '寿命与厂家', '自定义']);
+  assert.ok(panes.every(node => node.children == null), 'tabs only navigate');
+  const order = ['el-tabs', 'FilterPanel', 'Overview'].map(name => nodes.findIndex(node => node.type?.name === name));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  assert.equal(descendants(tabs).some(node => node.type?.name === 'Overview'), false);
+
+  const page = name => h.nodes().filter(node => ['Overview', 'CostAnalysis', 'WearAnalysis', 'LifeAnalysis', 'CustomAnalysis'].includes(node.type?.name)).map(node => [node.type.name, node.props['actions-target']]);
+  assert.deepEqual(page(), [['Overview', null]]);
+  const target = { nodeType: 1 };
+  h.state.actionsRef.value = target;
+  for (const [tab, name] of [['cost', 'CostAnalysis'], ['wear', 'WearAnalysis'], ['life', 'LifeAnalysis'], ['custom', 'CustomAnalysis']]) {
+    h.state.activeTab.value = tab;
+    const [[rendered, passed], ...others] = page();
+    assert.equal(rendered, name); assert.equal(vue.toRaw(passed), target); assert.equal(others.length, 0);
+  }
+});
+
+test('page actions appear only with a target and show generated time, refresh and exports', t => {
+  const runs = [];
+  const item = (label, disabled = false) => ({ label, disabled, run: () => runs.push(label) });
+  const h = setup(t, 'components/AnalysisActions.vue', { props: { target: null, generatedAt: '', refresh: undefined, refreshing: false, exports: [item('导出 PDF')] } });
+  assert.equal(h.nodes().some(node => node.type === vue.Teleport), false);
+
+  const target = { nodeType: 1 };
+  h.props.target = target;
+  let nodes = h.nodes();
+  const teleport = nodes.find(node => node.type === vue.Teleport);
+  assert.equal(vue.toRaw(teleport.props.to), target);
+  assert.equal(byClass(nodes, 'analysis-generated'), undefined, 'no time before data arrives');
+  assert.equal(nodes.some(node => node.type?.name === 'el-dropdown'), false);
+  let buttons = nodes.filter(node => node.type?.name === 'el-button');
+  assert.deepEqual(buttons.map(text), ['导出 PDF'], 'no refresh unless the page provides one');
+  buttons[0].props.onClick(); assert.deepEqual(runs, ['导出 PDF']);
+
+  let refreshed = 0;
+  Object.assign(h.props, { generatedAt: '2026-09-01T08:05:00', refresh: () => refreshed++, refreshing: true, exports: [item('导出 PDF', true)] });
+  nodes = h.nodes();
+  assert.equal(text(byClass(nodes, 'analysis-generated')), '生成于 09-01 08:05');
+  buttons = nodes.filter(node => node.type?.name === 'el-button');
+  assert.deepEqual(plain(buttons.map(node => [text(node), node.props.disabled])), [['刷新', true], ['导出 PDF', true]]);
+  buttons[0].props.onClick(); assert.equal(refreshed, 1);
+  buttons[1].props.onClick(); assert.deepEqual(runs, ['导出 PDF'], 'a disabled export never runs');
+
+  h.props.exports = [item('费用来源 PDF'), item('厂家表现 PDF', true)];
+  nodes = h.nodes();
+  const dropdown = nodes.find(node => node.type?.name === 'el-dropdown');
+  const trigger = descendants(dropdown).find(node => node.type?.name === 'el-button');
+  assert.equal(text(trigger), '导出'); assert.equal(trigger.props.disabled, false);
+  const entries = descendants(dropdown).filter(node => node.type?.name === 'el-dropdown-item');
+  assert.deepEqual(plain(entries.map(node => [text(node), node.props.command, node.props.disabled])), [['费用来源 PDF', 0, false], ['厂家表现 PDF', 1, true]]);
+  dropdown.props.onCommand(1); dropdown.props.onCommand(0);
+  assert.deepEqual(runs, ['导出 PDF', '费用来源 PDF']);
+  h.props.generatedAt = 'not a date';
+  assert.equal(byClass(h.nodes(), 'analysis-generated'), undefined);
+});
+
+test('scope line shows openings and observations; exclusions and basis stay in the expandable part', t => {
+  const meta = {
+    opening_count: 1234, observed_count: 0, draft_opening_count: 2, summary_status: 'CONFIRMED', unobserved_count: 0,
+    excluded_inactive_count: 3, excluded_invalid_ring_opening_count: 0, warnings: ['范围提示'], wear_basis: '磨损口径',
+    observed_basis: '观察口径', blade_track_basis: '轨迹口径', scope: {}, generated_at: '2026-09-01T08:05:00',
+  };
+  const h = setup(t, 'components/ScopeSummary.vue', { props: { meta }, slots: { default: () => [vue.h('p', { class: 'page-basis' }, '页面口径')] } });
+  let nodes = h.nodes();
+  const summary = nodes.find(node => node.type === 'summary');
+  assert.equal(text(summary), '1,234 次开仓 · 0 条有效观察统计口径与已排除记录');
+  const details = byClass(nodes, 'scope-details analysis-card');
+  const lines = descendants(details).filter(node => node.type === 'p').map(text);
+  assert.deepEqual(lines.slice(0, 4), ['工程范围草稿 2 次（未纳入）', '3 条历史无效刀位已排除', '范围提示', '磨损口径']);
+  assert.ok(lines.includes('观察口径')); assert.ok(lines.includes('页面口径'));
+  assert.equal(lines.some(line => /预建未观察|环号不可用|轨迹口径/.test(line)), false, 'zero counts and unused bounds stay hidden');
+  assert.equal(nodes.some(node => /生成于/.test(text(node))), false, 'generated time moved to the title row');
+
+  h.props.meta = { ...meta, observed_count: undefined, unobserved_count: 5, excluded_invalid_ring_opening_count: 1, scope: { blade_track_max: '3000' } };
+  nodes = h.nodes();
+  assert.equal(text(nodes.find(node => node.type === 'summary').children[0]), '1,234 次开仓');
+  const more = descendants(byClass(nodes, 'scope-details analysis-card')).filter(node => node.type === 'p').map(text);
+  assert.ok(more.includes('5 条预建未观察记录未纳入')); assert.ok(more.includes('1 次开仓环号不可用，已排除')); assert.ok(more.includes('轨迹口径'));
+  h.props.meta = undefined;
+  assert.equal(h.nodes().some(node => node.type === 'details'), false);
+});
+
+test('chart description sits in an ⓘ beside the title instead of a line under it', t => {
+  const h = setup(t, 'components/ChartCard.vue', {
+    props: { title: '刀具类型的费用贡献', description: '待核对金额不进入堆叠。', loading: false, height: undefined, chartHeight: undefined, isEmpty: false, error: '', emptyDescription: '' },
+    slots: { toolbar: () => [vue.h('span', { class: 'toolbar-probe' })], default: () => [] },
+  });
+  const heading = byClass(h.nodes(), 'chart-heading');
+  const elements = node => descendants(node).slice(1).filter(item => typeof item.type !== 'symbol').map(item => item.type?.name || item.type);
+  assert.deepEqual(elements(heading), ['h3', 'InfoTip']);
+  assert.equal(descendants(heading).find(node => node.type?.name === 'InfoTip').props.content, '待核对金额不进入堆叠。');
+  assert.equal(h.nodes().some(node => node.props?.class === 'chart-description'), false);
+  assert.ok(h.nodes().some(node => node.props?.class === 'toolbar-probe'));
+  assert.equal(descendants(heading).some(node => node.props?.class === 'toolbar-probe'), false, 'toolbar stays outside the heading');
+  h.props.description = '';
+  assert.equal(descendants(byClass(h.nodes(), 'chart-heading')).some(node => node.type?.name === 'InfoTip'), false);
+});
+
+test('InfoTip keeps the full wording in the tooltip, the accessible name and the PDF data attribute', t => {
+  const content = '新装登记、已确认返修、历史登记三类之和，不是财务结算额';
+  const h = setup(t, '../../../components/InfoTip.vue', { props: { content } });
+  const tooltip = h.nodes().find(node => node.type?.name === 'el-tooltip');
+  assert.equal(tooltip.props.content, content);
+  assert.deepEqual(plain(tooltip.props['popper-style']), { maxWidth: '320px' });
+  const button = descendants(tooltip).find(node => node.type === 'button');
+  assert.deepEqual(plain({ type: button.props.type, label: button.props['aria-label'], data: button.props['data-info-tip'], text: button.children }),
+    { type: 'button', label: content, data: content, text: 'i' });
+});
+
+test('card looks are defined once in the shell through theme variables, and every card uses that class', t => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { root } = require('./helpers.cjs');
+  const read = file => fs.readFileSync(path.resolve(root, file), 'utf8');
+  const style = file => read(file).split('<style')[1] || '';
+  // 主题层以后定义 --dv-card-* / --dv-radius-card；没定义时回退到现在的外观
+  const card = style('index.vue').match(/:deep\(\.analysis-card\) \{([^}]*)\}/)[1].split(';').map(rule => rule.trim()).filter(Boolean);
+  assert.deepEqual(card, [
+    'background: var(--dv-card-bg, var(--el-bg-color))',
+    'border: 1px solid var(--dv-card-border, var(--el-border-color))',
+    'border-radius: var(--dv-radius-card, var(--dv-radius-lg))',
+    'box-shadow: var(--dv-shadow-card, none)',
+  ]);
+  const files = ['components/ChartCard.vue', 'components/ScopeSummary.vue', 'components/AmountShare.vue', 'components/ReviewList.vue', 'components/FilterPanel.vue',
+    'components/AnalysisActions.vue', 'pages/CostAnalysis.vue', 'pages/Overview.vue', 'pages/WearAnalysis.vue', 'pages/CustomAnalysis.vue', '../../../components/InfoTip.vue'];
+  for (const file of files) {
+    const css = style(file);
+    assert.doesNotMatch(css, /box-shadow|border-radius:\s*\d|background(-color)?:\s*(#|white|rgb)|var\(--dv-surface\)/, file);
+  }
+  for (const file of ['pages/CostAnalysis.vue', 'pages/Overview.vue', 'pages/WearAnalysis.vue']) {
+    const cards = [...read(file).matchAll(/class="(hero-card(?: [^"]*)?)"/g)].map(match => match[1]);
+    assert.ok(cards.length && cards.every(name => name.split(' ').includes('analysis-card')), file);
+  }
+  assert.match(read('components/ChartCard.vue'), /<el-card class="chart-card analysis-card"/);
+  assert.match(read('pages/CustomAnalysis.vue'), /<el-card class="custom-config-card analysis-card/);
+});
+
+test('scope details state the stratum basis only when a stratum is selected', t => {
+  const meta = { opening_count: 3, summary_status: 'CONFIRMED', warnings: [], scope: {}, stratum_basis: '按同项目上次开仓之后至本次开仓的逐环地层筛选。' };
+  const h = setup(t, 'components/ScopeSummary.vue', { props: { meta } });
+  const lines = () => descendants(byClass(h.nodes(), 'scope-details analysis-card')).filter(node => node.type === 'p').map(text);
+  assert.equal(lines().some(line => /地层/.test(line)), false);
+  h.props.meta = { ...meta, scope: { stratum_type: 'ROCK' } };
+  assert.ok(lines().includes('按同项目上次开仓之后至本次开仓的逐环地层筛选。'), 'uses the backend basis');
+  h.props.meta = { ...meta, stratum_basis: undefined, scope: { stratum_types: ['ROCK'] } };
+  assert.ok(lines().includes('地层类型按各次开仓所在环段筛选'), 'falls back when the backend sends no basis');
+  h.props.meta = { ...meta, scope: { stratum_types: [], stratum_type: ' ' } };
+  assert.equal(lines().some(line => /地层/.test(line)), false);
+});
+
+test('the analysis shell leaves the page background to the layout', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { root } = require('./helpers.cjs');
+  const css = fs.readFileSync(path.resolve(root, 'index.vue'), 'utf8').split('<style')[1];
+  const container = css.match(/\n\.analysis-container \{([^}]*)\}/)[1];
+  assert.doesNotMatch(container, /background/);
+  assert.match(container, /padding: var\(--dv-page-gutter\)/);
+});

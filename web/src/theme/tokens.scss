@@ -1,0 +1,322 @@
+/* 设计变量，两套配色（<html data-scheme>，切换入口在布局设置抽屉，取值也见 theme/colorSchemes.ts）：
+ * - 暖白（默认，样板 C「Claude · 浅色」）：象牙白面板、暖灰侧栏、陶土色主按钮、衬线标题，写在 :root
+ * - 灰白蓝（Win11 浅色）：白底、灰色只用于悬停和选中、蓝色主题、无衬线标题、小圆角，写在文件末尾的 [data-scheme='blue']
+ * 颜色、圆角、字体、阴影只在这个文件里写：--dv-* 变量和 Element Plus 的 light/dark 派生色（element.scss）都由这里的 SCSS 变量生成。
+ * 其他样式文件只引用 var(--dv-*) / var(--el-*)，不写色值。
+ * 图表色板在 views/shield/analysis/utils/chartTheme.ts，改这里的颜色时要同步检查那边。
+------------------------------- */
+
+// 文字
+$dv-text: #141413;
+$dv-text-regular: #3d3d3a; // 次一级正文：侧栏菜单、说明性的列
+$dv-text-secondary: #73726c;
+$dv-text-muted: #adaba2; // 占位、小标题、箭头
+$dv-text-nav: #3d3d3a; // 侧栏文字
+
+// 底色与表面
+$dv-bg: #eae7de; // 窗口底
+$dv-surface: #fffefb; // 主面板、表格、输入框、弹窗
+$dv-tile: #f6f4ee; // 平铺块（主面板里的卡片、表头）
+$dv-surface-muted: #efede6; // 次级填充
+$dv-selected: #e2dfd5; // 选中填充：侧栏选中的菜单项
+$dv-hover: #f2f0e9; // 侧栏菜单、行、按钮、下拉项悬停（不透明）
+$dv-hover-solid: $dv-hover; // 表格固定列是 sticky 的，悬停色必须不透明；悬停色本身已不透明，两者相同
+$dv-fill: rgba($dv-text, 0.06); // 分段控件底槽、默认标签等浅填充
+
+// 侧栏：贴左边的纯色底，与主内容区之间一条分割线；搜索框凹进去
+$dv-side: #f9f8f3;
+$dv-side-inset: #efede6;
+
+// 凸起块：头像
+$dv-shadow-tint: #463422; // 投影统一用暖棕色
+$dv-raise: #ffffff;
+$dv-raise-hl: rgba(#ffffff, 0.95); // 上沿高光
+$dv-raise-sh: rgba($dv-shadow-tint, 0.13);
+$dv-raise-border: rgba($dv-text, 0.07);
+$dv-drop: rgba($dv-shadow-tint, 0.22);
+
+// 线
+$dv-border: #e9e6dd;
+$dv-border-strong: #ddd9ce;
+$dv-divider: $dv-border; // 侧栏与主内容区之间、顶栏底边、侧栏用户区上方的分割线
+
+// 主色（陶土色）与智能助手专用色
+$dv-primary: #c6613f; // 主按钮底
+$dv-primary-hover: #b4542f;
+$dv-on-primary: #ffffff;
+$dv-accent: #d97757; // 焦点环、选中标记
+$dv-accent-strong: #c15f3c; // 链接文字、选中菜单图标
+$dv-accent-soft: #fbede6; // 选中行、焦点光晕
+$dv-ai: #c96442; // 只给智能助手用
+
+// 状态色：实色 / 浅底 / 浅底上的文字（浅底上的文字用实色）
+$dv-success: #5b7841;
+$dv-success-bg: #ecf1e4;
+$dv-success-text: $dv-success;
+$dv-warning: #8f620e;
+$dv-warning-bg: #f6edd8;
+$dv-warning-text: $dv-warning;
+$dv-danger: #b23a2b;
+$dv-danger-bg: #f8e7e3;
+$dv-danger-text: $dv-danger;
+$dv-info: #4a6d96;
+$dv-info-bg: #e8eef5;
+$dv-info-text: $dv-info;
+
+// 形状
+$dv-radius-sm: 9px; // 小按钮、分段项
+$dv-radius: 11px; // 按钮、输入框、图标按钮、菜单项
+$dv-radius-lg: 22px; // 大块面板（数据分析卡片圆角的备用值）
+$dv-radius-xl: 28px; // 抽屉、弹窗
+$dv-radius-card: 26px; // 平铺块
+$dv-radius-table: 24px; // 表格外框
+$dv-radius-popover: 18px; // 下拉、气泡、日期面板
+$dv-radius-badge: 7px; // 标签
+$dv-radius-seg: 12px; // 分段控件底槽
+$dv-radius-seg-sm: 8px; // 小号分段控件的项
+$dv-radius-toast: 14px; // 消息提示
+$dv-radius-pill: 999px; // 圆形按钮
+$dv-control-height: 34px; // 按钮、输入框、选择器（默认尺寸）
+$dv-control-height-sm: 30px; // 小按钮
+$dv-page-gutter: 10px; // 抽屉离窗口边缘的距离、数据分析页的外边距
+$dv-content-pad: 32px; // 主内容区的左右内边距
+$dv-content-pad-top: 32px;
+$dv-content-pad-bottom: 80px;
+// 宽度 ≤640px 时
+$dv-content-pad-sm: 16px;
+$dv-content-pad-top-sm: 22px;
+$dv-content-pad-bottom-sm: 56px;
+$dv-content-max: 1320px; // 主内容区内容的最大宽度
+$dv-aside-width: 256px; // 侧栏宽度（收起时沿用 64px）
+$dv-aside-mobile-width: 280px; // 窄屏时侧栏抽屉的宽度
+$dv-topbar-height: 52px; // 主内容区顶栏高度（含底边线）
+$dv-footer-height: 28px; // 主内容区底部的版权行
+
+// 主内容区顶栏：半透明面板色 + 毛玻璃，内容从它下面滚过
+$dv-topbar-bg: rgba($dv-surface, 0.84);
+$dv-backdrop: saturate(1.6) blur(14px);
+// 窄屏侧栏抽屉的遮罩
+$dv-scrim: rgba(#08090b, 0.4);
+// 侧栏 Logo：陶土色渐变方块
+$dv-logo-bg: linear-gradient(160deg, mix($dv-accent, #ffffff, 70%), $dv-accent 50%, $dv-accent-strong);
+
+// 阴影
+$dv-shadow-1: 0 1px 2px rgba($dv-shadow-tint, 0.05), 0 0 0 1px rgba($dv-text, 0.06); // 分段控件选中项
+$dv-shadow-raised: inset 0 1px 0 $dv-raise-hl, 0 0 0 1px $dv-raise-border, 0 1px 2px rgba($dv-shadow-tint, 0.085); // 凸起块
+$dv-shadow-inset: inset 0 1px 1.5px rgba($dv-shadow-tint, 0.07); // 侧栏搜索框
+$dv-shadow-drawer: 8px 0 24px -8px rgba($dv-shadow-tint, 0.22); // 窄屏侧栏抽屉：投在右侧
+$dv-shadow-button: inset 0 1px 0 rgba(#ffffff, 0.22), 0 1px 2px $dv-raise-sh, 0 4px 10px -6px $dv-primary; // 主按钮
+$dv-shadow-button-plain: 0 1px 1px rgba(#0d0f12, 0.04); // 默认按钮
+$dv-shadow-overlay: 0 24px 48px -12px rgba($dv-shadow-tint, 0.26), 0 0 0 1px rgba($dv-text, 0.08); // 弹窗、抽屉、下拉、气泡
+$dv-shadow-logo: inset 0 1px 0 rgba(#ffffff, 0.35), inset 0 -1px 0 rgba(#000000, 0.14), 0 2px 4px -2px rgba($dv-accent, 0.45); // 侧栏 Logo 方块
+
+// 字体（字体文件在 assets/fonts，@font-face 在 fonts.scss）
+$dv-font-sans: 'Geist', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+$dv-font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+$dv-font-serif: 'Source Serif 4', 'Noto Serif SC', 'Songti SC', 'STSong', Georgia, serif; // 标题，字重 600
+$dv-font-size: 13px; // 正文
+$dv-line-height: 1.54;
+
+// Element Plus 派生色的算法（编译期计算）：light-N 与白色混合 N×10%，dark-N 与黑色混合 N×10%
+@function dv-light($color, $level) {
+	@return mix(#ffffff, $color, $level * 10%);
+}
+@function dv-dark($color, $level) {
+	@return mix(#000000, $color, $level * 10%);
+}
+
+:root {
+	// 底色与表面
+	--dv-bg: #{$dv-bg};
+	--dv-surface: #{$dv-surface};
+	--dv-tile: #{$dv-tile};
+	--dv-surface-muted: #{$dv-surface-muted};
+	--dv-selected: #{$dv-selected};
+	--dv-hover: #{$dv-hover};
+	--dv-hover-solid: #{$dv-hover-solid};
+	--dv-fill: #{$dv-fill};
+	// 侧栏
+	--dv-side-bg: #{$dv-side};
+	--dv-side-inset: #{$dv-side-inset};
+	// 凸起块
+	--dv-raise: #{$dv-raise};
+	--dv-raise-hl: #{$dv-raise-hl};
+	--dv-raise-sh: #{$dv-raise-sh};
+	--dv-raise-border: #{$dv-raise-border};
+	--dv-drop: #{$dv-drop};
+	// 文字
+	--dv-text: #{$dv-text};
+	--dv-text-regular: #{$dv-text-regular};
+	--dv-text-secondary: #{$dv-text-secondary};
+	--dv-text-muted: #{$dv-text-muted};
+	--dv-text-nav: #{$dv-text-nav};
+	// 线
+	--dv-border: #{$dv-border};
+	--dv-border-strong: #{$dv-border-strong};
+	--dv-divider: #{$dv-divider};
+	// 主色与智能助手专用色
+	--dv-primary: #{$dv-primary};
+	--dv-primary-hover: #{$dv-primary-hover};
+	--dv-on-primary: #{$dv-on-primary};
+	--dv-accent: #{$dv-accent};
+	--dv-accent-strong: #{$dv-accent-strong};
+	--dv-accent-soft: #{$dv-accent-soft};
+	--dv-ai: #{$dv-ai};
+	// 状态色
+	--dv-success: #{$dv-success};
+	--dv-success-bg: #{$dv-success-bg};
+	--dv-success-text: #{$dv-success-text};
+	--dv-warning: #{$dv-warning};
+	--dv-warning-bg: #{$dv-warning-bg};
+	--dv-warning-text: #{$dv-warning-text};
+	--dv-danger: #{$dv-danger};
+	--dv-danger-bg: #{$dv-danger-bg};
+	--dv-danger-text: #{$dv-danger-text};
+	--dv-info: #{$dv-info};
+	--dv-info-bg: #{$dv-info-bg};
+	--dv-info-text: #{$dv-info-text};
+	// 形状
+	--dv-radius-sm: #{$dv-radius-sm};
+	--dv-radius: #{$dv-radius};
+	--dv-radius-lg: #{$dv-radius-lg};
+	--dv-radius-xl: #{$dv-radius-xl};
+	--dv-radius-card: #{$dv-radius-card};
+	--dv-radius-table: #{$dv-radius-table};
+	--dv-radius-popover: #{$dv-radius-popover};
+	--dv-radius-badge: #{$dv-radius-badge};
+	--dv-radius-seg: #{$dv-radius-seg};
+	--dv-radius-seg-sm: #{$dv-radius-seg-sm};
+	--dv-radius-toast: #{$dv-radius-toast};
+	--dv-control-height: #{$dv-control-height};
+	--dv-control-height-sm: #{$dv-control-height-sm};
+	--dv-radius-pill: #{$dv-radius-pill};
+	--dv-page-gutter: #{$dv-page-gutter};
+	--dv-content-pad: #{$dv-content-pad};
+	--dv-content-pad-top: #{$dv-content-pad-top};
+	--dv-content-pad-bottom: #{$dv-content-pad-bottom};
+	--dv-content-max: #{$dv-content-max};
+	--dv-aside-width: #{$dv-aside-width};
+	--dv-aside-mobile-width: #{$dv-aside-mobile-width};
+	--dv-topbar-height: #{$dv-topbar-height};
+	--dv-footer-height: #{$dv-footer-height};
+	// 外壳
+	--dv-topbar-bg: #{$dv-topbar-bg};
+	--dv-backdrop: #{$dv-backdrop};
+	--dv-scrim: #{$dv-scrim};
+	--dv-logo-bg: #{$dv-logo-bg};
+	// 阴影
+	--dv-shadow-1: #{$dv-shadow-1};
+	--dv-shadow-raised: #{$dv-shadow-raised};
+	--dv-shadow-inset: #{$dv-shadow-inset};
+	--dv-shadow-drawer: #{$dv-shadow-drawer};
+	--dv-shadow-button: #{$dv-shadow-button};
+	--dv-shadow-button-plain: #{$dv-shadow-button-plain};
+	--dv-shadow-overlay: #{$dv-shadow-overlay};
+	--dv-shadow-logo: #{$dv-shadow-logo};
+	// 卡片：数据分析页等页面的公共卡片引用 bg、border、shadow 三个变量，主内容区里的卡片画成平铺块
+	// el-card 的边线宽度单独一个变量：暖白不画边线（0，不占位置），灰白蓝 1px
+	--dv-card-bg: var(--dv-tile);
+	--dv-card-border: transparent;
+	--dv-card-border-width: 0px;
+	--dv-shadow-card: none;
+	// 字体
+	--dv-font-sans: #{inspect($dv-font-sans)};
+	--dv-font-serif: #{inspect($dv-font-serif)};
+	--dv-font-mono: #{inspect($dv-font-mono)};
+	--dv-font-title: var(--dv-font-serif); // 页面标题、弹窗和抽屉标题、侧栏系统名
+	--dv-font-size: #{$dv-font-size};
+	--dv-icon-scale: 1; // SvgIcon、菜单图标的缩放倍数，跟着下面的组件大小变
+	--dv-line-height: #{$dv-line-height};
+}
+// 顶栏"组件大小"选大型/小型（App.vue 写在 <html data-size> 上）：正文字号 ±1px，图标按同样的比例缩放
+:root[data-size='large'] {
+	--dv-font-size: 14px;
+	--dv-icon-scale: calc(14 / 13);
+}
+:root[data-size='small'] {
+	--dv-font-size: 12px;
+	--dv-icon-scale: calc(12 / 13);
+}
+@media (max-width: 640px) {
+	:root {
+		--dv-content-pad: #{$dv-content-pad-sm};
+		--dv-content-pad-top: #{$dv-content-pad-top-sm};
+		--dv-content-pad-bottom: #{$dv-content-pad-bottom-sm};
+	}
+}
+
+/* 灰白蓝（Win11 浅色）：只覆盖与暖白不同的变量
+ * 蓝是主题色，白是背景（侧栏、主内容区、卡片、弹窗、浮层），灰只用在悬停、选中和表头/浅底块；
+ * 控件 4px、卡片/表格/弹窗/浮层 8px 圆角；阴影只留给浮层、弹窗和窄屏抽屉，卡片、分段控件、头像用 1px 边线；状态色沿用暖白
+ * 用 :root[data-scheme] 而不是 [data-scheme]：比 :root 高一级，不受文件先后顺序影响（element.scss 的 :root 在后面）
+------------------------------- */
+$dv-blue-primary: #0067c0; // Win11 浅色默认强调色
+$dv-blue-info: #5b6b7d; // 中性灰蓝，不和主题蓝撞色
+:root[data-scheme='blue'] {
+	// 底色与表面
+	--dv-bg: #ffffff;
+	--dv-surface: #ffffff;
+	--dv-tile: #f7f7f7;
+	--dv-surface-muted: #f7f7f7;
+	--dv-selected: #ebebeb;
+	--dv-hover: #f0f0f0;
+	--dv-hover-solid: #f0f0f0;
+	--dv-fill: rgba(0, 0, 0, 0.06);
+	// 侧栏：白底；搜索框是白底 + 细边、底边深一档（Win11 输入框）
+	--dv-side-bg: #ffffff;
+	--dv-side-inset: #ffffff;
+	// 凸起块
+	--dv-raise-sh: rgba(0, 0, 0, 0.08);
+	--dv-raise-border: rgba(0, 0, 0, 0.06);
+	--dv-drop: rgba(0, 0, 0, 0.14);
+	// 文字
+	--dv-text: #1b1b1b;
+	--dv-text-regular: #1b1b1b;
+	--dv-text-secondary: #5d5d5d;
+	--dv-text-muted: #8a8a8a;
+	--dv-text-nav: #1b1b1b;
+	// 线
+	--dv-border: #e5e5e5;
+	--dv-border-strong: #d1d1d1;
+	--dv-divider: #e5e5e5;
+	// 主色：悬停加深一档、选中行和焦点光晕用最浅一档（与 Element Plus 深浅色同一算法）；链接文字 #005fb8
+	--dv-primary: #{$dv-blue-primary};
+	--dv-primary-hover: #{dv-dark($dv-blue-primary, 1)};
+	--dv-accent: #{$dv-blue-primary};
+	--dv-accent-strong: #005fb8;
+	--dv-accent-soft: #{dv-light($dv-blue-primary, 9)};
+	--dv-ai: #{$dv-blue-primary};
+	--dv-info: #{$dv-blue-info};
+	--dv-info-bg: #eef1f4;
+	--dv-info-text: #{$dv-blue-info};
+	// 形状
+	--dv-radius-sm: 4px;
+	--dv-radius: 4px;
+	--dv-radius-lg: 8px;
+	--dv-radius-xl: 8px;
+	--dv-radius-card: 8px;
+	--dv-radius-table: 8px;
+	--dv-radius-popover: 8px;
+	--dv-radius-badge: 4px;
+	--dv-radius-seg: 6px;
+	--dv-radius-seg-sm: 4px;
+	--dv-radius-toast: 8px;
+	// 外壳
+	--dv-topbar-bg: #{rgba(#ffffff, 0.84)};
+	--dv-logo-bg: #{$dv-blue-primary};
+	// 阴影：浮层、弹窗、抽屉保留；其余换成 1px 边线（主按钮只在底边加一道深色细线）
+	--dv-shadow-1: 0 0 0 1px rgba(0, 0, 0, 0.08);
+	--dv-shadow-raised: 0 0 0 1px rgba(0, 0, 0, 0.08);
+	--dv-shadow-inset: inset 0 0 0 1px rgba(0, 0, 0, 0.08), inset 0 -1px 0 rgba(0, 0, 0, 0.16);
+	--dv-shadow-drawer: 8px 0 24px -8px rgba(0, 0, 0, 0.18);
+	--dv-shadow-button: inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+	--dv-shadow-button-plain: none;
+	--dv-shadow-overlay: 0 8px 16px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.06);
+	--dv-shadow-logo: none;
+	// 卡片：白底 + 1px 边线，不加阴影
+	--dv-card-bg: var(--dv-surface);
+	--dv-card-border: var(--dv-border);
+	--dv-card-border-width: 1px;
+	// 字体：标题不用衬线，与正文同一套无衬线
+	--dv-font-title: var(--dv-font-sans);
+}

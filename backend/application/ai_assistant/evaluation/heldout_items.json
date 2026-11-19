@@ -1,0 +1,730 @@
+[
+ {
+  "id": "H01",
+  "family": "range_change",
+  "params": {
+   "low": 200,
+   "high": 400,
+   "kind": null
+  },
+  "intent": "第200到400环（按开仓所在环号），全部刀具：现场观测记录有多少条、实际更换了多少次、更换率是多少",
+  "question": "帮我查一下，按开仓所在环号算，第200到400环之间的开仓，全部刀具一共有多少条现场观测记录？实际更换了多少次，更换率是多少？"
+ },
+ {
+  "id": "H02",
+  "family": "range_change",
+  "params": {
+   "low": 1,
+   "high": 150,
+   "kind": "SCRAPER"
+  },
+  "intent": "第1到150环（按开仓所在环号），刮刀：现场观测记录有多少条、实际更换了多少次、更换率是多少",
+  "question": "按开仓所在的环号看，1到150环这段的刮刀，现场观测记录有几条，实际换了多少次，更换率多少？"
+ },
+ {
+  "id": "H03",
+  "family": "range_change",
+  "params": {
+   "low": 300,
+   "high": 487,
+   "kind": "DISC"
+  },
+  "intent": "第300到487环（按开仓所在环号），滚刀：现场观测记录有多少条、实际更换了多少次、更换率是多少",
+  "question": "请统计开仓所在环号位于第300环至第487环范围内的滚刀数据：现场观测记录条数、实际更换次数以及更换率。"
+ },
+ {
+  "id": "H04",
+  "family": "range_change",
+  "params": {
+   "low": 150,
+   "high": 260,
+   "kind": null
+  },
+  "intent": "第150到260环（按开仓所在环号），全部刀具：现场观测记录有多少条、实际更换了多少次、更换率是多少",
+  "question": "开仓环号在150到260环之间的那几次，所有刀具观测记录有多少条、实际换了几次、更换率多少？"
+ },
+ {
+  "id": "H05",
+  "family": "range_change",
+  "params": {
+   "low": 400,
+   "high": 487,
+   "kind": "SCRAPER"
+  },
+  "intent": "第400到487环（按开仓所在环号），刮刀：现场观测记录有多少条、实际更换了多少次、更换率是多少",
+  "question": "看下开仓环号落在400到487环的，刮刀现场观测了多少条记录，实际更换多少次，更换率是多少。"
+ },
+ {
+  "id": "H06",
+  "family": "range_abnormal",
+  "params": {
+   "low": 1,
+   "high": 200,
+   "kind": null
+  },
+  "intent": "第1到200环，全部刀具：异常磨损记录有多少条、已分类异常率多少、每种异常磨损类型各有几条",
+  "question": "1到200环全部刀具的异常磨损记录有多少条？已分类异常率是多少？每种异常磨损类型各有几条？"
+ },
+ {
+  "id": "H07",
+  "family": "range_abnormal",
+  "params": {
+   "low": 250,
+   "high": 487,
+   "kind": "DISC"
+  },
+  "intent": "第250到487环，滚刀：异常磨损记录有多少条、已分类异常率多少、每种异常磨损类型各有几条",
+  "question": "请查询第250环至第487环滚刀的异常磨损情况，包括异常磨损记录条数、已分类异常率，以及各异常磨损类型分别有多少条。"
+ },
+ {
+  "id": "H08",
+  "family": "range_abnormal",
+  "params": {
+   "low": 100,
+   "high": 350,
+   "kind": "SCRAPER"
+  },
+  "intent": "第100到350环，刮刀：异常磨损记录有多少条、已分类异常率多少、每种异常磨损类型各有几条",
+  "question": "100到350环的刮刀，异常磨损记录一共几条？已分类异常率多少？按异常磨损类型分开说说各有几条。"
+ },
+ {
+  "id": "H09",
+  "family": "range_abnormal",
+  "params": {
+   "low": 339,
+   "high": 487,
+   "kind": null
+  },
+  "intent": "第339到487环，全部刀具：异常磨损记录有多少条、已分类异常率多少、每种异常磨损类型各有几条",
+  "question": "从339环到487环，所有刀具的异常磨损记录有多少条，已分类异常率多少，各种异常磨损类型分别几条？"
+ },
+ {
+  "id": "H10",
+  "family": "opening_detail",
+  "params": {
+   "ring": 258
+  },
+  "intent": "第258环那次开仓：开仓用了多长时间、换刀用了多长时间、距离上一次开仓隔了多少环",
+  "question": "258环那次开仓，开仓花了多长时间？换刀用了多久？跟上一次开仓隔了多少环？"
+ },
+ {
+  "id": "H11",
+  "family": "opening_detail",
+  "params": {
+   "ring": 400
+  },
+  "intent": "第400环那次开仓：开仓用了多长时间、换刀用了多长时间、距离上一次开仓隔了多少环",
+  "question": "请问第400环开仓的开仓时长和换刀时长分别是多少，与上一次开仓间隔多少环？"
+ },
+ {
+  "id": "H12",
+  "family": "opening_detail",
+  "params": {
+   "ring": 67
+  },
+  "intent": "第67环那次开仓：开仓用了多长时间、换刀用了多长时间、距离上一次开仓隔了多少环",
+  "question": "67环开仓那回，开仓用了多久、换刀用了多久，离上次开仓隔了几环？"
+ },
+ {
+  "id": "H13",
+  "family": "opening_detail",
+  "params": {
+   "ring": 317
+  },
+  "intent": "第317环那次开仓：开仓用了多长时间、换刀用了多长时间、距离上一次开仓隔了多少环",
+  "question": "帮我看一下第317环的那次开仓：开仓耗时多长、换刀耗时多长，距上一次开仓间隔了多少环。"
+ },
+ {
+  "id": "H14",
+  "family": "opening_observed",
+  "params": {
+   "ring": 192
+  },
+  "intent": "第192环那次开仓，按有效刀位上的换刀明细：现场观测记录多少条、实际更换多少把、已分类异常率多少",
+  "question": "第192环那次开仓，按有效刀位上的换刀明细来统计，现场观测记录有多少条，实际换了几把刀，已分类异常率是多少？"
+ },
+ {
+  "id": "H15",
+  "family": "opening_observed",
+  "params": {
+   "ring": 443
+  },
+  "intent": "第443环那次开仓，按有效刀位上的换刀明细：现场观测记录多少条、实际更换多少把、已分类异常率多少",
+  "question": "443环开仓，只看有效刀位上的换刀明细：现场观测记录几条？实际更换几把？已分类异常率多少？"
+ },
+ {
+  "id": "H16",
+  "family": "opening_observed",
+  "params": {
+   "ring": 106
+  },
+  "intent": "第106环那次开仓，按有效刀位上的换刀明细：现场观测记录多少条、实际更换多少把、已分类异常率多少",
+  "question": "请按有效刀位上的换刀明细，统计第106环开仓的现场观测记录条数、实际更换把数和已分类异常率。"
+ },
+ {
+  "id": "H17",
+  "family": "opening_longest_interval",
+  "params": {},
+  "intent": "哪一次开仓距离上一次开仓的间隔最长，是在第几环，隔了多少环",
+  "question": "哪次开仓离上一次开仓隔得最久？是在第几环开的，隔了多少环？"
+ },
+ {
+  "id": "H18",
+  "family": "opening_change_over",
+  "params": {
+   "count": 6,
+   "hours": 5
+  },
+  "intent": "最近6次开仓里，换刀时长超过5小时的是哪几次（给出环号和各自的换刀时长）",
+  "question": "最近6次开仓里，有哪几次换刀时长超过了5个小时？把环号和各自的换刀时长列一下。"
+ },
+ {
+  "id": "H19",
+  "family": "opening_change_over",
+  "params": {
+   "count": 10,
+   "hours": 5.5
+  },
+  "intent": "最近10次开仓中，哪几次的换刀时长超过5.5小时，分别用了多久",
+  "question": "最近10次开仓，换刀超过5.5小时的有哪几次，各用了多久？"
+ },
+ {
+  "id": "H20",
+  "family": "recent_replaced_average",
+  "params": {
+   "count": 3
+  },
+  "intent": "最近3次开仓平均每次换了多少把刀",
+  "question": "最近三次开仓，平均每次换几把刀？"
+ },
+ {
+  "id": "H21",
+  "family": "recent_replaced_average",
+  "params": {
+   "count": 5
+  },
+  "intent": "最近5次开仓平均每次更换了几把刀",
+  "question": "请问最近5次开仓平均每次更换了多少把刀？"
+ },
+ {
+  "id": "H22",
+  "family": "position_detail",
+  "params": {
+   "position": "23"
+  },
+  "intent": "23号刀位在全项目：现场观测了几次、换了几次、异常磨损出现了几次",
+  "question": "23号刀位整个项目下来，现场观测过几次，换过几次，出现过几次异常磨损？"
+ },
+ {
+  "id": "H23",
+  "family": "position_detail",
+  "params": {
+   "position": "S7R"
+  },
+  "intent": "S7R号刀位在全项目：现场观测了几次、换了几次、异常磨损出现了几次",
+  "question": "查一下S7R刀位全项目的情况：现场观测次数、更换次数、异常磨损次数。"
+ },
+ {
+  "id": "H24",
+  "family": "position_detail",
+  "params": {
+   "position": "Y3"
+  },
+  "intent": "Y3号刀位在全项目：现场观测了几次、换了几次、异常磨损出现了几次",
+  "question": "Y3号刀位在全项目范围内现场观测了几次、换了几回、出了几次异常磨损？"
+ },
+ {
+  "id": "H25",
+  "family": "position_detail",
+  "params": {
+   "position": "80A"
+  },
+  "intent": "80A号刀位在全项目：现场观测了几次、换了几次、异常磨损出现了几次",
+  "question": "80A号刀位全项目现场观测了几次？换了几次？有几次异常磨损？"
+ },
+ {
+  "id": "H26",
+  "family": "position_detail",
+  "params": {
+   "position": "41"
+  },
+  "intent": "41号刀位在全项目：现场观测了几次、换了几次、异常磨损出现了几次",
+  "question": "想了解一下41号刀位在全项目的现场观测次数、更换次数和异常磨损次数。"
+ },
+ {
+  "id": "H27",
+  "family": "position_most_replaced",
+  "params": {
+   "kind": "SCRAPER"
+  },
+  "intent": "全项目更换次数最多的刮刀刀位有哪些（并列的都列出），各换了几次",
+  "question": "全项目哪些刮刀刀位换得最多？有并列的都列出来，各换了几次。"
+ },
+ {
+  "id": "H28",
+  "family": "position_most_replaced",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "全项目更换次数最多的滚刀刀位是哪些（有并列就全列），换了多少次",
+  "question": "整个项目里更换次数最多的滚刀刀位是哪几个？有并列就全部列出，分别换了多少次？"
+ },
+ {
+  "id": "H29",
+  "family": "position_most_replaced",
+  "params": {
+   "kind": "SCRAPER",
+   "low": 200,
+   "high": 400
+  },
+  "intent": "第200到400环，哪几个刮刀刀位换得最多（并列全列），各几次",
+  "question": "200到400环，哪几个刮刀刀位换得最多？并列的全列上，各换了几次。"
+ },
+ {
+  "id": "H30",
+  "family": "position_most_abnormal",
+  "params": {
+   "kind": null
+  },
+  "intent": "全项目哪个刀位出现异常磨损的次数最多，几次",
+  "question": "全项目哪个刀位异常磨损次数最多？出了几次？"
+ },
+ {
+  "id": "H31",
+  "family": "position_most_abnormal",
+  "params": {
+   "kind": "SCRAPER"
+  },
+  "intent": "刮刀里哪个刀位异常磨损次数最多，出现了几次",
+  "question": "刮刀里面哪个刀位异常磨损最多，出现了几次？"
+ },
+ {
+  "id": "H32",
+  "family": "type_rate_gap",
+  "params": {},
+  "intent": "全项目滚刀和刮刀的更换率分别是多少，哪个更高",
+  "question": "全项目滚刀和刮刀的更换率各是多少？哪个更高一些？"
+ },
+ {
+  "id": "H33",
+  "family": "position_scrapped",
+  "params": {
+   "position": "S7R"
+  },
+  "intent": "S7R刀位换下来的旧刀一共有几把，其中已经确认报废的有几把",
+  "question": "S7R刀位换下来的旧刀一共几把？其中已经确认报废的有几把？"
+ },
+ {
+  "id": "H34",
+  "family": "position_scrapped",
+  "params": {
+   "position": "23"
+  },
+  "intent": "23号刀位换下的旧刀有多少把，已确认报废的几把",
+  "question": "请查询23号刀位换下的旧刀数量，以及其中已确认报废的数量。"
+ },
+ {
+  "id": "H35",
+  "family": "supply",
+  "params": {
+   "amount": true
+  },
+  "intent": "全项目各厂家新装刀具的供货次数和登记金额分别是多少",
+  "question": "全项目各个厂家新装刀具的供货次数和登记金额分别是多少？"
+ },
+ {
+  "id": "H36",
+  "family": "supply",
+  "params": {
+   "low": 200,
+   "high": 400
+  },
+  "intent": "第200到400环，每个厂家各新装（供货）了多少次刀",
+  "question": "第200至400环期间，每个厂家分别新装（供货）了多少次刀具？"
+ },
+ {
+  "id": "H37",
+  "family": "supply",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "全项目滚刀按厂家统计，各厂家新装了多少把",
+  "question": "全项目的滚刀按厂家分一下，每家新装了多少把？"
+ },
+ {
+  "id": "H38",
+  "family": "manufacturer_service",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "按刀具原安装时的厂家，比较各厂家滚刀（已确认拆下的）平均服役环数和样本数",
+  "question": "按刀具原安装时的厂家，对比一下各厂家已确认拆下的滚刀平均服役了多少环，样本数各多少。"
+ },
+ {
+  "id": "H39",
+  "family": "manufacturer_service",
+  "params": {
+   "kind": "SCRAPER"
+  },
+  "intent": "各厂家刮刀已确认拆下的平均服役环数和样本量（按原安装厂家）",
+  "question": "刮刀按原安装厂家来分，各厂家已确认拆下的平均服役环数是多少？样本量分别多少？"
+ },
+ {
+  "id": "H40",
+  "family": "manufacturer_abnormal",
+  "params": {
+   "kind": null
+  },
+  "intent": "按原安装厂家，各厂家已确认拆下的刀具里，已分类异常率分别是多少",
+  "question": "按原安装厂家统计，各厂家已确认拆下的刀具中已分类异常率分别是多少？"
+ },
+ {
+  "id": "H41",
+  "family": "model_service",
+  "params": {
+   "kind": "SCRAPER"
+  },
+  "intent": "刮刀各型号已确认拆下的刀平均服役多少环，各有多少样本",
+  "question": "刮刀分型号看，已确认拆下的刀平均服役多少环？每个型号各有多少样本？"
+ },
+ {
+  "id": "H42",
+  "family": "model_service",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "滚刀每个型号已拆下（已确认）的平均服役环数和样本数",
+  "question": "请列出滚刀各型号已确认拆下刀具的平均服役环数及样本数。"
+ },
+ {
+  "id": "H43",
+  "family": "longest_service_manufacturer",
+  "params": {
+   "kind": "DISC",
+   "model": "19寸常压双联正滚刀240"
+  },
+  "intent": "19寸常压双联正滚刀240这个型号，样本不少于10把的厂家里，哪家（原安装厂家）的平均服役环数最长，多少环，样本几把",
+  "question": "19寸常压双联正滚刀240这个型号，按原安装厂家看，在样本不少于10把的厂家里，哪家的平均服役环数最长？多少环，样本几把？"
+ },
+ {
+  "id": "H44",
+  "family": "quotes",
+  "params": {
+   "model": "17寸常压中心滚刀"
+  },
+  "intent": "17寸常压中心滚刀各厂家的新刀报价分别是多少",
+  "question": "17寸常压中心滚刀，各家厂家的新刀报价都是多少？"
+ },
+ {
+  "id": "H45",
+  "family": "quotes",
+  "params": {
+   "model": "可更换式刮刀H=389",
+   "cost_type": "REPAIR"
+  },
+  "intent": "可更换式刮刀H=389的维修报价，各厂家分别多少",
+  "question": "可更换式刮刀H=389，各厂家的维修报价分别是多少？"
+ },
+ {
+  "id": "H46",
+  "family": "cheapest_quote",
+  "params": {
+   "model": "19寸常压单刃滚刀"
+  },
+  "intent": "19寸常压单刃滚刀哪家的新刀报价最低，多少钱",
+  "question": "19寸常压单刃滚刀新刀哪家报价最低？报的多少钱？"
+ },
+ {
+  "id": "H47",
+  "family": "cheapest_quote",
+  "params": {
+   "model": "焊接型刮刀"
+  },
+  "intent": "焊接型刮刀新刀报价最便宜的是哪个厂家，价格多少",
+  "question": "焊接型刮刀的新刀报价，哪个厂家最便宜？价格多少？"
+ },
+ {
+  "id": "H48",
+  "family": "quote_spread",
+  "params": {
+   "model": "19寸双联常压正滚刀200"
+  },
+  "intent": "19寸双联常压正滚刀200的新刀报价，最低和最高各是多少，差多少钱",
+  "question": "19寸双联常压正滚刀200的新刀报价最低多少、最高多少？两者差多少钱？"
+ },
+ {
+  "id": "H49",
+  "family": "repair_status",
+  "params": {
+   "kind": "SCRAPER"
+  },
+  "intent": "刮刀旧刀返修：待厂家反馈、已确认、已归档各有多少把",
+  "question": "刮刀旧刀返修，现在待厂家反馈的、已确认的、已归档的各有多少把？"
+ },
+ {
+  "id": "H50",
+  "family": "repair_status",
+  "params": {
+   "kind": null
+  },
+  "intent": "全部旧刀返修的进度：待厂家反馈、已确认、已归档的数量",
+  "question": "看下全部旧刀返修的进度，待厂家反馈、已确认、已归档分别有多少？"
+ },
+ {
+  "id": "H51",
+  "family": "scrap",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "滚刀已经确认报废了多少把，还有多少把是待厂家确认的报废建议",
+  "question": "滚刀已经确认报废的有多少把？另外还有多少把是待厂家确认的报废建议？"
+ },
+ {
+  "id": "H52",
+  "family": "scrap",
+  "params": {
+   "low": 200,
+   "high": 400
+  },
+  "intent": "第200到400环换下的旧刀里，已报废多少把、报废建议多少把",
+  "question": "200到400环换下来的旧刀里，已报废的多少把，报废建议的多少把？"
+ },
+ {
+  "id": "H53",
+  "family": "repair_amount",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "滚刀已确认（含已归档）的返修登记金额合计多少",
+  "question": "滚刀返修里已确认的（含已归档）登记金额合计是多少？"
+ },
+ {
+  "id": "H54",
+  "family": "repair_amount",
+  "params": {
+   "kind": null
+  },
+  "intent": "厂家已确认的旧刀返修，登记金额一共多少钱（含已归档）",
+  "question": "厂家已经确认的旧刀返修（含已归档），登记金额一共多少钱？"
+ },
+ {
+  "id": "H55",
+  "family": "bearing_failures",
+  "params": {
+   "kind": "DISC"
+  },
+  "intent": "滚刀旧刀里，轴承失效的有几把，刀圈有损坏的有几把",
+  "question": "滚刀旧刀中，轴承失效的有几把？刀圈有损坏的又有几把？"
+ },
+ {
+  "id": "H56",
+  "family": "stratum_area",
+  "params": {
+   "low": 500,
+   "high": 800
+  },
+  "intent": "第500到800环各类地层的面积占比（纵断面）",
+  "question": "看一下纵断面上500到800环各类地层的面积占比。"
+ },
+ {
+  "id": "H57",
+  "family": "stratum_area",
+  "params": {
+   "low": 1200,
+   "high": 1500
+  },
+  "intent": "第1200到1500环各类地层的面积占比（纵断面）",
+  "question": "请给出第1200环至第1500环纵断面上各类地层的面积占比。"
+ },
+ {
+  "id": "H58",
+  "family": "stratum_area",
+  "params": {
+   "low": 2000,
+   "high": 2400
+  },
+  "intent": "第2000到2400环各类地层的面积占比（纵断面）",
+  "question": "2000到2400环这一段，按纵断面算各类地层面积占比是多少？"
+ },
+ {
+  "id": "H59",
+  "family": "stratum_labels",
+  "params": {
+   "low": 300,
+   "high": 600
+  },
+  "intent": "第300到600环，各历史地层标签分别出现在多少环",
+  "question": "300到600环，每个历史地层标签各出现在多少环？"
+ },
+ {
+  "id": "H60",
+  "family": "stratum_labels",
+  "params": {
+   "low": 1000,
+   "high": 1300
+  },
+  "intent": "第1000到1300环，各历史地层标签分别出现在多少环",
+  "question": "第1000至1300环范围内，各历史地层标签分别出现在多少环，请统计一下。"
+ },
+ {
+  "id": "H61",
+  "family": "opening_stratum",
+  "params": {
+   "ring": 218
+  },
+  "intent": "第218环开仓：从上一次开仓到这次之间经过的地层，各类面积占比多少",
+  "question": "218环开仓，从上次开仓到这次之间经过的地层，各类面积占比是多少？"
+ },
+ {
+  "id": "H62",
+  "family": "opening_stratum",
+  "params": {
+   "ring": 369
+  },
+  "intent": "第369环开仓：从上一次开仓到这次之间经过的地层，各类面积占比多少",
+  "question": "请问第369环开仓与上一次开仓之间所经过的地层，各类地层面积占比分别是多少？"
+ },
+ {
+  "id": "H63",
+  "family": "trace",
+  "params": {
+   "tool_no": "GD-TEST-0229"
+  },
+  "intent": "刀具GD-TEST-0229是在第几环装上、第几环拆下的，服役了多少环，厂家反馈处理到哪一步了",
+  "question": "GD-TEST-0229这把刀是第几环装上的、第几环拆下的？服役了多少环？厂家反馈处理到哪一步了？"
+ },
+ {
+  "id": "H64",
+  "family": "trace",
+  "params": {
+   "tool_no": "GD-TEST-0706"
+  },
+  "intent": "刀具GD-TEST-0706是在第几环装上、第几环拆下的，服役了多少环，厂家反馈处理到哪一步了",
+  "question": "帮我查下刀具GD-TEST-0706：在第几环安装、第几环拆下、服役了多少环，还有厂家反馈目前处理到哪一步了。"
+ },
+ {
+  "id": "H65",
+  "family": "tunneling_coverage",
+  "params": {},
+  "intent": "掘进参数数据有多少条记录、覆盖到哪些环，推力平均是多少",
+  "question": "掘进参数现在有多少条记录？覆盖到哪些环？推力平均是多少？"
+ },
+ {
+  "id": "H66",
+  "family": "no_data",
+  "params": {},
+  "intent": "预测一下S1L刀位现在这把刀还能用多少环（剩余寿命）",
+  "question": "S1L刀位现在装的这把刀，帮忙预测一下还能用多少环，也就是剩余寿命。"
+ },
+ {
+  "id": "H67",
+  "family": "no_data",
+  "params": {},
+  "intent": "仓库里19寸滚刀备件还有多少库存",
+  "question": "仓库里19寸滚刀的备件还有多少库存？"
+ },
+ {
+  "id": "H68",
+  "family": "no_data",
+  "params": {},
+  "intent": "上个月实际付给各刀具厂家多少钱",
+  "question": "上个月实际给各刀具厂家付了多少钱？"
+ },
+ {
+  "id": "H69",
+  "family": "no_data",
+  "params": {},
+  "intent": "第300到350环掘进时的平均推力和扭矩是多少",
+  "question": "300到350环掘进的时候，平均推力和扭矩是多少？"
+ },
+ {
+  "id": "H70",
+  "turns": [
+   {
+    "family": "range_change",
+    "params": {
+     "low": 200,
+     "high": 400,
+     "kind": "DISC"
+    },
+    "intent": "第200到400环，滚刀：现场观测记录多少条、更换多少次、更换率",
+    "question": "200到400环的滚刀，现场观测记录有多少条，更换了多少次，更换率多少？"
+   },
+   {
+    "family": "range_change",
+    "params": {
+     "low": 200,
+     "high": 400,
+     "kind": "SCRAPER"
+    },
+    "intent": "追问：同一范围换成刮刀（口语化的简短追问）",
+    "question": "那刮刀的呢？"
+   }
+  ]
+ },
+ {
+  "id": "H71",
+  "turns": [
+   {
+    "family": "position_detail",
+    "params": {
+     "position": "S7R"
+    },
+    "intent": "S7R刀位全项目现场观测几次、更换几次、异常几次",
+    "question": "S7R刀位全项目现场观测了几次、更换了几次、出现异常几次？"
+   },
+   {
+    "family": "position_detail",
+    "params": {
+     "position": "S7L"
+    },
+    "intent": "追问：换成S7L刀位（简短追问）",
+    "question": "S7L呢？"
+   }
+  ]
+ },
+ {
+  "id": "H72",
+  "turns": [
+   {
+    "family": "repair_status",
+    "params": {
+     "kind": "DISC"
+    },
+    "intent": "滚刀旧刀返修：待厂家反馈、已确认、已归档各多少",
+    "question": "滚刀旧刀返修，待厂家反馈、已确认、已归档的各有多少？"
+   },
+   {
+    "family": "repair_status",
+    "params": {
+     "kind": "SCRAPER"
+    },
+    "intent": "追问：刮刀呢（简短追问）",
+    "question": "刮刀呢？"
+   }
+  ]
+ },
+ {
+  "id": "H73",
+  "turns": [
+   {
+    "family": "stratum_area",
+    "params": {
+     "low": 600,
+     "high": 700
+    },
+    "intent": "第600到700环各地层面积占比",
+    "question": "第600到700环各地层的面积占比是多少？"
+   },
+   {
+    "family": "stratum_area",
+    "params": {
+     "low": 2400,
+     "high": 2600
+    },
+    "intent": "追问：换成第2400到2600环（简短追问）",
+    "question": "换成2400到2600环看看。"
+   }
+  ]
+ }
+]

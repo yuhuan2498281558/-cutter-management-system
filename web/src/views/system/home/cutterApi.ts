@@ -50,26 +50,29 @@ export async function getBimfaceViewToken(forceRefresh = false): Promise<string>
   return token;
 }
 
-export async function getAllCutterStatus(): Promise<Record<string, CutterStatus>> {
+// 失败时仍返回空结果；需要区分"失败"和"无数据"的调用方传 onError。
+export async function getAllCutterStatus(onError?: (error: unknown) => void): Promise<Record<string, CutterStatus>> {
   try {
     const res = await request({
       url: '/api/bimface/cutter-status/',
       method: 'get',
     });
     return res?.data ?? res ?? {};
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return {};
   }
 }
 
-export async function getActiveCutterModelMappings(): Promise<CutterModelMapping[]> {
+export async function getActiveCutterModelMappings(onError?: (error: unknown) => void): Promise<CutterModelMapping[]> {
   try {
     const res = await request({
       url: '/api/bimface/cutter-model-mapping/',
       method: 'get',
     });
     return res?.data ?? res ?? [];
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return [];
   }
 }
@@ -129,6 +132,8 @@ export interface CutterPositionInfo {
   latestWearType?: string;
   current?: CurrentCutterInfo;
   history?: CutterHistoryInfo[];
+  // 接口失败时为 true，界面应显示加载失败而不是"暂无数据"
+  loadFailed?: boolean;
 }
 
 const WEAR_LABELS: Record<string, string> = {
@@ -217,7 +222,6 @@ export async function getCutterInfo(code: string): Promise<CutterPositionInfo> {
     return {
       code,
       type: data.tool_parent_type_display ?? (code.match(/[SGH]/) ? '刮刀' : '滚刀'),
-      normalizedType: positionType,
       latestWearType,
       current,
       history,
@@ -227,6 +231,7 @@ export async function getCutterInfo(code: string): Promise<CutterPositionInfo> {
     return {
       code,
       type: code.match(/[SGH]/) ? '刮刀' : '滚刀',
+      loadFailed: true,
     };
   }
 }

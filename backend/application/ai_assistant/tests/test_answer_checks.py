@@ -14,6 +14,22 @@ FACTS = {"segments": [{"ring_range": "1-100", "total": 10, "replaced": 3},
 
 
 class AnswerEvidenceChecksTests(SimpleTestCase):
+    def test_summary_rejects_wrong_counts_even_with_correct_columns(self):
+        expected = {'total_records': 12, 'replaced_count': 6}
+        answer = '| 现场观测记录数 | 更换次数 | 更换率 |\n| --- | --- | --- |\n| 12 | 6 | 50% |'
+        self.assertFalse(check_answer('query_tool_change_data', answer, expected)['failures'])
+        self.assertTrue(check_answer('query_tool_change_data', answer.replace('12 | 6', '999999 | 999999'), expected)['failures'])
+        prose = '共 **12** 条现场观测记录，实际更换 **6** 次。'
+        self.assertFalse(check_answer('query_tool_change_data', prose, expected)['failures'])
+        self.assertTrue(check_answer('query_tool_change_data', prose.replace('6', '999999'), expected)['failures'])
+
+    def test_empty_trend_denominator_requires_no_sample_label(self):
+        facts = {'segments': [*FACTS['segments'], {'ring_range': '201-250', 'total': 0, 'replaced': 0}]}
+        for rate in ('999%', '0%', '暂无 999%'):
+            self.assertTrue(self.trend(TREND + f'| 201-250 | 0 | 0 | {rate} |', facts))
+        for rate in ('暂无', '无样本'):
+            self.assertFalse(self.trend(TREND + f'| 201-250 | 0 | 0 | {rate} |', facts))
+
     def trend(self, answer, expected=None):
         return check_answer("query_tool_change_trend", answer, expected or FACTS)["failures"]
 

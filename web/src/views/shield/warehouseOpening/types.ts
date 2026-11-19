@@ -22,6 +22,8 @@ export interface WarehouseOpeningBasicInfoType {
   tool_change_date?: string;
   tool_change_duration?: number;
   usage_distance?: number;
+  right_revolution_reading?: number | null;
+  left_revolution_reading?: number | null;
   create_datetime?: string;
   update_datetime?: string;
   creator_name?: string;
@@ -42,13 +44,4 @@ export interface StratumInfoBetweenItem {
   stratum_type_code: string;
   stratum_type_name: string;
   ring_count: number;
-}
-
-/**
- * 地层信息数据项（用于表单提交）
- */
-export interface APIResponseData {
-  code?: number;
-  data: any;
-  msg?: string;
 }

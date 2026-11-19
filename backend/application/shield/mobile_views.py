@@ -1,4 +1,5 @@
 import json
+import math
 
 from django.db import IntegrityError, transaction
 from django.db.models.functions import Cast
@@ -468,6 +469,8 @@ class MobileTaskSerializer(serializers.ModelSerializer):
             "tool_change_ring_no": warehouse.ring_no,
             "last_tool_change_ring_no": warehouse.last_ring_no,
             "usage_distance": warehouse.usage_distance,
+            "right_revolution_reading": warehouse.right_revolution_reading,
+            "left_revolution_reading": warehouse.left_revolution_reading,
         }
 
 
@@ -949,6 +952,35 @@ class MobileTaskViewSet(viewsets.ViewSet):
         # scoped_details 预取了旧刀照片，删除/替换照片后必须重新查询，避免响应继续携带旧缓存。
         detail = scoped_details(task).get(pk=detail.pk)
         return SuccessResponse(data=MobileToolChangeDetailSerializer(detail, context={"request": request}).data, msg="保存成功")
+
+    @transaction.atomic
+    @action(detail=True, methods=["post"])
+    def save_readings(self, request, pk=None):
+        """现场录入开仓时刀盘右转、左转累计读数；留空表示没有读到。"""
+        task = self._get_task(request, pk, claim=True)
+        if not task:
+            return ErrorResponse(msg="任务不存在或无权访问")
+        opening = WarehouseOpeningBasicInfo.objects.select_for_update().get(pk=task.warehouse_id)
+        task.warehouse = opening
+        if opening.summary_status == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED:
+            return ErrorResponse(msg="开仓汇总已确认，移动端不可继续修改；请先由桌面端撤回确认")
+        if task.status in {"COMPLETED", "CANCELLED"}:
+            return ErrorResponse(msg="当前任务已完成或取消，不可编辑")
+        fields = ("right_revolution_reading", "left_revolution_reading")
+        for field in fields:
+            value = request.data.get(field)
+            if value in (None, ""):
+                setattr(opening, field, None)
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return ErrorResponse(msg="刀盘累计读数必须是数字")
+            if not math.isfinite(value) or value < 0:
+                return ErrorResponse(msg="刀盘累计读数不能为负数")
+            setattr(opening, field, value)
+        opening.save(update_fields=[*fields, "update_datetime"])
+        return SuccessResponse(data=MobileTaskSerializer(task, context={"request": request}).data, msg="读数已保存")
 
     @transaction.atomic
     @action(detail=True, methods=["post"])

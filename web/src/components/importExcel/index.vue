@@ -1,6 +1,6 @@
 <template>
   <div style="display: inline-block">
-    <el-button size="default" type="success" @click="handleImport()">
+    <el-button @click="handleImport()">
       <slot>导入</slot>
     </el-button>
     <el-dialog :title="props.upload.title" v-model="uploadShow" width="400px" append-to-body>

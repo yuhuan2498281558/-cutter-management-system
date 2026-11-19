@@ -44,9 +44,9 @@ const isShowIconSvg = computed(() => {
 const isShowIconImg = computed(() => {
 	return linesString.find((str) => props.name?.startsWith(str));
 });
-// 设置图标样式
+// 设置图标样式（按组件大小缩放，见 tokens.scss 的 --dv-icon-scale）
 const setIconSvgStyle = computed(() => {
-	return `font-size: ${props.size}px;color: ${props.color};`;
+	return `font-size: calc(${props.size}px * var(--dv-icon-scale, 1));color: ${props.color};`;
 });
 // 设置图片样式
 const setIconImgOutStyle = computed(() => {

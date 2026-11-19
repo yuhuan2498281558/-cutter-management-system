@@ -2,10 +2,12 @@ import json
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
+from asgiref.sync import sync_to_async
 from django.test import SimpleTestCase
 
 from application.ai_assistant.llm_service import ToolAssistant
 from application.ai_assistant.memory_service import MemoryService, MemorySnapshot, StoredMessage
+from application.ai_assistant.history_access import access_stamp
 
 
 class MemoryPathTests(SimpleTestCase):
@@ -56,7 +58,7 @@ class MemoryPathTests(SimpleTestCase):
             self.assertEqual(slots['tool_type'], 'DISC')
         self.assertEqual(self.assistant._resolve_memory_slots('同样范围的换刀频率呢', snapshot)['tool_type'], 'SCRAPER')
 
-    def test_memory_messages_use_summary_and_bounded_recent_history(self):
+    def test_memory_messages_keep_full_history_and_slots_only_in_current_input(self):
         snapshot = MemorySnapshot(
             scope_key="user:1",
             summary="已确认关注换刀范围",
@@ -70,9 +72,8 @@ class MemoryPathTests(SimpleTestCase):
             summary_through_sequence=2,
         )
         messages = self.assistant._memory_messages(snapshot, {"memory_slots": snapshot.slots})
-        self.assertIn("当前工作状态", messages[0].content)
-        self.assertIn("历史摘要", messages[1].content)
-        self.assertEqual([item.content for item in messages[-2:]], ["新问题", "新回答"])
+        self.assertEqual([item.content for item in messages], ["旧问题", "旧回答", "新问题", "新回答"])
+        self.assertIn("当前工作状态", self.assistant._build_context_message({"memory_slots": snapshot.slots}))
 
     def test_ablation_drops_persisted_slots(self):
         snapshot = MemorySnapshot(scope_key="user:1", backend="ablate", slots={"ring_range": [1, 2]})
@@ -171,7 +172,8 @@ class MemoryPathTests(SimpleTestCase):
             StoredMessage(1, "human", "统计滚刀换刀情况", 5), StoredMessage(2, "ai", "旧答案", 5),
         ])
         new = self.assistant._prepare_query_context("统计全部刀具换刀情况", snapshot)
-        self.assertEqual(self.assistant._memory_messages(snapshot, new), [])
+        self.assertEqual([item.content for item in self.assistant._memory_messages(snapshot, new)],
+                         ["统计滚刀换刀情况", "旧答案"])
         self.assertEqual(self.assistant._memory_diagnostics(snapshot, new)["active_slots"], {})
         continued = self.assistant._prepare_query_context("同样范围统计换刀情况", snapshot)
         self.assertTrue(self.assistant._memory_messages(snapshot, continued))
@@ -182,7 +184,7 @@ class MemoryPathTests(SimpleTestCase):
             StoredMessage(2, "ai", "旧答案", 5),
         ])
         working = self.assistant._prepare_query_context("那刮刀呢", snapshot)
-        self.assertTrue(self.assistant._needs_tool_call(working["effective_query"]))
+        self.assertTrue(self.assistant._model_needs_tools(working["effective_query"], working))
         self.assertNotIn("滚刀", working["effective_query"])
         with patch("application.ai_assistant.llm_service.query_tool_change_data", return_value=json.dumps({
             "total_records": 3, "replaced_count": 2, "replacement_rate": 66.7, "wear_distribution": [],
@@ -200,14 +202,16 @@ class MemoryPathTests(SimpleTestCase):
 
     async def test_sync_and_stream_save_same_effective_slots_and_original_question(self):
         snapshot = MemorySnapshot(scope_key="user:1", slots={"ring_range": [100, 300], "tool_type": "DISC", "cutter_position_no": "30"})
-        snapshot.messages = [StoredMessage(1, "human", "统计100环到300环滚刀换刀情况", 5), StoredMessage(2, "ai", "旧回答", 5)]
+        snapshot.messages = [StoredMessage(1, "human", "统计100环到300环滚刀换刀情况", 5,
+                                           metadata={"project_id": "TEST", "access_stamp": access_stamp("TEST")}),
+                             StoredMessage(2, "ai", "旧回答", 5)]
         assistant = ToolAssistant()
         assistant._load_memory = Mock(return_value=snapshot)
         assistant._direct_route = Mock(return_value={"answer": "已查询", "type": "analysis", "rule_branch": "tool_change_summary"})
         assistant._store_turn_and_summarize = Mock(return_value=snapshot)
-        assistant._polish_direct_answer = Mock(return_value=("已查询", {}))
+        assistant._polish_direct_answer = Mock(return_value="已查询")
         query = "取消滚刀限制"
-        sync_result = assistant.chat(query, {"user_id": 1, "project_id": "TEST"})
+        sync_result = await sync_to_async(assistant.chat)(query, {"user_id": 1, "project_id": "TEST"})
         stream = [event async for event in assistant.chat_stream(query, {"user_id": 1, "project_id": "TEST"})]
         for call in assistant._store_turn_and_summarize.call_args_list:
             self.assertEqual(call.args[1], query)
@@ -268,17 +272,17 @@ class MemoryPathTests(SimpleTestCase):
             self.assertEqual(result["rule_branch"], "position_point_query")
             self.assertEqual(json.loads(tool.call_args.args[0])["cutter_position_no"], position)
         for instance in ("GD-TEST-1201", "487-S14R-01", "R15-S11L-2"):
-            with patch("application.ai_assistant.llm_service.calculate_tool_performance", return_value="{}") as tool:
+            with patch("application.ai_assistant.llm_service.trace_tool_lifecycle", return_value="{}") as tool:
                 result = self.assistant._direct_route(f"查询{instance}寿命", {"project_id": "TEST"})
-            self.assertEqual(result["rule_branch"], "tool_performance")
-            self.assertEqual(json.loads(tool.call_args.args[0])["tool_numbers"], [instance])
+            self.assertEqual(result["rule_branch"], "tool_lifecycle")
+            self.assertEqual(json.loads(tool.call_args.args[0])["tool_ids"], [instance])
 
     def test_manufacturer_performance_preserves_type_filter(self):
         for query, expected in [("对比各厂家滚刀刀具性能表现", "DISC"), ("对比各厂家刮刀性能表现", "SCRAPER")]:
             context = self.assistant._prepare_query_context(query, MemorySnapshot(scope_key="user:1"))
-            with patch("application.ai_assistant.llm_service.compare_manufacturer_performance", return_value="{}") as tool:
+            with patch("application.ai_assistant.llm_service.compare_manufacturer_service", return_value="{}") as tool, patch.object(self.assistant, '_named_manufacturers', return_value=[]):
                 result = self.assistant._direct_route(query, context)
-            self.assertEqual(result["rule_branch"], "manufacturer")
+            self.assertEqual(result["rule_branch"], "manufacturer_service")
             self.assertEqual(json.loads(tool.call_args.args[0])["tool_type"], expected)
             self.assertEqual(context["memory_slots"]["tool_type"], expected)
 
@@ -307,11 +311,12 @@ class MemoryPathTests(SimpleTestCase):
 
     def test_actual_total_cost_does_not_become_model_cost_recommendation(self):
         query = "当前项目实际刀具采购加返修总成本是多少"
-        with patch("application.ai_assistant.llm_service.recommend_tools") as recommend:
+        with patch("application.ai_assistant.llm_service.recommend_tools") as recommend, patch("application.ai_assistant.llm_service.query_registered_amounts", return_value='{"total_registered_cost_yuan": 10}') as amounts:
             result = self.assistant._direct_route(query, {"project_id": "TEST"})
-        self.assertEqual(result["rule_branch"], "unsupported_actual_total_cost")
-        self.assertIn("无法给出实际总成本", result["answer"])
-        self.assertIn("不能替代", result["answer"])
+        self.assertEqual(result["rule_branch"], "registered_amounts")
+        self.assertTrue(result['answer'].startswith('系统里没有实际采购和付款台账，下面是登记金额，不是实际支出。'))
+        self.assertIn("登记合计：10.00 元", result["answer"])
+        amounts.assert_called_once()
         recommend.assert_not_called()
 
     def test_explicit_range_clear_cannot_be_replaced_by_recent_defaults(self):

@@ -88,9 +88,11 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 					title: '刀具父类型',
 					type: 'dict-select',
 					dict: dict({
-						url: '/api/system/dictionary/?parent=50',
-						label: 'label',
-						value: 'value',
+						data: [
+							{ label: '滚刀', value: 'DISC' },
+							{ label: '撕裂刀', value: 'RIPPER' },
+							{ label: '刮刀', value: 'SCRAPER' },
+						],
 					}),
 					column: {
 						show: true,
@@ -150,6 +152,7 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 					column: { minWidth: 150 },
 					dict: dict({
 						url: '/api/shield/shield_machine_basic_info/',
+						params: { limit: 999 },
 						label: 'shield_model',
 						value: 'id',
 					}),
@@ -169,7 +172,9 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 										});
 										if (res.data && res.data.length > 0) {
 											setTimeout(() => {
-												form.shield_machine = res.data[0].id;
+												if (form.shield_machine == null) {
+													form.shield_machine = res.data[0].id;
+												}
 											}, 100);
 										}
 									} catch (error) {

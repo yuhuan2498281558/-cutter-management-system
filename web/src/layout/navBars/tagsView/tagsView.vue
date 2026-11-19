@@ -56,10 +56,11 @@ import pinia from '/@/stores/index';
 import { useTagsViewRoutes } from '/@/stores/tagsViewRoutes';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import { useKeepALiveNames } from '/@/stores/keepAliveNames';
-import { Session } from '/@/utils/storage';
+import { Session, Local } from '/@/utils/storage';
 import { isObjectValueEqual } from '/@/utils/arrayOperation';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
+import { openedPages, overflowOpenedPages } from '/@/layout/navBars/tagsView/openedPages';
 
 // 引入组件
 const Contextmenu = defineAsyncComponent(() => import('/@/layout/navBars/tagsView/contextmenu.vue'));
@@ -132,6 +133,8 @@ const getTagsViewRoutes = async () => {
 const initTagsView = async () => {
 	if (Session.get('tagsViewList') && getThemeConfig.value.isCacheTagsView) {
 		state.tagsViewList = await Session.get('tagsViewList');
+		// 地址栏直接打开、不在缓存列表里的当前页也要加进来（已在列表里的不会重复加）
+		await addTagsView(route.path, <RouteToFrom>route);
 	} else {
 		await state.tagsViewRoutesList.map((v: RouteItem) => {
 			if (v.meta?.isAffix && !v.meta.isHide) {
@@ -548,8 +551,46 @@ onBeforeMount(() => {
 		}
 	});
 });
+// 侧栏"最近打开"：同步打开的页面列表和各页最后访问的时间，关闭时走标签栏自己的关闭逻辑
+// 页面的键与关闭标签用的一致：共用标签时按 path，否则按 url
+const getOpenedPageKey = (v: RouteItem) => (getThemeConfig.value.isShareTagsView ? v.path : v.url);
+const closeFromOpenedPages = (v: RouteItem) => {
+	closeCurrentTagsView(getOpenedPageKey(v));
+};
+// 最后访问时间存在会话缓存里（和标签列表一样），刷新页面后顺序不乱
+let lastVisits: Record<string, number> = Session.get('tagsViewLastVisits') || {};
+// 用户自己选的是不是侧边栏布局：窗口窄于 1000px 时 layout 会被临时改成侧边栏布局，
+// 原来选的布局记在 oldLayout（见 layout/index.vue），按它判断，免得拖窄窗口就把经典等布局的标签关掉
+const isSidebarLayoutChosen = () => (Local.get('oldLayout') || getThemeConfig.value.layout) === 'defaults';
+watch(
+	() => [state.tagsViewList, state.routeActive, state.routePath, getThemeConfig.value.isShareTagsView, getThemeConfig.value.layout],
+	() => {
+		const now = Date.now();
+		const visits = Object.fromEntries(
+			state.tagsViewList.map((v: RouteItem) => [getOpenedPageKey(v), isActive(v) ? now : lastVisits[getOpenedPageKey(v)] || 0])
+		);
+		// 标签列表重新载入时会先清空再从会话缓存恢复（getTagsViewRoutes），清空的那一下不能把访问记录也清掉
+		if (state.tagsViewList.length) {
+			lastVisits = visits;
+			Session.set('tagsViewLastVisits', lastVisits);
+		}
+		openedPages.list = state.tagsViewList.map((v: RouteItem) => ({ route: v, isActive: isActive(v), lastVisit: visits[getOpenedPageKey(v)] }));
+		// 侧边栏布局没有标签栏横条，页面只能在"最近打开"里关：挤出最近 5 个的页面要真正关掉（同时释放 keep-alive 缓存），
+		// 只是不显示的话，它们再也关不掉，缓存会一直涨。当前页总排在第一个，不会被关。
+		// 其他布局只是窄屏时临时变成侧边栏布局，标签栏横条回到宽屏就能关，不在这里关
+		if (getThemeConfig.value.layout === 'defaults' && isSidebarLayoutChosen()) {
+			overflowOpenedPages(openedPages.list).forEach((page) => closeFromOpenedPages(page.route));
+		}
+	},
+	{ deep: true, immediate: true }
+);
+openedPages.close = closeFromOpenedPages;
 // 页面卸载时
 onUnmounted(() => {
+	if (openedPages.close === closeFromOpenedPages) {
+		openedPages.list = [];
+		openedPages.close = null;
+	}
 	// 取消非本页面调用监听
 	mittBus.off('onCurrentContextmenuClick', () => {});
 	// 取消监听布局配置界面开启/关闭拖拽
@@ -614,18 +655,17 @@ watch(
 			line-height: 26px;
 			display: flex;
 			align-items: center;
-			border: 1px solid var(--el-border-color-lighter);
+			// 安静样式：不画边框块，未选中用次要文字色
+			border: 1px solid transparent;
 			padding: 0 15px;
 			margin-right: 5px;
-			border-radius: 2px;
 			position: relative;
 			z-index: 0;
 			cursor: pointer;
 			justify-content: space-between;
+			color: var(--el-text-color-secondary);
 			&:hover {
-				background-color: var(--el-color-primary-light-9);
-				color: var(--el-color-primary);
-				border-color: var(--el-color-primary-light-5);
+				color: var(--el-text-color-primary);
 			}
 			&-iconfont {
 				position: relative;
@@ -641,8 +681,8 @@ watch(
 				line-height: 14px;
 				right: -5px;
 				&:hover {
-					color: var(--el-color-white);
-					background-color: var(--el-color-primary-light-3);
+					color: var(--el-text-color-primary);
+					background-color: var(--dv-selected);
 				}
 			}
 			.layout-icon-active {
@@ -652,11 +692,10 @@ watch(
 				display: none;
 			}
 		}
+		// 选中：正文色 + 2px 近黑下划线
 		.is-active {
-			color: var(--el-color-white);
-			background: var(--el-color-primary);
-			border-color: var(--el-color-primary);
-			transition: border-color 3s ease;
+			color: var(--el-text-color-primary);
+			box-shadow: inset 0 -2px 0 var(--el-color-primary);
 		}
 	}
 	// 风格4
@@ -684,20 +723,8 @@ watch(
 	// 风格5
 	.tags-style-five {
 		align-items: flex-end;
-		.tags-style-five-svg {
-			-webkit-mask-image: url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNzAiIGhlaWdodD0iNzAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZmlsbD0ibm9uZSI+CgogPGc+CiAgPHRpdGxlPkxheWVyIDE8L3RpdGxlPgogIDxwYXRoIHRyYW5zZm9ybT0icm90YXRlKC0wLjEzMzUwNiA1MC4xMTkyIDUwKSIgaWQ9InN2Z18xIiBkPSJtMTAwLjExOTE5LDEwMGMtNTUuMjI4LDAgLTEwMCwtNDQuNzcyIC0xMDAsLTEwMGwwLDEwMGwxMDAsMHoiIG9wYWNpdHk9InVuZGVmaW5lZCIgc3Ryb2tlPSJudWxsIiBmaWxsPSIjRjhFQUU3Ii8+CiAgPHBhdGggZD0ibS0wLjYzNzY2LDcuMzEyMjhjMC4xMTkxOSwwIDAuMjE3MzcsMC4wNTc5NiAwLjQ3Njc2LDAuMTE5MTljMC4yMzIsMC4wNTQ3NyAwLjI3MzI5LDAuMDM0OTEgMC4zNTc1NywwLjExOTE5YzAuMDg0MjgsMC4wODQyOCAwLjM1NzU3LDAgMC40NzY3NiwwbDAuMTE5MTksMGwwLjIzODM4LDAiIGlkPSJzdmdfMiIgc3Ryb2tlPSJudWxsIiBmaWxsPSJub25lIi8+CiAgPHBhdGggZD0ibTI4LjkyMTM0LDY5LjA1MjQ0YzAsMC4xMTkxOSAwLDAuMjM4MzggMCwwLjM1NzU3bDAsMC4xMTkxOWwwLDAuMTE5MTkiIGlkPSJzdmdfMyIgc3Ryb2tlPSJudWxsIiBmaWxsPSJub25lIi8+CiAgPHJlY3QgaWQ9InN2Z180IiBoZWlnaHQ9IjAiIHdpZHRoPSIxLjMxMTA4IiB5PSI2LjgzNTUyIiB4PSItMC4wNDE3MSIgc3Ryb2tlPSJudWxsIiBmaWxsPSJub25lIi8+CiAgPHJlY3QgaWQ9InN2Z181IiBoZWlnaHQ9IjEuNzg3ODQiIHdpZHRoPSIwLjExOTE5IiB5PSI2OC40NTY1IiB4PSIyOC45MjEzNCIgc3Ryb2tlPSJudWxsIiBmaWxsPSJub25lIi8+CiAgPHJlY3QgaWQ9InN2Z182IiBoZWlnaHQ9IjQuODg2NzciIHdpZHRoPSIxOS4wNzAzMiIgeT0iNTEuMjkzMjEiIHg9IjM2LjY2ODY2IiBzdHJva2U9Im51bGwiIGZpbGw9Im5vbmUiLz4KIDwvZz4KPC9zdmc+'),
-				url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNzAiIGhlaWdodD0iNzAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZmlsbD0ibm9uZSI+CiA8Zz4KICA8dGl0bGU+TGF5ZXIgMTwvdGl0bGU+CiAgPHBhdGggdHJhbnNmb3JtPSJyb3RhdGUoLTg5Ljc2MjQgNy4zMzAxNCA1NS4xMjUyKSIgc3Ryb2tlPSJudWxsIiBpZD0ic3ZnXzEiIGZpbGw9IiNGOEVBRTciIGQ9Im02Mi41NzQ0OSwxMTcuNTIwODZjLTU1LjIyOCwwIC0xMDAsLTQ0Ljc3MiAtMTAwLC0xMDBsMCwxMDBsMTAwLDB6IiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGZpbGwtcnVsZT0iZXZlbm9kZCIvPgogIDxwYXRoIGQ9Im0tMC42Mzc2Niw3LjMxMjI4YzAuMTE5MTksMCAwLjIxNzM3LDAuMDU3OTYgMC40NzY3NiwwLjExOTE5YzAuMjMyLDAuMDU0NzcgMC4yNzMyOSwwLjAzNDkxIDAuMzU3NTcsMC4xMTkxOWMwLjA4NDI4LDAuMDg0MjggMC4zNTc1NywwIDAuNDc2NzYsMGwwLjExOTE5LDBsMC4yMzgzOCwwIiBpZD0ic3ZnXzIiIHN0cm9rZT0ibnVsbCIgZmlsbD0ibm9uZSIvPgogIDxwYXRoIGQ9Im0yOC45MjEzNCw2OS4wNTI0NGMwLDAuMTE5MTkgMCwwLjIzODM4IDAsMC4zNTc1N2wwLDAuMTE5MTlsMCwwLjExOTE5IiBpZD0ic3ZnXzMiIHN0cm9rZT0ibnVsbCIgZmlsbD0ibm9uZSIvPgogIDxyZWN0IGlkPSJzdmdfNCIgaGVpZ2h0PSIwIiB3aWR0aD0iMS4zMTEwOCIgeT0iNi44MzU1MiIgeD0iLTAuMDQxNzEiIHN0cm9rZT0ibnVsbCIgZmlsbD0ibm9uZSIvPgogIDxyZWN0IGlkPSJzdmdfNSIgaGVpZ2h0PSIxLjc4Nzg0IiB3aWR0aD0iMC4xMTkxOSIgeT0iNjguNDU2NSIgeD0iMjguOTIxMzQiIHN0cm9rZT0ibnVsbCIgZmlsbD0ibm9uZSIvPgogIDxyZWN0IGlkPSJzdmdfNiIgaGVpZ2h0PSI0Ljg4Njc3IiB3aWR0aD0iMTkuMDcwMzIiIHk9IjUxLjI5MzIxIiB4PSIzNi42Njg2NiIgc3Ryb2tlPSJudWxsIiBmaWxsPSJub25lIi8+CiA8L2c+Cjwvc3ZnPg=='),
-				url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><rect rx='8' width='100%' height='100%' fill='%23F8EAE7'/></svg>");
-			-webkit-mask-size: 18px 30px, 20px 30px, calc(100% - 30px) calc(100% + 17px);
-			-webkit-mask-position: right bottom, left bottom, center top;
-			-webkit-mask-repeat: no-repeat;
-		}
+		// 与风格1同样的安静样式，只保留风格5自己的图标显示规则
 		.layout-navbars-tagsview-ul-li {
-			padding: 0 5px;
-			border-width: 15px 27px 15px;
-			border-style: solid;
-			border-color: transparent;
-			margin: 0 -15px;
 			.layout-icon-active,
 			.layout-navbars-tagsview-ul-li-iconfont,
 			.layout-navbars-tagsview-ul-li-refresh {
@@ -706,21 +733,7 @@ watch(
 			.layout-icon-three {
 				display: block;
 			}
-			&:hover {
-				@extend .tags-style-five-svg;
-				background: var(--el-color-primary-light-9);
-				color: unset;
-			}
-		}
-		.is-active {
-			@extend .tags-style-five-svg;
-			background: var(--el-color-primary-light-9) !important;
-			color: var(--el-color-primary) !important;
-			z-index: 1;
 		}
 	}
-}
-.layout-navbars-tagsview-shadow {
-	box-shadow: rgb(0 21 41 / 4%) 0px 1px 4px;
 }
 </style>

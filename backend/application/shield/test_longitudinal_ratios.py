@@ -2,7 +2,8 @@ import io
 import json
 import tempfile
 from pathlib import Path
-from unittest import TestCase
+from importlib.util import find_spec
+from unittest import TestCase, skipUnless
 
 import numpy as np
 from django.core.management import call_command, CommandError
@@ -13,6 +14,76 @@ from application.shield.longitudinal_ratios import (
 )
 from extract_longitudinal_ratios import integrate_columns
 from extract_six_class_ratios import aggregate_samples
+from extract_stratum_area_ratios import hatch_candidate_area
+from extract_pdf_stratum_ratios import classify_colors, constrain_classes
+from complete_stratum_ratios import complete_payload, smooth_unresolved_areas
+
+
+class PresentationCompletionTests(TestCase):
+    def test_only_unknown_share_is_allocated_using_original_neighbors(self):
+        rings = {'1': {'a': 80, 'b': 20}, '2': {'a': 20, 'b': 40, 'UNRESOLVED': 40},
+                 '3': {'a': 10, 'b': 30, 'unrelated': 60}}
+        result, audit = smooth_unresolved_areas(rings)
+        self.assertEqual(result['1'], rings['1'])
+        self.assertEqual(result['3'], rings['3'])
+        # Neighbor 3 is normalized over only the classes present in ring 2.
+        self.assertEqual(result['2'], {'a': 37.166667, 'b': 62.833333})
+        self.assertEqual(audit['2']['source_unresolved_percent'], 40)
+        self.assertEqual(rings['2']['UNRESOLVED'], 40)
+        self.assertEqual(result, smooth_unresolved_areas(dict(reversed(list(rings.items()))))[0])
+
+    def test_boulder_area_stays_fixed_and_unknown_does_not_become_boulder(self):
+        result, _ = smooth_unresolved_areas({'1': {
+            'AREA_BOULDER': 10.480023, 'AREA_SOFT_HARD': 49.519977, 'UNRESOLVED': 40}})
+        self.assertEqual(result['1'], {'AREA_BOULDER': 10.480023, 'AREA_SOFT_HARD': 89.519977})
+
+    def test_no_evidence_is_rejected_and_blank_ring_uses_nearest_original(self):
+        with self.assertRaises(ValueError):
+            smooth_unresolved_areas({'1': {'UNRESOLVED': 100}})
+        with self.assertRaises(ValueError):
+            smooth_unresolved_areas({'1': {}})
+        result, _ = smooth_unresolved_areas({'1': {'a': 100}, '2': {'UNRESOLVED': 100},
+                                           '3': {'UNRESOLVED': 100}, '4': {'b': 100}})
+        self.assertEqual(result['2'], {'a': 100})
+        self.assertEqual(result['3'], {'b': 100})
+
+    def test_audit_retains_raw_ratios_and_rejects_repeated_completion(self):
+        payload = {'measurement_kind': 'longitudinal_section_area_percent',
+                   'estimated': True, 'method': 'fixture',
+                   'rings': {'1': {'AREA_CLAY_SAND': 60, 'UNRESOLVED': 40}}}
+        result = complete_payload(payload)
+        self.assertEqual(result['rings']['1'], {'AREA_CLAY_SAND': 100})
+        self.assertEqual(result['raw_rings'], payload['rings'])
+        self.assertTrue(result['completion']['estimated'])
+        with self.assertRaises(ValueError):
+            complete_payload(result)
+        with self.assertRaises(ValueError):
+            complete_payload({**payload, 'estimated': False})
+
+
+@skipUnless(find_spec('shapely'), '需要 shapely：离线地层提取脚本的依赖，应用环境未安装')
+class CandidateGeometryTests(TestCase):
+    def test_invalid_dxf_hatch_preserves_both_candidate_lobes(self):
+        from shapely.geometry import Point
+        geom = hatch_candidate_area([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
+        self.assertAlmostEqual(geom.area, 2)
+        self.assertTrue(geom.contains(Point(1, .25)))
+        self.assertTrue(geom.contains(Point(1, 1.75)))
+        # A repaired candidate alone cannot classify an ambiguous PDF pixel.
+        classes, codes = classify_colors(np.array([[255, 255, 255]]),
+            [('clay', [221, 165, 109]), ('rock', [254, 151, 150])])
+        self.assertEqual(codes[constrain_classes(classes, codes, {'rock'})[0]], 'UNRESOLVED')
+
+    def test_repaired_candidate_discards_dangling_line_and_retains_hole(self):
+        from shapely.geometry import Point
+        geom = hatch_candidate_area([(0, 0), (3, 0), (3, 3), (0, 3), (0, 0),
+            (-2, 0), (0, 0)])
+        self.assertAlmostEqual(geom.area, 9)
+        self.assertFalse(geom.intersects(Point(-1, 0)))
+        hole = hatch_candidate_area([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0),
+            (1, 1), (1, 3), (3, 3), (3, 1), (1, 1), (0, 0)])
+        self.assertAlmostEqual(hole.area, 12)
+        self.assertFalse(hole.contains(Point(2, 2)))
 
 
 class LongitudinalAreaTests(TestCase):

@@ -7,7 +7,14 @@
           加载更早消息
         </el-button>
       </div>
-      <div v-if="messages.length === 0" class="welcome-message">
+      <!-- 首屏历史还没回来时先不显示欢迎语和快捷问题，避免误以为历史丢了 -->
+      <div v-if="messages.length === 0 && historyLoading" class="welcome-message">
+        <div class="welcome-icon">
+          <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+        </div>
+        <p class="history-loading-text">正在加载历史对话…</p>
+      </div>
+      <div v-else-if="messages.length === 0" class="welcome-message">
         <div class="welcome-icon">
           <el-icon :size="30"><ChatDotRound /></el-icon>
         </div>
@@ -27,11 +34,8 @@
         </div>
       </div>
 
-      <div
-        v-for="(msg, index) in messages"
-        :key="msg.id"
-        :class="['message-item', msg.role]"
-      >
+      <template v-for="(msg, index) in messages" :key="msg.id">
+      <div :class="['message-item', msg.role]">
         <div class="message-avatar">
           <el-icon v-if="msg.role === 'user'" :size="18"><User /></el-icon>
           <el-icon v-else :size="18"><ChatDotRound /></el-icon>
@@ -42,6 +46,7 @@
               v-if="msg.role === 'assistant'"
               :content="msg.content"
               :streaming="msg.streaming"
+              :truncated="msg.aborted || msg.rawError"
             />
             <template v-else>{{ msg.content }}</template>
           </div>
@@ -50,8 +55,21 @@
             <span></span>
             <span></span>
           </div>
+          <!-- 模型分析用到的数据：每类一个标签，展开后列出每次查询的类别和范围 -->
+          <div v-if="msg.queryTraces?.length && !msg.streaming" class="query-trace">
+            <div class="query-trace-row">
+              <span class="query-trace-title">本次查询</span>
+              <span v-for="tag in queryTraceTags(msg.queryTraces)" :key="tag" class="query-trace-tag">{{ tag }}</span>
+              <button type="button" class="meta-btn" @click="toggleQueryTrace(msg.id)">
+                {{ expandedTraces.includes(msg.id) ? '收起' : '展开' }}
+              </button>
+            </div>
+            <ul v-if="expandedTraces.includes(msg.id)" class="query-trace-list">
+              <li v-for="(trace, traceIndex) in msg.queryTraces" :key="traceIndex">{{ describeQueryTrace(trace) }}</li>
+            </ul>
+          </div>
           <div class="message-meta">
-            <span v-if="msg.streaming" class="message-time generating">正在生成 · {{ elapsedSec }}s</span>
+            <span v-if="msg.streaming" class="message-time generating">{{ STATUS_TEXT[msg.status ?? ''] ?? '正在生成' }} · {{ elapsedSec }}s</span>
             <span v-else-if="msg.time" class="message-time">{{ msg.time }}</span>
             <span v-if="msg.aborted" class="aborted-tag">已停止，回答不完整</span>
             <button
@@ -77,6 +95,10 @@
           </div>
         </div>
       </div>
+      <div v-if="msg.id === compactionDividerAfter" class="compaction-divider">
+        <span>以上对话已整理成摘要</span>
+      </div>
+      </template>
       </div>
     </div>
 
@@ -96,15 +118,18 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { ChatDotRound, User, DocumentCopy, ArrowDown, RefreshRight } from '@element-plus/icons-vue';
+import { ChatDotRound, User, DocumentCopy, ArrowDown, RefreshRight, Loading } from '@element-plus/icons-vue';
 import { Message } from '../types';
 import { quickQuestionGroups } from '../constants';
+import { describeQueryTrace, queryTraceTags } from '../queryTrace';
 import AnalysisMessage from './AnalysisMessage.vue';
 
 const props = defineProps<{
   messages: Message[];
+  // 最近一次摘要覆盖到的最后一条消息序号，没有整理过为 null
+  compactedThrough?: number | null;
   isGenerating?: boolean;
   hasMoreHistory?: boolean;
   historyLoading?: boolean;
@@ -117,14 +142,14 @@ defineEmits<{
   (e: 'load-earlier'): void;
 }>();
 
-// 欢迎区快捷问题：直接复用快捷问题库中已验证的原句，不新增问法
+// 欢迎区快捷问题：直接复用快捷问题库中已验证的原句，不新增问法；只放不带参数的问题
 const WELCOME_REFS: Array<[string, string]> = [
-  ['换刀/旧刀补录', '换刀汇总'],
-  ['换刀/旧刀补录', '异常磨损'],
-  ['刀位统计', '高频刀位'],
-  ['开仓记录', '开仓间隔'],
-  ['地层信息', '地层分布'],
-  ['寿命预测', '寿命概况'],
+  ['换刀与磨损', '全项目换刀'],
+  ['换刀与磨损', '异常磨损类型'],
+  ['刀位统计', '全刀盘磨损分布'],
+  ['开仓与检查', '开仓间隔'],
+  ['地层', '地层面积占比'],
+  ['服役与选型', '可查数据'],
 ];
 
 const welcomeChips = WELCOME_REFS
@@ -136,8 +161,27 @@ const welcomeChips = WELCOME_REFS
   })
   .filter((item): item is { label: string; query: string } => item !== null);
 
+const STATUS_TEXT: Record<string, string> = { compacting: '正在整理早前对话', revising: '正在补全回答' };
+
+// 分隔线画在摘要覆盖到的最后一条已加载消息之后；它后面还没有消息时不画
+const compactionDividerAfter = computed(() => {
+  const through = props.compactedThrough;
+  if (through === null || through === undefined) return null;
+  const covered = props.messages.filter((msg) => msg.sequence !== undefined && msg.sequence <= through);
+  const last = covered[covered.length - 1];
+  return last && last !== props.messages[props.messages.length - 1] ? last.id : null;
+});
+
 const containerRef = ref<HTMLElement>();
 const isNearBottom = ref(true);
+
+// 已展开"本次查询"明细的消息
+const expandedTraces = ref<string[]>([]);
+const toggleQueryTrace = (id: string) => {
+  expandedTraces.value = expandedTraces.value.includes(id)
+    ? expandedTraces.value.filter((item) => item !== id)
+    : [...expandedTraces.value, id];
+};
 
 // 生成用时计时器：模型路径可能耗时较久，给用户"仍在正常工作"的反馈
 const elapsedSec = ref(0);
@@ -254,6 +298,21 @@ defineExpose({
   text-align: center;
 }
 
+.compaction-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: #94a3b8;
+
+  &::before,
+  &::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dashed #dcdfe6;
+  }
+}
+
 .chat-message-list-wrapper {
   position: relative;
   flex: 1;
@@ -306,6 +365,10 @@ defineExpose({
   p {
     margin: 0 0 16px;
     font-size: 13px;
+  }
+
+  .history-loading-text {
+    margin: 14px 0 0;
   }
 
   .welcome-chips {
@@ -370,6 +433,36 @@ defineExpose({
       align-items: center;
       gap: 8px;
       padding: 0 4px;
+    }
+
+    .query-trace {
+      padding: 0 4px;
+      font-size: 12px;
+      color: #64748b;
+
+      .query-trace-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .query-trace-title {
+        color: #94a3b8;
+      }
+
+      .query-trace-tag {
+        padding: 1px 8px;
+        border-radius: 3px;
+        background: #f1f5f9;
+        line-height: 18px;
+      }
+
+      .query-trace-list {
+        margin: 4px 0 0;
+        padding-left: 18px;
+        line-height: 1.7;
+      }
     }
 
     .message-time {

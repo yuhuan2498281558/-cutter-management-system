@@ -1,76 +1,37 @@
 <template>
   <div class="custom-analysis-page">
-    <div class="analysis-export-bar">
-      <el-button type="primary" plain :disabled="!ready" @click="exportPdf">导出 PDF</el-button>
-    </div>
+    <AnalysisActions :target="actionsTarget" :generated-at="chartData?.meta?.generated_at"
+      :exports="[{ label: '导出 PDF', disabled: !ready, run: exportPdf }]" />
 
-    <el-card class="custom-config-card analysis-no-export" shadow="never">
-      <el-form :model="form" :disabled="fieldsLoading || !fieldConfig" label-position="top" class="custom-config-form">
-        <el-form-item label="图表类型">
+    <ScopeSummary :meta="chartData?.meta" />
+    <el-card class="custom-config-card analysis-card analysis-no-export" shadow="never">
+      <el-form :model="form" :disabled="fieldsLoading || !fieldConfig" class="custom-config-form" @submit.prevent>
+        <span class="config-group" role="group" aria-label="图表类型">
+          <span class="config-label">图表类型</span>
           <el-radio-group v-model="form.chart_type" @change="onChartTypeChange">
             <el-radio-button label="line">单维比较</el-radio-button>
             <el-radio-button label="matrix">双维矩阵</el-radio-button>
           </el-radio-group>
-        </el-form-item>
-
-        <el-form-item label="X轴">
-          <el-select
-            v-model="form.x_field"
-            filterable
-            placeholder="选择X轴"
-          >
-            <el-option
-              v-for="item in dimensionOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item v-if="form.chart_type === 'matrix'" label="Y轴">
-          <el-select
-            v-model="form.y_field"
-            filterable
-            placeholder="选择Y轴"
-          >
-            <el-option
-              v-for="item in matrixYOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="指标">
-          <el-select
-            v-model="form.metrics"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            :multiple-limit="2"
-            filterable
-            placeholder="最多选择2个指标"
-          >
-            <el-option
-              v-for="item in metricOptions"
-              :key="item.value"
-              :label="formatMetricLabel(item)"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item>
-          <el-button type="primary" :loading="loading || fieldsLoading" :disabled="!form.metrics.length || !!validationError" @click="loadChart">生成图表</el-button>
-        </el-form-item>
+        </span>
+        <el-select v-model="form.x_field" class="config-axis" filterable placeholder="选择X轴" aria-label="X轴">
+          <template #prefix><span class="config-label">X轴</span></template>
+          <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-if="form.chart_type === 'matrix'" v-model="form.y_field" class="config-axis" filterable placeholder="选择Y轴" aria-label="Y轴">
+          <template #prefix><span class="config-label">Y轴</span></template>
+          <el-option v-for="item in matrixYOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="form.metrics" class="config-metrics" multiple collapse-tags collapse-tags-tooltip :multiple-limit="2" filterable
+          placeholder="最多选择2个指标" aria-label="指标">
+          <template #prefix><span class="config-label">指标</span></template>
+          <el-option v-for="item in metricOptions" :key="item.value" :label="formatMetricLabel(item)" :value="item.value" />
+        </el-select>
+        <el-button type="primary" :loading="loading || fieldsLoading" :disabled="!form.metrics.length || !!validationError" @click="loadChart">生成图表</el-button>
       </el-form>
     </el-card>
-    <p v-if="validationError" role="alert" class="analysis-note">{{ validationError }}</p>
-    <div v-if="fieldsError" role="alert" class="analysis-note">{{ fieldsError }} <el-button size="small" @click="loadFields">重新读取字段</el-button></div>
-    <ScopeSummary :meta="chartData?.meta" />
-    <p v-if="chartData" class="analysis-note">本次聚合 {{ formatNumber(chartData.record_count) }} 条记录，展示 {{ tableRows.length }} 个分组。未记录与零值分别显示；地层分组可能重叠，不能直接加总。</p>
+    <p v-if="validationError" role="alert" class="config-warning">{{ validationError }}</p>
+    <div v-if="fieldsError" role="alert" class="analysis-note">{{ fieldsError }} <el-button size="small" @click="retryFields">重新读取字段</el-button></div>
+    <p v-if="chartData" class="aggregate-line">本次聚合 {{ formatNumber(chartData.record_count) }} 条记录，展示 {{ tableRows.length }} 个分组<InfoTip content="未记录与零值分别显示；地层分组可能重叠，不能直接加总。" /></p>
 
     <ChartCard
       :title="chartTitle"
@@ -123,23 +84,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import * as echarts from 'echarts';
+import InfoTip from '/@/components/InfoTip.vue';
+import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getCustomChart, getCustomFields } from '../api';
-import { DEFAULT_GRID, TOOLTIP_STYLE } from '../utils/chartTheme';
+import { buildLineChartOption, buildMatrixChartOption, formatNumber } from '../utils/customChartOptions';
 import { exportAnalysisPdf } from '../utils/pdfExport';
-import { analysisExportMeta, escapeHtml, requireAnalysisV2 } from '../utils/presentation';
+import { analysisExportMeta, requireAnalysisV2 } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import type {
   AnalysisFilter,
   CustomChartData,
   CustomFieldOption,
   CustomFieldsData,
-  CustomLineSeries,
   CustomMatrixSeries,
 } from '../types';
 
-const props = defineProps<{ filter: AnalysisFilter }>();
+const props = defineProps<{ filter: AnalysisFilter; actionsTarget?: HTMLElement | null }>();
 
 const fieldsLoading = ref(false);
 const fieldsError = ref('');
@@ -217,13 +179,6 @@ function formatMetricLabel(metric: CustomFieldOption) {
   return metric.unit ? `${metric.label}（${metric.unit}）` : metric.label;
 }
 
-function formatNumber(value: any) {
-  if (value === null || value === undefined || value === '') return '-';
-  const number = Number(value);
-  if (Number.isNaN(number)) return value;
-  return Number.isInteger(number) ? number.toLocaleString() : number.toFixed(2);
-}
-
 function normalizeFilter(filter: AnalysisFilter): AnalysisFilter {
   const result: AnalysisFilter = {};
   Object.entries(filter).forEach(([key, value]) => {
@@ -295,6 +250,10 @@ const { data: chartData, loading, error, ready, load: loadChart } = useAnalysisQ
   const res = await getCustomChart(params);
   return requireAnalysisV2<CustomChartData>(res?.data ?? res);
 });
+async function retryFields() {
+  await loadFields();
+  if (!fieldsError.value) loadChart();
+}
 watch(chartData, async () => { await nextTick(); if (alive) renderChart(); });
 
 function ensureChart() {
@@ -303,7 +262,7 @@ function ensureChart() {
     chart.dispose();
     chart = null;
   }
-  if (!chart) chart = echarts.init(chartRef.value);
+  if (!chart) chart = echarts.init(chartRef.value, 'dv');
   return chart;
 }
 
@@ -319,34 +278,7 @@ function renderChart() {
 function renderLineChart(data: CustomChartData) {
   const instance = ensureChart();
   if (!instance) return;
-  const series = data.series as CustomLineSeries[];
-  instance.setOption({
-    tooltip: { ...TOOLTIP_STYLE, trigger: 'axis' },
-    legend: { data: series.map(item => item.name), bottom: 0, type: 'scroll' },
-    grid: { ...DEFAULT_GRID, bottom: 72 },
-    xAxis: {
-      type: 'category',
-      data: data.categories ?? [],
-      name: data.x_field.label,
-      axisLabel: { interval: 0, rotate: (data.categories?.length ?? 0) > 8 ? 35 : 0 },
-    },
-    yAxis: series.map((item, index) => ({
-      type: 'value',
-      name: item.unit ? `${item.name}（${item.unit}）` : item.name,
-      position: index === 0 ? 'left' : 'right',
-      axisLabel: { formatter: (value: number) => item.unit === '%' ? `${value}%` : value },
-    })),
-    series: series.map((item, index) => ({
-      name: item.name,
-      type: ['ring_no', 'month', 'open_time'].includes(data.x_field.value) ? 'line' : 'bar',
-      barMaxWidth: 34,
-      yAxisIndex: index,
-      data: item.data,
-      smooth: false,
-      symbol: 'circle',
-      symbolSize: 6,
-    })),
-  }, true);
+  instance.setOption(buildLineChartOption(data), true);
 }
 
 function renderMatrixChart(data: CustomChartData) {
@@ -361,168 +293,15 @@ function renderMatrixChart(data: CustomChartData) {
     return;
   }
 
-  // 用双下划线分隔避免 "1-2" vs "12" 的 key 碰撞
-  const colorValueMap = new Map<string, number>();
-  colorMetric.data.forEach(item => {
-    if (item[2] !== null) colorValueMap.set(`${item[0]}__${item[1]}`, Number(item[2]));
-  });
-
-  const rawScatter = sizeMetric.data.filter(item => item[2] !== null).map(item => {
-    const sizeValue = Number(item[2]);
-    const colorValue = colorValueMap.get(`${item[0]}__${item[1]}`) ?? null;
-    return [item[0], item[1], sizeValue, colorValue] as [number, number, number, number | null];
-  });
-
-  const nonZeroSizes = rawScatter.map(d => d[2]).filter(v => v > 0);
-  const colorValues = rawScatter.map(d => d[3]).filter((v): v is number => v !== null && Number.isFinite(v));
-  const maxSize = nonZeroSizes.length ? Math.max(...nonZeroSizes) : 1;
-  const minColor = colorValues.length ? Math.min(...colorValues) : 0;
-  const maxColor = colorValues.length ? Math.max(...colorValues, minColor + 1) : 1;
-
-  // 把每个点的样式内嵌到数据里，避免函数回调的 TS 类型问题
-  const scatterData = rawScatter.map(([xi, yi, sv, cv]) => {
-    const isZero = sv === 0;
-    const norm = cv !== null && maxColor > minColor ? (cv - minColor) / (maxColor - minColor) : 0;
-    return {
-      value: [xi, yi, sv, cv],
-      itemStyle: cv === null ? { color: '#a8abb2' } : isZero
-        ? { color: '#d1d5db', opacity: 0.18, borderWidth: 0 }
-        : { opacity: 0.88, borderColor: '#fff', borderWidth: 1 },
-      label: { color: norm > 0.58 ? '#ffffff' : '#374151' },
-    };
-  });
-
-  const xCount = data.x_categories?.length ?? 0;
-  const yCount = data.y_categories?.length ?? 0;
-  // 中文字符约 13px 宽，英文约 7px；取折中估算
   const width = instance.getWidth();
-  const gridLeft = Math.min(Math.max(60, longestLabelLength(data.y_categories ?? []) * 13), width < 600 ? 100 : 180);
-  // 每格可用像素（宽高取小值，使气泡不溢出格子）
-  const gridW = Math.max(40, width - gridLeft - 70);
-  const gridH = parseInt(chartHeight.value) - (xCount > 6 ? 160 : 120);
-  const cellSize = Math.max(14, Math.min(56, Math.min(
-    gridW / Math.max(xCount, 1),
-    gridH / Math.max(yCount, 1),
-  )));
-  const showLabel = cellSize >= 26;
-
-  instance.setOption({
-    tooltip: {
-      ...TOOLTIP_STYLE,
-      trigger: 'item',
-      formatter: (params: any) => {
-        const xName = escapeHtml(data.x_categories?.[params.value[0]] ?? '');
-        const yName = escapeHtml(data.y_categories?.[params.value[1]] ?? '');
-        const sizeVal = params.value[2];
-        const colorVal = params.value[3];
-        const sizeUnit = sizeMetric.unit ? ` ${sizeMetric.unit}` : '';
-        const colorUnit = colorMetric.unit ? ` ${colorMetric.unit}` : '';
-        const colorLine = colorMetric.metric !== sizeMetric.metric
-          ? `<br/>${escapeHtml(colorMetric.name)}：${formatNumber(colorVal)}${escapeHtml(colorUnit)}`
-          : '';
-        return `<b>${escapeHtml(data.x_field.label)}：${xName}</b>`
-          + `<br/>${escapeHtml(data.y_field?.label || 'Y轴')}：${yName}`
-          + `<br/>${escapeHtml(sizeMetric.name)}：${formatNumber(sizeVal)}${escapeHtml(sizeUnit)}`
-          + colorLine;
-      },
-    },
-    grid: {
-      top: 20,
-      left: gridLeft,
-      right: 70,
-      bottom: xCount > 6 ? 108 : 72,
-      containLabel: false,
-    },
-    xAxis: {
-      type: 'category',
-      data: data.x_categories ?? [],
-      name: data.x_field.label,
-      nameLocation: 'middle',
-      nameGap: xCount > 6 ? 88 : 50,
-      boundaryGap: true,
-      axisTick: { alignWithLabel: true },
-      axisLabel: {
-        interval: 0,
-        rotate: xCount > 6 ? 40 : 0,
-        overflow: 'truncate',
-        width: xCount > 6 ? 80 : 120,
-        fontSize: 12,
-      },
-      splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' as const } },
-      splitArea: { show: true, areaStyle: { color: ['#fafafa', '#ffffff'] } },
-    },
-    yAxis: {
-      type: 'category',
-      data: data.y_categories ?? [],
-      name: data.y_field?.label || 'Y轴',
-      nameLocation: 'end' as const,
-      nameGap: 10,
-      axisLabel: {
-        interval: 0,
-        overflow: 'truncate',
-        width: gridLeft - 10,
-        fontSize: 12,
-      },
-      splitLine: { show: true, lineStyle: { color: '#e5e7eb', type: 'dashed' as const } },
-      splitArea: { show: true, areaStyle: { color: ['#fafafa', '#ffffff'] } },
-    },
-    visualMap: {
-      min: minColor,
-      max: maxColor,
-      dimension: 3,
-      calculable: true,
-      orient: 'vertical',
-      right: 8,
-      top: 'middle',
-      itemWidth: 14,
-      itemHeight: 120,
-      text: [`高`, '低'],
-      textStyle: { color: '#6b7280', fontSize: 11 },
-      inRange: {
-        color: ['#fffbeb', '#fde68a', '#fb923c', '#dc2626', '#7f1d1d'],
-      },
-    },
-    series: [{
-      name: sizeMetric.name,
-      type: 'scatter',
-      data: scatterData,
-      symbolSize: (value: number[]) => {
-        const v = Number(value[2]) || 0;
-        if (v === 0) return 5;
-        const ratio = Math.sqrt(v / maxSize);
-        return Math.max(8, Math.min(cellSize * 0.84, 10 + ratio * cellSize * 0.74));
-      },
-      label: {
-        show: showLabel,
-        formatter: (params: any) => {
-          const v = Number(params.value[2]);
-          return v === 0 ? '' : formatNumber(v);
-        },
-        fontSize: Math.max(9, Math.min(12, Math.floor(cellSize / 4))),
-      },
-      itemStyle: {},
-      emphasis: {
-        focus: 'self',
-        itemStyle: {
-          opacity: 1,
-          borderColor: '#111827',
-          borderWidth: 2,
-          shadowBlur: 10,
-          shadowColor: 'rgba(0,0,0,0.2)',
-        },
-      },
-    }],
-  }, true);
+  const height = chartHeight.value;
+  instance.setOption(buildMatrixChartOption(data, { width, height }), true);
   instance.resize();
-}
-
-function longestLabelLength(labels: string[]) {
-  return labels.reduce((max, label) => Math.max(max, String(label).length), 0);
 }
 
 let observer: ResizeObserver | null = null;
 let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-function onResize() { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!alive) return; chart?.resize(); renderChart(); }, 80); }
+function onResize() { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!alive) return; chart?.resize(); if (chartData.value?.chart_type === 'matrix') renderChart(); }, 80); }
 watch(chartRef, element => { observer?.disconnect(); if (element && typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(onResize); observer.observe(element); } });
 
 window.addEventListener('resize', onResize);
@@ -544,28 +323,30 @@ watch(chartHeight, async () => {
   padding-bottom: 16px;
 }
 
-.analysis-export-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
-
 .custom-config-card {
   margin-bottom: 12px;
-  border-radius: 8px;
 }
 
 .custom-config-card :deep(.el-card__body) {
-  padding: 12px 14px 2px;
+  padding: 12px 14px;
 }
 
-.custom-config-form :deep(.el-form-item) {
-  margin: 0;
+/* 配置区一行：标签放进控件，放不下时换行 */
+.custom-config-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.config-group { display: inline-flex; align-items: center; gap: 8px; }
+.config-label { font-size: var(--el-font-size-extra-small); color: var(--dv-text-muted); white-space: nowrap; }
+.config-axis { width: 200px; }
+.config-metrics { width: 320px; }
+@media (max-width: 600px) { .config-axis, .config-metrics { width: 100%; } }
+
+.config-warning,
+.aggregate-line {
+  margin: 0 0 12px;
+  font-size: var(--el-font-size-extra-small);
+  line-height: 1.7;
 }
-.custom-config-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: end; padding-bottom: 12px; }
-.custom-config-form :deep(.el-select) { width: 100%; }
-@media (max-width: 900px) { .custom-config-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 520px) { .custom-config-form { grid-template-columns: 1fr; } }
+.config-warning { color: var(--dv-warning-text); }
+.aggregate-line { display: flex; align-items: center; gap: 6px; color: var(--dv-text-secondary); }
 
 .custom-chart {
   width: 100%;
@@ -573,8 +354,8 @@ watch(chartHeight, async () => {
 
 .matrix-note {
   margin: -4px 16px 12px;
-  color: #64748b;
-  font-size: 12px;
+  color: var(--dv-text-secondary);
+  font-size: var(--el-font-size-extra-small);
   line-height: 1.5;
 }
 </style>

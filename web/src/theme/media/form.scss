@@ -13,8 +13,8 @@
 		margin-left: 0 !important;
 	}
 	.el-form-item {
-		// 响应式表单时，登录页需要重新处理
-		display: unset !important;
+		// 标签单独占一行、输入框在下面。用块级而不是 unset：unset 会把表单项变成行内元素，下边距失效、上下几项挤在一起
+		display: block !important;
 	}
 	// 表格演示中的表单筛选
 	.table-form-btn {

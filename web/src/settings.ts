@@ -71,6 +71,17 @@ export default {
 							}
 						}
 					},
+					// 表格右上角工具栏只留"刷新"和"列设置"，用普通图标按钮：导出在左边操作栏里已经有，
+					// 显示/隐藏搜索、紧凑模式用不上
+					toolbar: {
+						buttons: {
+							refresh: { type: 'default' },
+							columns: { type: 'default' },
+							search: { show: false },
+							compact: { show: false },
+							export: { show: false },
+						},
+					},
 					// 注释编号:django-vue3-admin__settings344115:代码开始行
 					// 功能说明:table表页面中右边的查看、编辑、复制、删除四个按钮的样式全局统一
 					rowHandle: {
@@ -83,12 +94,10 @@ export default {
 								type: 'text', //查看按钮
 								// show: true,
 								show: auth(`${props.context.componentName}:Retrieve`),
-								style:{color: "#67C23A"},
 								order: 1,
 							},
 							edit: {
 								type: 'text', //编辑按钮
-								style:{color: "#E6A23C"},
 								order: 2,
 								show: auth(`${props.context.componentName}:Update`),
 							},
@@ -98,7 +107,6 @@ export default {
 								text: '复制',	//按钮显示名称
 								type: 'text',	//按钮类型
 								order: 3,		//排序，这个看自己喜欢排在什么位置了
-								style:{color: "#606266"},
 								title: '复制',
 								click: (context: any): void => {
 									// 这里必须拿到了context里面的row属性并且赋值给newrow，接下来做一个深拷贝出来一个全新与源对象无关系的对象row
@@ -112,7 +120,7 @@ export default {
 							// 注释编号:django-vue3-admin__settings415814:代码结束行
 							remove: {
 								type: 'text', //删除按钮
-								style:{color: "#F56C6C"},
+								style:{color: 'var(--el-color-danger)'},
 								order: 4,
 								show: auth(`${props.context.componentName}:Delete`),
 							},
@@ -156,7 +164,7 @@ export default {
 					form: {
 						// 注释编号:django-vue3-admin__settings364715:代码开始行
 						// 功能说明:这里专门针对form进行全局样式排版，以免每个页面都在带这些配置
-						col: { span: 12 },	//配置成一行两个元素
+						col: { span: 12, xs: 24 },	//配置成一行两个元素；手机上（<768px）一行一个，输入框才够宽
 						labelPosition: "left",
 						labelWidth: "auto", //配置成lable的宽为自动
 						requireAsteriskPosition:"right", //星号的位置

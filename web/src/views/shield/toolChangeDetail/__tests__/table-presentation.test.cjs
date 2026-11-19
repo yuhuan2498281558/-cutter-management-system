@@ -17,6 +17,7 @@ function run(source, requireModule = require, globals = {}) {
   return context.exports;
 }
 const helpers = run(fs.readFileSync(path.resolve(__dirname, '../tablePresentation.ts'), 'utf8'));
+const presentation = run(fs.readFileSync(path.resolve(__dirname, '../detailPresentation.ts'), 'utf8'));
 const { repairStatus, matchesDetailFilters } = helpers;
 const rows = [
   { cutter_position_no: '1', tool_number: 'BASE-1', is_checked: false, is_replaced: false },
@@ -28,6 +29,14 @@ const rows = [
   })),
 ];
 const select = (check = 'ALL', repair = 'ALL', query = '') => rows.filter(row => matchesDetailFilters(row, check, repair, query));
+
+test('stratum display preserves object fields, legacy fallbacks and non-object formats', () => {
+  const { formatStratumBetween } = presentation;
+  assert.equal(formatStratumBetween([{ stratum_type_name: '砂层', ring_count: 3 }, { name: '岩层', count: 2 }]), '砂层(3环)、岩层(2环)');
+  for (const value of [[], null, undefined, '砂层', {}]) assert.equal(formatStratumBetween(value), '-');
+  assert.equal(formatStratumBetween(['砂层', '岩层']), '砂层,岩层');
+  assert.equal(formatStratumBetween([null, '砂层']), ',砂层');
+});
 
 test('repair states distinguish absent records, vendor feedback, confirmation, archive and unknown', () => {
   assert.deepEqual(rows.map(repairStatus), ['NOT_REPLACED', 'NOT_REPLACED', 'UNRECORDED', 'PENDING_VENDOR_FEEDBACK', 'CONFIRMED', 'CLOSED', 'UNKNOWN']);
@@ -75,8 +84,9 @@ function setup(t, mode = 'supplement', options = {}) {
     if (name === 'vue') return { ...vue, onMounted() {}, onActivated() {}, onDeactivated() {}, onUnmounted() {} };
     if (name === 'vue-router') return { useRoute: () => ({ path: '/shield/toolChangeDetail', query: options.query || { mode } }), useRouter: () => options.router || {} };
     if (name === './tablePresentation') return helpers;
+    if (name === './detailPresentation') return presentation;
     if (name === '/@/utils/service') return { request: options.request || (() => { throw new Error('Unexpected API call'); }) };
-    if (name === 'element-plus') return { ElMessage: { success() {}, warning() {}, error() {} } };
+    if (name === 'element-plus') return { ElMessage: options.message || { success() {}, warning() {}, error() {} } };
     if (name.endsWith('.vue')) return {};
     throw new Error(`Unexpected import: ${name}`);
   });
@@ -108,7 +118,8 @@ test('full export keeps all 18 original fields, including fields now inside expa
     'wear_condition', 'blade_wear_amount', 'trajectory', 'is_replaced', 'replacement_count',
     'manufacturer', 'new_tool_record_data', 'replacement_type', 'repair_parts', 'brand', 'price', 'old_photo_links', 'remark',
   ]));
-  assert.equal(s.exportMeta.value.length, 16);
+  // 开仓信息 16 项加刀盘右转、左转累计读数
+  assert.equal(s.exportMeta.value.length, 18);
 });
 
 test('active filter feedback tracks independent conditions without changing export data', t => {
@@ -244,6 +255,22 @@ test('unconfirmed warehouse downgrades supplement to view with query preserved',
   assert.equal(replacements[0].query.warehouse_code, 'TEST-123');
 });
 
+test('downgrade notice asks to fill fields only when fields are missing, otherwise to re-confirm', async t => {
+  const missingText = '请先在开仓列表补全开仓持续时间、换刀总时长和刀具数量';
+  const unconfirmedText = '开仓汇总尚未确认（可能已被撤回），请回到开仓列表点“补录明细”重新确认';
+  for (const [missing, expected] of [[['opening_duration'], missingText], [[], unconfirmedText], [undefined, unconfirmedText]]) {
+    const warnings = [];
+    const s = setup(t, 'supplement', {
+      query: { warehouse_id: '123', mode: 'supplement' },
+      router: { replace: async () => {} },
+      message: { success() {}, error() {}, warning: text => warnings.push(text) },
+      request: async config => ({ data: config.url.includes('warehouse_opening') ? { shield_model: 9, supplement_ready: false, supplement_missing_fields: missing } : [] }),
+    });
+    await s.getWarehouseInfo();
+    assert.deepEqual(warnings, [expected]);
+  }
+});
+
 test('parent repair entry enforces missing-record, not-replaced, readonly and archived guards', t => {
   const s = setup(t, 'view');
   const opened = [];
@@ -310,7 +337,7 @@ test('actual dropdown-to-CSV export retains every row and 18 columns despite emp
   assert.equal(blobs.length, 1);
   const csv = parseCsv((await blobs[0].text()).replace(/^\uFEFF/, ''));
   const headerIndex = csv.findIndex(row => row.includes('刀位号') && row.includes('刀具编号'));
-  assert.equal(headerIndex, 17); // 16 opening metadata rows and one separator
+  assert.equal(headerIndex, 19); // 18 opening metadata rows and one separator
   assert.equal(csv[headerIndex].length, 18);
   const data = csv.slice(headerIndex + 1);
   assert.equal(data.length, rows.length);

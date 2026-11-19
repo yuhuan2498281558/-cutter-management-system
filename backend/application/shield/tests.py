@@ -16,6 +16,7 @@ from application.shield.models import (
     MobileToolChangeTask,
     ProjectInfo,
     ShieldMachineBasicInfo,
+    ShieldTunnelingData,
     StratumBasicInfo,
     ToolCost,
     ToolChangeDetail,
@@ -160,6 +161,87 @@ class ToolChangeFlowTests(TestCase):
         self.assertIsNone(second)
         self.task.refresh_from_db()
         self.assertEqual(self.task.recorder_id, self.first_operator.id)
+
+    def test_mobile_recorder_saves_cutterhead_readings_until_the_summary_is_confirmed(self):
+        client = APIClient()
+        client.force_authenticate(self.first_operator)
+        url = f"/api/shield/mobile/tasks/{self.task.pk}/save_readings/"
+        headers = {"HTTP_USER_AGENT": "shield-mobile-readings-test"}
+        saved = client.post(url, {"right_revolution_reading": "485.5", "left_revolution_reading": "495"}, format="json", **headers)
+        self.assertEqual(saved.data["code"], 2000, saved.data)
+        self.assertEqual(saved.data["data"]["opening_info"]["right_revolution_reading"], 485.5)
+        self.opening.refresh_from_db()
+        self.assertEqual((self.opening.right_revolution_reading, self.opening.left_revolution_reading), (485.5, 495))
+        for value in ("-1", "abc", "nan"):
+            rejected = client.post(url, {"right_revolution_reading": value, "left_revolution_reading": "1"}, format="json", **headers)
+            self.assertNotEqual(rejected.data["code"], 2000, value)
+        self.opening.refresh_from_db()
+        self.assertEqual((self.opening.right_revolution_reading, self.opening.left_revolution_reading), (485.5, 495))
+        # 留空表示没读到，清掉原来的读数
+        cleared = client.post(url, {"right_revolution_reading": "", "left_revolution_reading": "495"}, format="json", **headers)
+        self.assertEqual(cleared.data["code"], 2000, cleared.data)
+        self.opening.refresh_from_db()
+        self.assertIsNone(self.opening.right_revolution_reading)
+        WarehouseOpeningBasicInfo.objects.filter(pk=self.opening.pk).update(
+            summary_status=WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED,
+        )
+        locked = client.post(url, {"right_revolution_reading": "500", "left_revolution_reading": "495"}, format="json", **headers)
+        self.assertNotEqual(locked.data["code"], 2000)
+        self.opening.refresh_from_db()
+        self.assertIsNone(self.opening.right_revolution_reading)
+
+    def test_tunneling_csv_import_keeps_counter_and_integrated_revolutions_per_segment(self):
+        self.first_operator.is_superuser = True
+        self.first_operator.save(update_fields=["is_superuser"])
+        client = APIClient()
+        client.force_authenticate(self.first_operator)
+        header = "采集时间,刀盘右转累计旋转数（rev）,刀盘左转累计旋转数（rev）,推进速度（mm/min）,贯入度（mm）,刀盘转速（r/min）"
+        # 5 秒一个点；第 4、5 点之间断档 10 分钟，积分跳过这一小段
+        points = [
+            ("2026-01-01 08:00:00", 100, 50, 30, 10), ("2026-01-01 08:00:05", 101, 50, 30, 10),
+            ("2026-01-01 08:00:10", 101, 51, 60, 0), ("2026-01-01 08:00:15", 102, 51, 60, 20),
+            ("2026-01-01 08:10:15", 104, 52, 60, 20), ("2026-01-01 08:10:20", 104, 53, 60, 20),
+        ]
+        lines = [header, *(f"{moment},{right},{left},{speed},{penetration},1.5" for moment, right, left, speed, penetration in points)]
+        upload = SimpleUploadedFile("TBM_第7环.csv", "\n".join(lines).encode("utf-8"), content_type="text/csv")
+        response = client.post(
+            "/api/shield/tunneling_data/import_csv/",
+            {"file": upload, "project": self.opening.project_id, "shield_machine": self.opening.shield_model_id, "segment_count": 2},
+            format="multipart", HTTP_USER_AGENT="shield-tunneling-import-test",
+        )
+        self.assertEqual(response.data["code"], 2000, response.data)
+        rows = list(ShieldTunnelingData.objects.filter(ring_no="7").order_by("record_time"))
+        # 计数器：右转 100→104、左转 50→53，共 7 圈，按段首尾相接
+        self.assertEqual([row.counter_revolutions for row in rows], [2, 5])
+        # 积分取前一个点的速度 ÷ 贯入度，每小段 3 r/min × 5 s = 0.25 圈；贯入度为 0 的点之后那一小段和断档都不计
+        self.assertEqual([row.integrated_revolutions for row in rows], [0.5, 0.25])
+        self.assertEqual([row.advance_speed for row in rows], [40, 60])
+        # 中间一个点缺采集时间：分段会丢掉它，而它正好是清零后的读数，计数器不能当完整实测
+        gap = [header, "2026-01-02 08:00:00,100,50,30,10,1.5", ",2,50,30,10,1.5", "2026-01-02 08:00:10,110,55,30,10,1.5"]
+        upload = SimpleUploadedFile("TBM_第8环.csv", "\n".join(gap).encode("utf-8"), content_type="text/csv")
+        response = client.post(
+            "/api/shield/tunneling_data/import_csv/",
+            {"file": upload, "project": self.opening.project_id, "shield_machine": self.opening.shield_model_id, "segment_count": 1},
+            format="multipart", HTTP_USER_AGENT="shield-tunneling-import-test",
+        )
+        self.assertEqual(response.data["code"], 2000, response.data)
+        [row] = ShieldTunnelingData.objects.filter(ring_no="8")
+        self.assertIsNone(row.counter_revolutions)
+        self.assertEqual(row.integrated_revolutions, 0.5)
+
+    def test_desktop_opening_rejects_non_finite_or_negative_revolution_readings(self):
+        for value, message in (("nan", "必须是有限的数值"), ("inf", "必须是有限的数值"), ("-1", "0")):
+            serializer = WarehouseOpeningBasicInfoCreateUpdateSerializer(
+                self.opening, data={"right_revolution_reading": value}, partial=True,
+            )
+            self.assertFalse(serializer.is_valid(), value)
+            # 序列化器的错误以字段的 verbose_name 为键
+            [errors] = serializer.errors.values()
+            self.assertIn(message, str(errors[0]), value)
+        serializer = WarehouseOpeningBasicInfoCreateUpdateSerializer(
+            self.opening, data={"right_revolution_reading": "485.5", "left_revolution_reading": None}, partial=True,
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_field_options_are_served_by_backend(self):
         request = self.request_for(self.first_operator)

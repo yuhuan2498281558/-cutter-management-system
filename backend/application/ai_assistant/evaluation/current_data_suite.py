@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,13 +24,13 @@ from django.db.models import Count
 from application.ai_assistant.evaluation.answer_checks import check_answer
 
 from application.shield.models import (
-    NewToolRecord, OldToolRecord, ProjectInfo, ShieldTunnelingData,
+    MobileToolChangeTask, NewToolRecord, OldToolRecord, ProjectInfo, ShieldTunnelingData,
     StratumBasicInfo, ToolChangeDetail, ToolCost, ToolInfo, ToolInstance,
     WarehouseOpeningBasicInfo,
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCOPE_KEYS = ("tool_type", "ring_range", "cutter_position_no")
 TOOL_NAMES = (
     "query_tool_change_data", "query_stratum_data", "query_opening_records",
@@ -39,6 +40,17 @@ TOOL_NAMES = (
     "query_tunneling_wear_correlation", "analyze_stratum_wear_correlation",
     "query_position_stratum_impact", "calculate_tool_performance", "recommend_tools",
 )
+_NEW_TOOLS = {
+    'query_stratum_area': ('tools_stratum_area', 'stratum_area'),
+    'query_opening_stratum': ('tools_stratum_area', 'opening_stratum'),
+    'query_tool_inspections': ('tools_inspections', 'tool_inspections'),
+    'query_old_tool_repairs': ('tools_repairs', 'old_tool_repairs'),
+    'trace_tool_lifecycle': ('tools_lifecycle', 'tool_lifecycle'),
+    'compare_manufacturer_service': ('tools_manufacturer', 'manufacturer_service'),
+    'query_tool_cost_catalog': ('tools_costs', 'tool_cost_catalog'),
+    'query_registered_amounts': ('tools_costs', 'registered_amounts'),
+    'query_data_catalog': ('tools_catalog', 'data_catalog'),
+}
 
 
 @contextmanager
@@ -56,7 +68,10 @@ def readonly_database(using="default", timeout_ms=15000):
             cursor.execute("SHOW transaction_read_only")
             if cursor.fetchone()[0] != "on":
                 raise RuntimeError("The database did not enable read-only mode.")
-        yield
+        try:
+            yield
+        finally:
+            transaction.set_rollback(True, using=using)
 
 
 def normalize_position(value):
@@ -99,6 +114,10 @@ class ProjectEvidence:
     lifecycle_samples: dict = field(default_factory=dict)
     catalog: dict = field(default_factory=dict)
     repair_states: dict = field(default_factory=dict)
+    repairs: list[dict] = field(default_factory=list)
+    installations: list[dict] = field(default_factory=list)
+    quotes: list[dict] = field(default_factory=list)
+    tasks: list[dict] = field(default_factory=list)
 
     @property
     def active_details(self):
@@ -143,12 +162,13 @@ def collect_evidence(project_id, row_limit=100000):
         raise ValueError("Project ID does not exist; no implicit project fallback is allowed.")
     details = bounded_rows(ToolChangeDetail.objects.filter(warehouse__project__project_id=project_id)
         .order_by("id"), ["id", "warehouse_id", "warehouse__ring_no", "cutter_position_no",
-                          "tool_parent_type", "is_checked", "is_replaced", "manufacturer", "price"], row_limit)
+                          "tool_parent_type", "is_checked", "is_replaced", "manufacturer", "price",
+                          "check_result", "mobile_status", "replacement_type", "tool_number"], row_limit)
     openings = bounded_rows(WarehouseOpeningBasicInfo.objects.filter(project__project_id=project_id)
         .order_by("id"), ["id", "ring_no", "shield_model_id", "summary_status", "checked_tool_count",
-                          "replaced_tool_count", "rings_between_openings", "opening_duration"], row_limit)
+                          "replaced_tool_count", "rings_between_openings", "opening_duration", "open_time"], row_limit)
     strata = bounded_rows(StratumBasicInfo.objects.filter(project__project_id=project_id).order_by("id"),
-                          ["ring_no", "stratum_type_codes"], row_limit)
+                          ["ring_no", "stratum_type_codes", "longitudinal_type_ratios", "stratum_type_ratios"], row_limit)
     tunneling = bounded_rows(ShieldTunnelingData.objects.filter(project__project_id=project_id).order_by("id"),
                              ["ring_no", "thrust", "torque", "cutterhead_speed", "penetration"], row_limit)
     states = dict(OldToolRecord.objects.filter(tool_change_detail__warehouse__project__project_id=project_id)
@@ -162,17 +182,33 @@ def collect_evidence(project_id, row_limit=100000):
                                           .values_list("status", "n"))}
     evidence = ProjectEvidence(project_id, details, openings, strata, tunneling,
                                catalog=catalog, repair_states=states)
+    evidence.repairs = bounded_rows(OldToolRecord.objects.filter(
+        tool_change_detail__warehouse__project__project_id=project_id).order_by('id'),
+        ['id', 'tool_change_detail_id', 'inspection_status', 'disposition', 'repair_price',
+         'confirmed_tool_instance_id', 'suggested_tool_instance_id', 'bearing_failed'], row_limit)
+    evidence.installations = bounded_rows(NewToolRecord.objects.filter(
+        tool_change_detail__warehouse__project__project_id=project_id).order_by('id'),
+        ['tool_change_detail_id', 'tool_instance_id', 'tool_instance__tool_uid',
+         'tool_instance__status'], row_limit)
+    evidence.quotes = bounded_rows(ToolCost.objects.order_by('id'),
+        ['tool_info_id', 'tool_info__tool_parent_type', 'tool_info__tool_type_name',
+         'tool_info__tool_type_code', 'manufacturer', 'cost_type', 'unit_price'], row_limit)
+    evidence.tasks = bounded_rows(MobileToolChangeTask.objects.filter(
+        warehouse__project__project_id=project_id).order_by('id'), ['warehouse_id', 'status'], row_limit)
     active_ids = [row["id"] for row in evidence.active_details if row["is_checked"] or row["is_replaced"]]
     for status in ("INSTALLED", "REMOVED_PENDING_INSPECTION", "INSPECTED", "REPAIRED_CLOSED", "SCRAPPED"):
         sample = NewToolRecord.objects.filter(tool_change_detail_id__in=active_ids, tool_instance__status=status)
         sample = sample.exclude(tool_change_detail__tool_number__isnull=True).exclude(tool_change_detail__tool_number="")
         sample = sample.order_by("id").values("tool_change_detail__tool_number", "tool_change_detail__warehouse__ring_no",
-                                             "tool_instance__status").first()
+                                             "tool_instance__status", "tool_instance_id",
+                                             "tool_instance__tool_uid").first()
         if sample:
             evidence.lifecycle_samples[status] = {
                 "tool_number": sample["tool_change_detail__tool_number"],
                 "install_ring_no": ring_number(sample["tool_change_detail__warehouse__ring_no"]),
                 "lifecycle_status": sample["tool_instance__status"],
+                "tool_uid": sample['tool_instance__tool_uid'],
+                "instance_id": sample['tool_instance_id'],
             }
     return evidence
 
@@ -188,6 +224,7 @@ class QuestionCase:
     gap: str = ""
     expected_slots: dict | None = None
     expected_branch: str | None = None
+    manual_review: str = ""
 
 
 def build_cases(evidence):
@@ -198,7 +235,8 @@ def build_cases(evidence):
     cases = []
 
     def add(case_id, category, question, tool, **params):
-        cases.append(QuestionCase(case_id, category, question, tool, params))
+        cases.append(QuestionCase(case_id, category, question, tool, params,
+                                 expected_branch=_NEW_TOOLS.get(tool, (None, None))[1]))
 
     change = "query_tool_change_data"
     add("change_all", "change", "统计当前项目全部刀具换刀情况", change)
@@ -230,10 +268,10 @@ def build_cases(evidence):
         ring_range=full, interval=50)
     for word, kind in (("全部", None), ("滚刀", "DISC"), ("刮刀", "SCRAPER")):
         add(f"manufacturer_{kind or 'all'}", "manufacturer", f"对比各厂家{word}刀具性能表现",
-            "compare_manufacturer_performance", **({"tool_type": kind} if kind else {}))
+            "compare_manufacturer_service", **({"tool_type": kind} if kind else {}))
     for word, kind in (("滚刀", "DISC"), ("刮刀", "SCRAPER")):
         add(f"manufacturer_{kind}_natural", "manufacturer", f"对比各厂家{word}性能表现",
-            "compare_manufacturer_performance", tool_type=kind)
+            "compare_manufacturer_service", tool_type=kind)
     add("strata_all", "strata", "当前项目地层类型分布", "query_stratum_data")
     add("strata_window", "strata", f"{first}环到{last}环地层类型分布", "query_stratum_data", ring_range=full)
     geology_end = max((ring_number(row["ring_no"]) or 0 for row in evidence.strata), default=last)
@@ -250,19 +288,53 @@ def build_cases(evidence):
     for status in ("INSTALLED", "REMOVED_PENDING_INSPECTION", "INSPECTED", "REPAIRED_CLOSED", "SCRAPPED"):
         sample = evidence.lifecycle_samples.get(status)
         cases.append(QuestionCase(f"lifecycle_{status}", "lifecycle",
-            f"查询刀具{sample['tool_number']}的服役追溯" if sample else f"查询{status}状态刀具的服役追溯",
-            "calculate_tool_performance", {"tool_numbers": [sample["tool_number"]]} if sample else {},
-            gap="当前项目没有该状态且有安装关系的样本" if not sample else ""))
+            f"追溯刀具{sample['tool_uid']}的安装、拆下和服役环数" if sample else f"查询{status}状态刀具的服役追溯",
+            "trace_tool_lifecycle", {"tool_ids": [sample["tool_uid"]]} if sample else {},
+            gap="当前项目没有该状态且有安装关系的样本" if not sample else "",
+            expected_branch='tool_lifecycle', manual_review='确认配对后的服役环数需人工验收；自动只核身份、状态、安装和拆下环。'))
+    sample = evidence.lifecycle_samples.get('INSPECTED') or next(iter(evidence.lifecycle_samples.values()), None)
+    cases.append(QuestionCase('lifecycle_uid_natural', 'lifecycle',
+        f"{sample['tool_uid']}装在哪、拆下时是第几环、服役多少环" if sample else '按完整刀号查询安装、拆下和服役环数',
+        'trace_tool_lifecycle', {'tool_ids': [sample['tool_uid']]} if sample else {},
+        expected_branch='tool_lifecycle', gap='' if sample else '当前项目没有可追溯的安装样本',
+        manual_review='确认配对后的服役环数需人工验收；自动只核身份、状态、安装和拆下环。'))
+    add('repair_pending_total', 'repair', '待厂家反馈的旧刀共有多少把', 'query_old_tool_repairs',
+        inspection_status='PENDING_VENDOR_FEEDBACK')
+    add('repair_closed_total', 'repair', '已归档的旧刀返修登记金额是多少', 'query_old_tool_repairs', inspection_status='CLOSED')
+    add('repair_scrapped', 'repair', '旧刀已报废多少，报废建议多少', 'query_old_tool_repairs')
+    add('confirmed_openings', 'opening_status', '只统计已确认开仓，排除草稿', opening, summary_status='CONFIRMED')
+    cases[-1].expected_branch = 'opening'
+    add('cost_project_total', 'cost', '当前项目实际刀具采购加返修总成本是多少', 'query_registered_amounts')
+    add('registered_total', 'cost', '项目一共登记了多少金额', 'query_registered_amounts')
+    add('registered_disc', 'cost', '滚刀新装和返修登记金额分别多少', 'query_registered_amounts', tool_type='DISC')
+    add('area_boulder', 'area', '第2199环孤石占多少', 'query_stratum_area', rings=[2199], basis='longitudinal_area')
+    add('area_window', 'area', '100到300环各地层面积占比', 'query_stratum_area', ring_range=[100, 300], basis='longitudinal_area')
+    add('area_cross', 'area', '第100环横断面岩性占比', 'query_stratum_area', rings=[100], basis='cross_section')
+    add('opening_stratum_first', 'opening_stratum', f'第{first}环开仓位置是什么地层', 'query_opening_stratum', ring_no=first)
+    add('opening_stratum_latest', 'opening_stratum', '上次开仓以来经过了哪些地层', 'query_opening_stratum', recent_openings=1)
+    add('inspections_attention', 'inspections', '哪些刀需要关注但还没换', 'query_tool_inspections')
+    add('inspections_unchecked', 'inspections', '哪些刀位还没检查', 'query_tool_inspections')
+    add('inspections_completion', 'inspections', '各次开仓检查完成情况', 'query_tool_inspections')
+    names = sorted({row['manufacturer'] for row in evidence.active_details if row.get('manufacturer')})[:2]
+    add('manufacturer_named', 'manufacturer', f"对比{'和'.join(names)}的刀具寿命和异常率", 'compare_manufacturer_service', manufacturers=names)
+    add('catalog_new_quotes', 'catalog', '各厂家滚刀新刀报价', 'query_tool_cost_catalog', tool_type='DISC', cost_type='NEW_TOOL')
+    add('catalog_repair_quotes', 'catalog', '各厂家维修报价', 'query_tool_cost_catalog', cost_type='REPAIR')
+    add('catalog_available', 'catalog', '现在有哪些数据可以查', 'query_data_catalog')
+    add('catalog_strata_codes', 'catalog', '有哪些地层编码', 'query_data_catalog')
+    for case in cases:
+        if case.tool == 'compare_manufacturer_service':
+            case.manual_review = '确认配对后的寿命和异常率需人工验收；自动只核候选数、供货数和登记金额。'
+    inventory_note = (f"报价库有{evidence.catalog.get('nonzero_inventory_rows', 0)}条非零库存登记；"
+                      '库存登记值不是库存台账，无法确认可用库存。')
+    tunnel_note = f'当前项目掘进数据覆盖{len(tunnel_rings)}个环号；跨环趋势尚未纳入独立真值验收。'
     for case_id, category, question, reason in [
-        ("repair_pending_total", "repair", "待厂家反馈的旧刀共有多少把", "有旧刀状态数据，尚无返修状态汇总规则工具"),
-        ("repair_closed_total", "repair", "已归档的旧刀维修费用总额是多少", "尚无按返修归档状态聚合费用的规则工具"),
-        ("confirmed_openings", "opening_status", "只统计已确认开仓，排除草稿", "开仓工具展示确认来源，但尚无summary_status筛选契约"),
-        ("cost_project_total", "cost", "当前项目实际刀具采购加返修总成本是多少", "全局型号成本表不能替代项目实际支出台账，尚无对应规则工具"),
-        ("inventory_available", "inventory", "仓库现在可用滚刀库存多少把", "inventory字段存在但当前全零，助手没有库存台账工具，不能认定真实库存为零"),
-        ("cross_ring_tunneling", "tunneling_coverage", "分析最近100环掘进参数的跨环变化", "需至少两个环号的掘进记录；当前inventory会单独报告是否具备，未验证跨环趋势算法"),
+        ("inventory_available", "inventory", "仓库现在可用滚刀库存多少把", inventory_note),
+        ("cross_ring_tunneling", "tunneling_coverage", "分析最近100环掘进参数的跨环变化", tunnel_note),
+        ("remaining_life", "lifecycle_prediction", "刀具还有多少剩余寿命", '剩余寿命没有预测验收口径。'),
+        ("life_warning", "lifecycle_prediction", "哪些刀需要寿命预警", '寿命预警没有阈值和预测验收口径。'),
         ("strata_wear_association", "stratum_wear", "分析地层类型和刀具磨损之间的关联", "规则工具存在，但本套件尚无独立关联统计真值；地层分布与换刀总量通过不代表关联结论已验证"),
         ("position_strata_association", "position_stratum", "分析刀位S1L在不同地层下的磨损差异", "规则工具存在，但本套件尚无刀位与地层关联的独立真值"),
-        ("tunneling_wear_association", "tunneling_correlation", "掘进参数变化是否导致刀具异常磨损", "现有单环掘进记录不能证明因果，关联工具未纳入独立真值评分"),
+        ("tunneling_wear_association", "tunneling_correlation", "掘进参数变化是否导致刀具异常磨损", f"当前覆盖{len(tunnel_rings)}个掘进环，不能证明因果；关联工具未纳入独立真值评分"),
         ("tool_recommendation", "recommendation", "根据完整服役记录推荐适合当前地层的刀具", "推荐工具存在，但需要独立核对服役终点、右删失与样本下限，当前套件不把建议文案计为通过"),
     ]:
         cases.append(QuestionCase(case_id, category, question, None, gap=reason))
@@ -314,7 +386,7 @@ def expected_facts(evidence, case):
         segments = []
         for start in range(minimum, maximum + 1, interval):
             group = [row for row in rows if start <= ring_number(row["warehouse__ring_no"]) < start + interval]
-            segments.append({"ring_range": f"{start}-{start+interval-1}", "total": len(group),
+            segments.append({"ring_range": f"{start}-{min(start+interval-1, maximum)}", "total": len(group),
                              "replaced": sum(row["is_replaced"] for row in group)})
         return {"interval": interval, "segments": segments}
     if name == "compare_manufacturer_performance":
@@ -328,6 +400,8 @@ def expected_facts(evidence, case):
         return {"total_rings": len(selected_rings(evidence.strata, params))}
     if name == "query_opening_records":
         openings = selected_rings(evidence.openings, params)
+        if params.get('summary_status'):
+            openings = [row for row in openings if row['summary_status'] == params['summary_status']]
         if not openings:
             return {"total": 0}
         result = {"total_openings": len(openings), "opening_counts": {}}
@@ -362,7 +436,205 @@ def expected_facts(evidence, case):
         number = params["tool_numbers"][0]
         sample = next(sample for sample in evidence.lifecycle_samples.values() if sample["tool_number"] == number)
         return {"lifecycle": sample}
+    if name in _NEW_TOOLS:
+        return _new_expected_facts(evidence, case)
     raise ValueError(f"No independent oracle for tool {name}")
+
+
+def _area_facts(rows, basis, requested):
+    column = 'longitudinal_type_ratios' if basis == 'longitudinal_area' else 'stratum_type_ratios'
+    counts = Counter(ring_number(row['ring_no']) for row in rows)
+    valid = []
+    for row in rows:
+        ratios = row.get(column)
+        if counts[ring_number(row['ring_no'])] != 1 or not isinstance(ratios, dict) or not ratios:
+            continue
+        values = list(ratios.values())
+        if any(not isinstance(v, (int, float, Decimal)) or isinstance(v, bool)
+               or not math.isfinite(v) or not 0 <= v <= 100 for v in values):
+            continue
+        if not math.isclose(sum(values), 100, abs_tol=0.01):
+            continue
+        valid.append(ratios)
+    codes = set().union(*(row.keys() for row in valid))
+    if basis == 'longitudinal_area':
+        codes |= {'AREA_CLAY_SAND', 'AREA_SOFT_HARD', 'AREA_WEAK_GRANITE',
+                  'AREA_BEDROCK_PROTRUSION', 'AREA_SOFT_SOIL', 'AREA_BOULDER'}
+    classes = {}
+    for code in sorted(codes):
+        total = sum(float(row.get(code, 0)) for row in valid)
+        positive = sum(row.get(code, 0) > 0 for row in valid)
+        if basis == 'longitudinal_area' or positive:
+            classes[code] = {'positive_ring_count': positive, 'area_equivalent_rings': round(total / 100, 6),
+                             'share_pct': round(total / len(valid), 1) if valid else None}
+    return {'ring_count_requested': requested, 'ring_count_with_data': len(valid),
+            'missing_ring_count': requested - len(valid), 'area_classes': classes}
+
+
+def _amount(values):
+    values = list(values)
+    return round(float(sum((Decimal(str(v)) for v in values if v is not None), Decimal('0'))), 2) if (
+        not values or any(v is not None for v in values)) else None
+
+
+def _new_expected_facts(evidence, case):
+    params, name = case.params, case.tool
+    observed = selected_details(evidence, params)
+    replaced = [row for row in observed if row['is_replaced']]
+    ids = {row['id'] for row in replaced}
+    repairs = [row for row in evidence.repairs if row['tool_change_detail_id'] in ids]
+    if name == 'query_old_tool_repairs':
+        for key in ('inspection_status', 'disposition'):
+            if params.get(key):
+                repairs = [row for row in repairs if row[key] == params[key]]
+        confirmed = [row for row in repairs if row['inspection_status'] in {'CONFIRMED', 'CLOSED'}]
+        pending = [row for row in repairs if row['inspection_status'] == 'PENDING_VENDOR_FEEDBACK']
+        return {'summary': {'record_count': len(repairs)},
+                'status_counts': {status: sum(row['inspection_status'] == status for row in repairs)
+                                  for status in ('PENDING_VENDOR_FEEDBACK', 'CONFIRMED', 'CLOSED')},
+                'scrapped_count': sum(row['disposition'] == 'SCRAP' for row in confirmed),
+                'scrap_suggestion_count': sum(row['disposition'] == 'SCRAP' for row in pending),
+                'registered_repair_amount': {
+                    'confirmed_yuan': _amount(row['repair_price'] for row in confirmed),
+                    'pending_yuan': _amount(row['repair_price'] for row in pending),
+                    'priced_count': sum(row['repair_price'] is not None for row in repairs),
+                    'zero_price_count': sum(row['repair_price'] == 0 for row in repairs),
+                    'missing_price_count': sum(row['repair_price'] is None for row in repairs)}}
+    if name == 'query_registered_amounts':
+        installed_ids = {row['tool_change_detail_id'] for row in evidence.installations}
+        repair_by_id = {row['tool_change_detail_id']: row for row in repairs}
+        installs, confirmed, pending, excluded = [], [], [], 0
+        for row in replaced:
+            old = repair_by_id.get(row['id'])
+            overlap = (row['id'] not in installed_ids and row.get('replacement_type') == 'REPAIR'
+                       and row['price'] is not None and old and old['repair_price'] is not None)
+            if row['id'] in installed_ids:
+                installs.append(row['price'])
+            else:
+                excluded += 1
+            if old:
+                if overlap:
+                    excluded += 1
+                elif old['inspection_status'] in {'CONFIRMED', 'CLOSED'}:
+                    confirmed.append(old['repair_price'])
+                elif old['inspection_status'] == 'PENDING_VENDOR_FEEDBACK':
+                    pending.append(old['repair_price'])
+        return {'scope': {'observation_count': len(observed), 'replacement_count': len(replaced),
+                          'excluded_cost_source_count': excluded},
+                'new_install': {'record_count': len(installs), 'amount_yuan': _amount(installs),
+                                'zero_price_count': installs.count(0), 'missing_price_count': installs.count(None)},
+                'confirmed_repair': {'record_count': len(confirmed), 'amount_yuan': _amount(confirmed)},
+                'pending_repair': {'record_count': len(pending), 'amount_yuan': _amount(pending)},
+                'total_registered_cost_yuan': _amount(installs + confirmed)}
+    if name == 'query_tool_inspections':
+        rows = selected_details(evidence, params, observed=False)
+        openings = selected_rings(evidence.openings, params)
+        if params.get('recent_openings'):
+            openings = sorted(openings, key=lambda r: ring_number(r['ring_no']), reverse=True)[:params['recent_openings']]
+        opening_ids = {row['id'] for row in openings}
+        rows = [row for row in rows if row['warehouse_id'] in opening_ids
+                and (not params.get('check_result') or row['check_result'] == params['check_result'])]
+        attention = [row for row in rows if not row['is_replaced'] and row['check_result'] in {'ATTENTION', 'ABNORMAL_NOT_REPLACED'}]
+        unchecked = [row for row in rows if not row['is_checked'] and not row['is_replaced']]
+        completion = {}
+        for opening in openings:
+            items = [row for row in rows if row['warehouse_id'] == opening['id']]
+            checked = sum(row['is_checked'] or row['is_replaced'] for row in items)
+            completion[ring_number(opening['ring_no'])] = {
+                'position_count': len(items), 'checked_count': checked, 'unchecked_count': len(items) - checked,
+                'replaced_count': sum(row['is_replaced'] for row in items), 'summary_status': opening['summary_status']}
+        def group(items):
+            return {'record_count': len(items), 'position_count': len({normalize_position(r['cutter_position_no']) for r in items})}
+        return {'scope': {'record_count': len(rows), 'opening_count': len(openings)},
+                'attention_not_replaced': group(attention), 'unchecked': group(unchecked),
+                'completion_counts': completion,
+                'mobile_status_counts': dict(Counter(row['mobile_status'] for row in rows)),
+                'task_status_counts': dict(Counter(row['status'] for row in evidence.tasks if row['warehouse_id'] in opening_ids))}
+    if name == 'query_stratum_area':
+        rows = selected_rings(evidence.strata, params)
+        if params.get('rings'):
+            rows = [row for row in rows if ring_number(row['ring_no']) in params['rings']]
+        requested = (len(params['rings']) if params.get('rings') else
+                     params['ring_range'][1] - params['ring_range'][0] + 1 if params.get('ring_range') else len(rows))
+        return {'basis': params.get('basis', 'longitudinal_area'),
+                **_area_facts(rows, params.get('basis', 'longitudinal_area'), requested)}
+    if name == 'query_opening_stratum':
+        openings = sorted(evidence.openings, key=lambda row: ring_number(row['ring_no']), reverse=True)
+        chosen = ([row for row in openings if ring_number(row['ring_no']) == params['ring_no']] if params.get('ring_no')
+                  else openings[:params.get('recent_openings', 1)])
+        facts = []
+        for opening in chosen:
+            ring = ring_number(opening['ring_no'])
+            previous = max((ring_number(row['ring_no']) for row in openings
+                            if row['shield_model_id'] == opening['shield_model_id'] and ring_number(row['ring_no']) < ring), default=None)
+            interval = [(previous + 1) if previous is not None else 1, ring]
+            strata = selected_rings(evidence.strata, {'ring_range': interval})
+            labels = Counter(code.strip() for row in strata for code in set((row['stratum_type_codes'] or '').split(',')) if code.strip())
+            facts.append({'ring_no': ring, 'previous_opening_ring': previous, 'interval': interval,
+                          'interval_summary': {'legacy_label_ring_counts': dict(labels)}})
+        return {'scope': {'opening_count': len(chosen)}, 'openings': facts}
+    if name == 'query_tool_cost_catalog':
+        rows = evidence.quotes
+        for parameter, column in (('tool_type', 'tool_info__tool_parent_type'), ('cost_type', 'cost_type'), ('manufacturer', 'manufacturer')):
+            if params.get(parameter):
+                rows = [row for row in rows if row[column] == params[parameter]]
+        models = {}
+        for code in sorted({row['tool_info__tool_type_code'] for row in rows}):
+            models[code] = {}
+            for kind, prefix in (('NEW_TOOL', 'new_tool'), ('REPAIR', 'repair')):
+                quotes = [row for row in rows if row['tool_info__tool_type_code'] == code and row['cost_type'] == kind]
+                prices = [row['unit_price'] for row in quotes if row['unit_price'] is not None]
+                models[code].update({f'{prefix}_quote_count': len(quotes),
+                                    f'{prefix}_price_min_yuan': float(min(prices)) if prices else None,
+                                    f'{prefix}_price_max_yuan': float(max(prices)) if prices else None})
+        return {'scope': {'quote_count': len(rows), 'model_count': len(models)}, 'model_quotes': models}
+    if name == 'compare_manufacturer_service':
+        names = params.get('manufacturers')
+        supply = {}
+        for manufacturer in sorted({row['manufacturer'] or '' for row in replaced}):
+            if names and manufacturer not in names:
+                continue
+            rows = [row for row in replaced if (row['manufacturer'] or '') == manufacturer]
+            supply[manufacturer] = {'install_count': len(rows), 'registered_amount_yuan': _amount(row['price'] for row in rows)}
+        return {'summary': {'candidate_count': len(replaced)}, 'supply_counts': supply}
+    if name == 'trace_tool_lifecycle':
+        sample = next(row for row in evidence.lifecycle_samples.values() if row['tool_uid'] == params['tool_ids'][0])
+        starts = [row for row in evidence.installations if row['tool_instance_id'] == sample['instance_id']]
+        details = {row['id']: row for row in observed}
+        openings = {row['id']: row for row in evidence.openings}
+        segments = []
+        for start in starts:
+            install = details.get(start['tool_change_detail_id'])
+            if not install:
+                continue
+            ring = ring_number(install['warehouse__ring_no'])
+            machine = openings[install['warehouse_id']]['shield_model_id']
+            candidates = [row for row in replaced if ring_number(row['warehouse__ring_no']) > ring
+                          and openings[row['warehouse_id']]['shield_model_id'] == machine
+                          and normalize_position(row['cutter_position_no']) == normalize_position(install['cutter_position_no'])]
+            confirmed_ids = {row['tool_change_detail_id'] for row in evidence.repairs
+                             if row['confirmed_tool_instance_id'] == sample['instance_id']}
+            candidates += [row for row in replaced if row['id'] in confirmed_ids and ring_number(row['warehouse__ring_no']) > ring
+                           and openings[row['warehouse_id']]['shield_model_id'] == machine]
+            segments.append({'install_ring': ring, 'removal_ring': min((ring_number(row['warehouse__ring_no']) for row in candidates), default=None)})
+        return {'results': [{'instance': {'tool_uid': sample['tool_uid'], 'status': sample['lifecycle_status']},
+                             'service_segments': sorted(segments, key=lambda row: row['install_ring'])[-20:]}]}
+    if name == 'query_data_catalog':
+        quote_counts = Counter(row['cost_type'] for row in evidence.quotes)
+        observation_ids = {row['id'] for row in observed}
+        labels = {}
+        for row in evidence.strata:
+            for code in {code.strip() for code in (row['stratum_type_codes'] or '').split(',') if code.strip()}:
+                labels.setdefault(code, set()).add(ring_number(row['ring_no']))
+        return {'legacy_code_counts': {code: len(rings) for code, rings in labels.items()}, 'data_coverage': {
+            'openings': {'count': len(evidence.openings), 'summary_status_counts': dict(Counter(row['summary_status'] for row in evidence.openings))},
+            'tool_change_observations': {'observation_count': len(observed), 'replacement_count': len(replaced)},
+            'tunneling': {'record_count': len(evidence.tunneling)},
+            'stratum': {'ring_count': len({row['ring_no'] for row in evidence.strata})},
+            'cost_quotes': {'new_tool_count': quote_counts['NEW_TOOL'], 'repair_count': quote_counts['REPAIR']},
+            'old_tool_repairs': {'status_counts': dict(Counter(row['inspection_status'] for row in evidence.repairs
+                                                             if row['tool_change_detail_id'] in observation_ids))}}}
+    raise ValueError(f'No independent oracle for {name}')
 
 
 def compare_subset(expected, actual, path=""):
@@ -377,8 +649,8 @@ def compare_subset(expected, actual, path=""):
             return [f"{path} length mismatch"]
         for index, value in enumerate(expected):
             failures.extend(compare_subset(value, actual[index], f"{path}[{index}]"))
-    elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
-        if not isinstance(actual, (int, float)) or not math.isclose(expected, actual, rel_tol=1e-8, abs_tol=1e-7):
+    elif isinstance(expected, (int, float, Decimal)) and not isinstance(expected, bool):
+        if not isinstance(actual, (int, float, Decimal)) or not math.isclose(expected, actual, rel_tol=1e-8, abs_tol=1e-7):
             failures.append(f"{path}: expected {expected}, got {actual}")
     elif expected != actual:
         failures.append(f"{path}: expected {expected!r}, got {actual!r}")
@@ -396,6 +668,16 @@ def comparable_tool_result(name, data):
     elif name == "query_opening_records":
         result["opening_counts"] = {f"{row['ring_no']}:{row['shield_model_id']}": row
                                     for row in data.get("recent_records", [])}
+    elif name == 'query_stratum_area':
+        result['area_classes'] = {row['code']: row for row in data.get('classes', [])}
+    elif name == 'query_tool_cost_catalog':
+        result['model_quotes'] = {row['tool_model_code']: row for row in data.get('by_model', [])}
+    elif name == 'compare_manufacturer_service':
+        result['supply_counts'] = {row['manufacturer']: row for row in data.get('supply_by_new_manufacturer', [])}
+    elif name == 'query_tool_inspections':
+        result['completion_counts'] = {row['ring_no']: row for row in data.get('opening_completion', [])}
+    elif name == 'query_data_catalog':
+        result['legacy_code_counts'] = {row['code']: row['ring_count'] for row in data.get('stratum_codes', {}).get('legacy_labels', [])}
     return result
 
 
@@ -419,8 +701,10 @@ def rule_runtime():
         for method in ("load", "append_turn", "reset", "history_page", "_get_legacy_engine"):
             stack.enter_context(patch.object(MemoryService, method,
                 side_effect=RuntimeError("Evaluation forbids memory access")))
-        for name in TOOL_NAMES:
-            original = getattr(llm_service, name)
+        for name in (*TOOL_NAMES, *_NEW_TOOLS):
+            original = getattr(llm_service, name, None)
+            if original is None:
+                continue
 
             def capture(params_str, _function=original, _name=name):
                 result = _function(params_str)
@@ -451,6 +735,10 @@ def evaluate_case(assistant, calls, evidence, case, snapshot=None):
            "expected_tool": case.tool, "expected_params": {"project_id": evidence.project_id, **case.params},
            "status": "coverage_gap" if case.gap else "fail", "failures": [], "coverage_gap": case.gap,
            "correctness_errors": []}
+    row['expected_branch'] = case.expected_branch
+    row['manual_review'] = case.manual_review
+    if not case.gap:
+        row['expected_facts'] = expected_facts(evidence, case)
     try:
         if hasattr(assistant, "_prepare_query_context"):
             context = prepare_context(assistant, case.question, snapshot, context)
@@ -484,7 +772,7 @@ def evaluate_case(assistant, calls, evidence, case, snapshot=None):
             for key in SCOPE_KEYS:
                 if key not in case.params and call["params"].get(key) not in (None, "", []):
                     row["failures"].append(f"Unexpected inherited scope: {key}={call['params'][key]!r}")
-            expected = expected_facts(evidence, case)
+            expected = row['expected_facts']
             scored_expected = dict(expected)
             actual = comparable_tool_result(case.tool, call["result"])
             if call["result"].get("error"):
@@ -516,6 +804,12 @@ def evaluate_case(assistant, calls, evidence, case, snapshot=None):
             if context.get("memory_slots", {}) != case.expected_slots:
                 row["failures"].append(f"effective memory slots mismatch: expected {case.expected_slots}")
         row["status"] = "pass" if not row["failures"] else "fail"
+        if not row['failures'] and case.manual_review:
+            row['status'] = 'coverage_gap'
+            row['coverage_gap'] = case.manual_review
+        if case.id == 'cost_project_total' and not re.search(r'不是实际支出|不代表实际支出|无法.*实际|不能.*实际', row['answer']):
+            row['failures'].append('实际支出问题必须说明能力边界并提供登记金额')
+            row['status'] = 'fail'
     except NotImplementedError as error:
         row["status"] = "coverage_gap"
         row["coverage_gap"] = str(error)

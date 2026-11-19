@@ -33,7 +33,7 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				tool_info: {
 					title: '刀具类型',
 					type: 'dict-select',
-					dict: dict({ url: '/api/shield/tool_info/', value: 'id', label: 'tool_type_name' }),
+					dict: dict({ url: '/api/shield/tool_info/', params: { limit: 999 }, value: 'id', label: 'tool_type_name' }),
 					search: { show: true },
 					column: { minWidth: 180, formatter: ({ row }: any) => row.tool_type_name || row.tool_info },
 					form: { rules: [{ required: true, message: '请选择刀具类型' }] },

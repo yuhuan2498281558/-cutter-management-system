@@ -8,8 +8,9 @@
             刀小智 - 智能助手
           </span>
           <div class="header-actions">
-            <el-button size="small" @click="handleReset" :loading="resetting">
-              <el-icon><RefreshRight /></el-icon>
+            <!-- 重置中只让图标转（Element 的 is-loading 旋转），按钮不换成加载圈；重复点击由 handleReset 自己挡掉 -->
+            <el-button size="small" @click="handleReset" :disabled="compacting">
+              <el-icon :class="{ 'is-loading': resetting }"><RefreshRight /></el-icon>
               重置对话
             </el-button>
           </div>
@@ -17,20 +18,11 @@
       </template>
 
       <div class="chat-content">
-        <!-- 记忆槽位状态栏 -->
-        <MemorySlotBadge
-          :memory-info="memoryInfo"
-          :context-mode="contextMode"
-          :pending-clears="pendingClears"
-          :disabled="loading || resetting"
-          @update:context-mode="setContextMode"
-          @toggle-clear="toggleClearSlot"
-        />
-
         <!-- 消息历史与流式展示列表 -->
         <ChatMessageList
           ref="chatListRef"
           :messages="messages"
+          :compacted-through="contextInfo?.compaction?.through_sequence ?? null"
           :is-generating="loading"
           :has-more-history="hasMoreHistory"
           :history-loading="historyLoading"
@@ -43,8 +35,12 @@
         <!-- 底部输入与路径控制区 -->
         <ChatInputArea
           v-model:route-mode="routeMode"
-          :loading="loading || resetting"
+          :generating="loading"
+          :disabled="loading || resetting || compacting"
+          :context-info="contextInfo"
           @send="sendQuery"
+          @compact="handleCompact"
+          @sources-change="focusSources = $event"
           @abort="handleAbort"
         />
       </div>
@@ -57,21 +53,26 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound, RefreshRight } from '@element-plus/icons-vue';
 import { useAiAssistantApi } from '/@/api/ai-assistant';
-import { ContextMode, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
+import { ContextInfo, ContextMode, FocusSource, MemoryMetadata, Message, QuerySlot, RouteMode } from './types';
 import ChatMessageList from './components/ChatMessageList.vue';
 import ChatInputArea from './components/ChatInputArea.vue';
-import MemorySlotBadge from './components/MemorySlotBadge.vue';
+import { supportsFocusSources } from './backendCapabilities';
 
 const api = useAiAssistantApi();
 
 const messages = ref<Message[]>([]);
 const loading = ref(false);
 const resetting = ref(false);
+const compacting = ref(false);
 const historyLoading = ref(false);
 const hasMoreHistory = ref(false);
 const nextHistoryCursor = ref<number>();
 const routeMode = ref<RouteMode>('rule');
+// 模型路径选中的数据类型，只在模型路径发送
+const focusSources = ref<FocusSource[]>([]);
 const memoryInfo = ref<MemoryMetadata>();
+// 上下文用量：历史接口给下一问的起步值，每轮回答给本轮的值
+const contextInfo = ref<ContextInfo | null>(null);
 const contextMode = ref<ContextMode>('auto');
 const pendingClears = ref<QuerySlot[]>([]);
 const chatListRef = ref<InstanceType<typeof ChatMessageList>>();
@@ -82,20 +83,6 @@ let operationVersion = 0;
 let messageSequence = 0;
 let disposed = false;
 const nextMessageId = () => `message-${++messageSequence}`;
-
-const setContextMode = (mode: ContextMode) => {
-  if (loading.value || resetting.value || disposed) return;
-  contextMode.value = mode;
-  if (mode === 'new') pendingClears.value = [];
-};
-
-const toggleClearSlot = (slot: QuerySlot) => {
-  if (loading.value || resetting.value || disposed) return;
-  pendingClears.value = pendingClears.value.includes(slot)
-    ? pendingClears.value.filter((item) => item !== slot)
-    : [...pendingClears.value, slot];
-  contextMode.value = 'continue';
-};
 
 // 单次规则回答由后端整段返回；限制展示速率可保留流式观感，
 // 但首批字符立即落屏，避免旧实现固定等待造成首问卡顿。
@@ -135,7 +122,7 @@ const handleAbort = () => {
 
 // 页面刷新后从后端记忆回填历史对话；只读接口，失败时静默降级为空对话
 const loadHistory = async (older = false) => {
-  if (disposed || historyLoading.value || loading.value || resetting.value) return;
+  if (disposed || historyLoading.value || loading.value || resetting.value || compacting.value) return;
   if (older && (!hasMoreHistory.value || nextHistoryCursor.value === undefined)) return;
   const version = operationVersion;
   historyLoading.value = true;
@@ -151,6 +138,7 @@ const loadHistory = async (older = false) => {
         role: item.role,
         content: item.content,
         time: '',
+        sequence: item.sequence,
       }));
       if (older) {
         const scrollPosition = chatListRef.value?.captureScrollPosition();
@@ -164,6 +152,7 @@ const loadHistory = async (older = false) => {
       }
     }
     if (disposed || version !== operationVersion) return;
+    if (!older && data.context !== undefined) contextInfo.value = data.context ?? null;
     if (!older && data.memory) {
       memoryInfo.value = {
         backend: data.memory.backend,
@@ -185,7 +174,7 @@ const loadHistory = async (older = false) => {
 onMounted(() => loadHistory());
 
 const sendQuery = (query: string) => {
-  if (!query.trim() || loading.value || resetting.value || disposed) return;
+  if (!query.trim() || loading.value || resetting.value || compacting.value || disposed) return;
   messages.value.push({ id: nextMessageId(), role: 'user', content: query, time: getCurrentTime() });
   runStream(query);
 };
@@ -200,7 +189,11 @@ const handleRegenerate = () => {
 
 const runStream = async (query: string) => {
   const version = ++operationVersion;
-  const requestControls = { context_mode: contextMode.value, clear_slots: [...pendingClears.value] };
+  const requestControls = {
+    context_mode: contextMode.value,
+    clear_slots: [...pendingClears.value],
+    ...(supportsFocusSources && routeMode.value === 'agent' && focusSources.value.length ? { focus_sources: [...focusSources.value] } : {}),
+  };
   loading.value = true;
 
   const assistantMsg: Message = { id: nextMessageId(), role: 'assistant', content: '', time: getCurrentTime(), streaming: true };
@@ -218,6 +211,7 @@ const runStream = async (query: string) => {
   let hasVisibleContent = false;
   let lastFlushTime = 0;
   let hasFinalAnswer = false;
+  let answerRoute = '';
 
   const finishIfReady = () => {
     if (!isCurrent() || !streamFinished || pendingText || flushFrame !== null) return;
@@ -309,9 +303,30 @@ const runStream = async (query: string) => {
         hasVisibleContent = prefixLength > 0;
         enqueueText(text.slice(message.content.length));
       },
-      onMemory: (info) => {
+      onMemory: ({ turnSequences, ...info }) => {
         if (!isCurrent()) return;
         memoryInfo.value = { ...memoryInfo.value, ...info };
+        // 补上刚保存的问答两行序号，分隔线才能落到本次会话的消息上
+        const index = messages.value.findIndex((message) => message.id === assistantMsg.id);
+        const question = messages.value[index - 1];
+        if (index > 0 && turnSequences?.length === 2 && question.role === 'user') {
+          [question.sequence, messages.value[index].sequence] = turnSequences;
+        }
+      },
+      onStatus: (stage) => {
+        const message = currentMessage();
+        if (isCurrent() && message) message.status = stage === 'compacting' || stage === 'revising' ? stage : undefined;
+      },
+      onMeta: (info) => {
+        if (isCurrent() && info.route) answerRoute = info.route;
+      },
+      onContext: (info) => {
+        if (isCurrent()) contextInfo.value = info as ContextInfo;
+      },
+      onQueryTraces: (traces) => {
+        // 只有模型分析（meta route=llm）的回答显示"本次查询"，规则直答不显示
+        const message = currentMessage();
+        if (isCurrent() && message && answerRoute === 'llm') message.queryTraces = traces;
       },
       onDone: () => {
         if (!isCurrent()) return;
@@ -343,8 +358,25 @@ const runStream = async (query: string) => {
   );
 };
 
+// 手动把早前对话整理成摘要；只在后端声明支持（compaction.manual）时显示按钮
+const handleCompact = async () => {
+  if (compacting.value || loading.value || resetting.value || disposed) return;
+  const version = operationVersion;
+  compacting.value = true;
+  try {
+    const response = await api.compact();
+    if (disposed || version !== operationVersion) return;
+    if (response.data?.context) contextInfo.value = response.data.context;
+    ElMessage.success('已整理早前对话');
+  } catch (error: any) {
+    if (!disposed && version === operationVersion) ElMessage.error('整理失败：' + (error.message || '未知错误'));
+  } finally {
+    if (!disposed) compacting.value = false;
+  }
+};
+
 const handleReset = async () => {
-  if (resetting.value || disposed) return;
+  if (resetting.value || compacting.value || disposed) return;
   const version = ++operationVersion;
   try {
     resetting.value = true;
@@ -358,6 +390,7 @@ const handleReset = async () => {
     if (disposed || version !== operationVersion) return;
     messages.value = [];
     memoryInfo.value = undefined;
+    contextInfo.value = null;
     contextMode.value = 'auto';
     pendingClears.value = [];
     hasMoreHistory.value = false;
@@ -380,8 +413,8 @@ onUnmounted(() => {
 
 <style scoped lang="scss">
 .ai-assistant-container {
-  // 113px = 顶部导航 + 标签栏实测高度，刚好填满到页脚上沿
-  height: calc(100vh - 113px);
+  // 布局给出的路由页面可用高度（顶栏、页脚以外），刚好填满到页脚上沿
+  height: var(--dv-main-height);
   padding: 10px 12px 8px;
 
   .chat-card {

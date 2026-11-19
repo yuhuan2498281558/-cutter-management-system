@@ -16,12 +16,13 @@ ua-parser==0.18.0
 pyparsing==3.1.2
 openpyxl==3.1.5
 requests==2.32.4
-langchain==0.3.25
-langchain-community==0.3.24
-langchain-core==0.3.65
-langchain-ollama==0.2.3
-langchain-openai==0.3.24
-# langchain_community SQLChatMessageHistory imports SQLAlchemy asyncio, which requires greenlet
+pydantic==2.10.3
+httpx==0.28.1
+openai==1.109.1
+SQLAlchemy==2.0.39
+# ratio scripts and shield tests import numpy; a range, not a pin, so the Python 3.10 build image still resolves
+numpy>=1.26
+# SQLAlchemy 2.0 still requires greenlet on AMD64 and similar platforms for Python < 3.14
 greenlet==3.2.4
 typing-extensions==4.12.2
 tzlocal==5.2

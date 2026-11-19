@@ -16,15 +16,16 @@ class ProjectContextTests(SimpleTestCase):
         with patch("application.shield.models.ProjectInfo.objects") as manager:
             self.assertEqual(_resolve_request_project_id("P-001"), "P-001")
             manager.values_list.assert_not_called()
+            manager.all.assert_not_called()
 
     def test_sole_project_is_inferred(self):
         with patch("application.shield.models.ProjectInfo.objects") as manager:
-            manager.values_list.return_value.__getitem__.return_value = ["P-ONLY"]
+            manager.all.return_value.values_list.return_value.__getitem__.return_value = ["P-ONLY"]
             self.assertEqual(_resolve_request_project_id(), "P-ONLY")
 
     def test_multiple_projects_are_not_implicitly_aggregated(self):
         with patch("application.shield.models.ProjectInfo.objects") as manager:
-            manager.values_list.return_value.__getitem__.return_value = ["P-1", "P-2"]
+            manager.all.return_value.values_list.return_value.__getitem__.return_value = ["P-1", "P-2"]
             self.assertEqual(_resolve_request_project_id(), "")
 
     def test_agent_tool_uses_request_project_without_exposing_project_argument(self):
@@ -33,7 +34,7 @@ class ProjectContextTests(SimpleTestCase):
             "P-REQUEST",
         )[0]
 
-        self.assertNotIn("project_id", bound_tool.args)
+        self.assertNotIn("project_id", bound_tool.args_schema.model_fields)
         with patch(
             "application.ai_assistant.llm_service.query_tool_change_data",
             return_value=json.dumps({"total_records": 0}),

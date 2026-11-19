@@ -11,13 +11,16 @@
 answer_extract 里的正则从答案中抽取对应字段的数值，与真值逐项比较，全部一致才算通过。
 """
 
+import json
 import re
+from decimal import Decimal
 
 # 常见的千分位与单位噪声，抽数前先清掉
 _THOUSAND_SEP = re.compile(r"(?<=\d),(?=\d{3}\b)")
 # 数值抽取排除嵌在字母数字编号里的数字：刀位号 G3R / S14R 里的 3、14
 # 不是数值主张，不应参与幻觉判定（冒烟实验实测踩过这个坑）
-_NUMBER = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?(?![A-Za-z0-9])")
+_NUMBER = re.compile(r"(?<![A-Za-z0-9.+-])[+-]?\d+(?:\.\d+)?(?![A-Za-z0-9.])")
+_PERCENT_FIELD = re.compile(r"(?:^|_)(?:pct|percent|percentage|rate|ratio)$|(?:率|占比|百分比)$", re.I)
 
 # 允许在答案中自由出现、不计入幻觉判定的数字：
 #   0/1 常用于表述，100 用于百分比换算
@@ -26,17 +29,6 @@ _ALWAYS_ALLOWED = {0.0, 1.0, 100.0}
 # 确定性模板中硬编码的业务阈值（异常率 30%、异常判定系数 1.5）——它们来自代码
 # 而非 LLM 生成，出现在答案里不是幻觉（校准实验实测：模板句"异常率超过 30%"被误flag）
 _TEMPLATE_CONSTANTS = {30.0, 1.5}
-
-# 明确的"空结果主张"：答案用文字声明查不到记录，等价于主张数量为 0。
-# 抽取不到数字且命中这些措辞时，将缺失字段按 0 计。真值确为 0（空结果探针）
-# 则判对；真值非 0（如刮刀实有 507 次更换却答"没有记录"）则判错——两个方向
-# 都与语义一致，因此作为评分器全局行为而非逐题配置（第四轮校准引入：
-# 模板消融组把"检查 0 次、更换 0 次"转述成"未找到换刀记录"被误判为未作答）。
-_EMPTY_CLAIM = [
-    re.compile(r"未(?:查询|查|找|检索)到[^\n]{0,25}?(?:换刀|更换|开仓|掘进|地层)[^\n]{0,10}?记录"),
-    re.compile(r"(?:没有|无|不存在)[^\n]{0,20}?(?:换刀|更换|开仓|掘进|地层)记录"),
-    re.compile(r"记录数为?\s*\*{0,2}0\s*条"),
-]
 
 
 def _clean(text: str) -> str:
@@ -58,31 +50,47 @@ def _extract_numbers_with_precision(text: str):
 
 
 def _rounded_match(value: float, decimals: int, allowed) -> bool:
-    """答案中的数值与可信来源匹配：允许模板/LLM 对来源值做过合理舍入，
-    并允许百分比形态换算（0.075 ↔ 7.5）。
-    校准实验实测：模板把工具返回的 11918.6139 印成 11918.614，逐位比对会误判为幻觉。"""
+    """按答案小数位匹配来源值，百分比换算由字段收集阶段处理。"""
     for a in allowed:
-        for candidate in (a, a * 100, a / 100):
-            if abs(value - candidate) < 1e-6:
-                return True
-            if decimals <= 6 and abs(value - round(candidate, decimals)) < 1e-9:
-                return True
+        if abs(value - a) < 1e-6:
+            return True
+        if decimals <= 6 and abs(value - round(a, decimals)) < 1e-9:
+            return True
     return False
 
 
-def collect_gt_numbers(rows) -> set:
-    """把真值查询结果里的全部数值收集成集合（不止被断言的字段）。"""
+def _collect_numbers(source, *, percentage=False, convert_percent=False):
     values = set()
-    for row in rows or []:
-        source = row.values() if isinstance(row, dict) else row
+    if isinstance(source, dict):
+        for key, value in source.items():
+            values |= _collect_numbers(value, percentage=bool(_PERCENT_FIELD.search(str(key))),
+                                       convert_percent=convert_percent)
+    elif isinstance(source, (list, tuple)):
         for value in source:
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, (int, float)):
-                values.add(float(value))
-            elif isinstance(value, str):
-                values |= extract_numbers(value)
+            values |= _collect_numbers(value, percentage=percentage, convert_percent=convert_percent)
+    elif isinstance(source, (int, float, Decimal)) and not isinstance(source, bool):
+        values.add(float(source))
+        if percentage and convert_percent:
+            values.update((float(source) * 100, float(source) / 100))
+    elif isinstance(source, str):
+        try:
+            parsed = json.loads(source)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            return _collect_numbers(parsed, convert_percent=convert_percent)
+        values |= extract_numbers(source)
+        if convert_percent:
+            for match in _NUMBER.finditer(_clean(source)):
+                if percentage or _clean(source)[match.end():].lstrip().startswith('%'):
+                    value = float(match[0])
+                    values.update((value * 100, value / 100))
     return values
+
+
+def collect_gt_numbers(rows) -> set:
+    """递归收集真值中的数字，保留负号、Decimal 和空值语义。"""
+    return _collect_numbers(rows)
 
 
 def extract_field(answer: str, pattern):
@@ -97,7 +105,10 @@ def extract_field(answer: str, pattern):
         match = re.search(p, text)
         if match:
             try:
-                return float(match.group(1))
+                value = match.group(1)
+                if match.start(1) > 0 and text[match.start(1) - 1] in '+-' and value[:1] not in '+-':
+                    value = text[match.start(1) - 1] + value
+                return float(value)
             except (IndexError, TypeError, ValueError):
                 continue
     return None
@@ -118,12 +129,8 @@ def score_answer(answer: str, gt_row: dict, spec: dict) -> dict:
         return {"exact_match": None, "field_accuracy": None,
                 "per_field": {}, "extracted": {}, "missing_fields": []}
     extracted, per_field, missing = {}, {}, []
-    empty_claimed = any(p.search(answer or "") for p in _EMPTY_CLAIM)
-
     for field, pattern in extract_spec.items():
         value = extract_field(answer, pattern)
-        if value is None and empty_claimed:
-            value = 0.0  # 文字形式的空结果主张 = 主张该数量为 0
         extracted[field] = value
         if value is None:
             per_field[field] = False
@@ -150,18 +157,18 @@ def hallucinated_numbers(answer: str, gt_rows, question: str = "",
     """返回答案中出现、但在任何可信来源里都找不到的数字。
 
     可信来源包括：真值查询结果的全部数值、问题本身出现的数字、工具原始返回里的数值，
-    以及百分比换算（x 与 x*100 视为同一来源）。
+    只有百分比字段允许换算，计数和金额不允许放大或缩小一百倍。
 
     工具原始返回来自 llm_service 的调用记录（开 AI_TRACE_TOOL_RESULTS 后随响应返回），
     因此这个指标不需要额外写取数逻辑就能算。
     """
     allowed = set(_ALWAYS_ALLOWED)
-    allowed |= collect_gt_numbers(gt_rows)
+    allowed |= _collect_numbers(gt_rows, convert_percent=True)
     allowed |= extract_numbers(question)
-    for call in tool_results or []:
-        result = call.get("result") if isinstance(call, dict) else call
-        if isinstance(result, str):
-            allowed |= extract_numbers(result)
+    calls = [tool_results] if isinstance(tool_results, dict) else tool_results or []
+    for call in calls:
+        result = call.get("result", call) if isinstance(call, dict) else call
+        allowed |= _collect_numbers(result, convert_percent=True)
     allowed |= _TEMPLATE_CONSTANTS
     allowed |= set(extra_allowed or [])
 

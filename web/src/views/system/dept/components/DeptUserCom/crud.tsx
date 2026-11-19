@@ -68,16 +68,6 @@ export const createCrudOptions = function ({ crudExpose, context }: CreateCrudOp
 					},
 				},
 			},
-			search: {
-				container: {
-					layout: 'multi-line',
-					action: {
-						col: {
-							span: 10,
-						},
-					},
-				},
-			},
 			rowHandle: {
 				//固定右侧
 				fixed: 'right',
@@ -94,7 +84,7 @@ export const createCrudOptions = function ({ crudExpose, context }: CreateCrudOp
 					},
 					custom: {
 						text: '重设密码',
-						type: 'primary',
+						type: 'text',
 						show: auth('user:ResetPassword'),
 						tooltip: {
 							placement: 'top',

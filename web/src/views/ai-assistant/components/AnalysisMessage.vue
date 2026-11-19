@@ -28,14 +28,14 @@
       <div
         v-else-if="block.type === 'table'"
         class="markdown-table-wrap"
-        :style="{ width: `${tableMinWidth(block.headers) + 2}px` }"
+        :style="{ width: `${tableMinWidth(block.headers, block.rows) + 2}px` }"
         tabindex="0"
         role="region"
         aria-label="回答数据表，可横向滚动"
       >
-        <table class="markdown-table" :style="{ minWidth: `${tableMinWidth(block.headers)}px` }">
+        <table class="markdown-table" :style="{ minWidth: `${tableMinWidth(block.headers, block.rows)}px` }">
           <colgroup>
-            <col v-for="(cell, cellIndex) in block.headers" :key="cellIndex" :style="tableColumnStyle(block.headers, cellIndex)" />
+            <col v-for="(cell, cellIndex) in block.headers" :key="cellIndex" :style="tableColumnStyle(block.headers, cellIndex, block.rows)" />
           </colgroup>
           <thead>
             <tr>
@@ -83,6 +83,8 @@ import { SECTION_TITLES } from '../constants';
 const props = defineProps<{
   content: string;
   streaming?: boolean;
+  // 回答被停止或出错中断，最后一行可能只收到一半
+  truncated?: boolean;
 }>();
 
 type MarkdownBlock =
@@ -119,6 +121,9 @@ const isTableSeparator = (line: string) => {
   return cells.length > 1 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
 };
 
+// 正在输入的分隔行（如 "|"、"| --- | -"）：表头之后出现它，就可以先把表格画出来
+const isSeparatorPrefix = (line: string) => /^[|:\-\s]+$/.test(line.trim());
+
 const parseTableRow = (line: string) => {
   const row = line.trim().replace(/^\||\|$/g, '');
   const cells: string[] = [];
@@ -142,8 +147,7 @@ const isNumericColumn = (header: string) => {
     || /^(均值|平均值?|最小值?|最大值?|中位数)([（(]|$)/.test(label);
 };
 
-// 列宽只依赖表头，后续行追加长值时不会重新分配已显示列的宽度。
-const tableColumnWidth = (header: string) => {
+const headerColumnWidth = (header: string) => {
   if (/各地层关联次数/.test(header)) return 600;
   if (/主要磨损|说明|备注|依据|限制|详情|建议/.test(header)) return 400;
   if (isNumericColumn(header)) return Math.max(112, Math.min(168, header.length * 13 + 24));
@@ -152,13 +156,29 @@ const tableColumnWidth = (header: string) => {
   return 180;
 };
 
-const tableMinWidth = (headers: string[]) => headers.reduce((width, header) => width + tableColumnWidth(header), 0);
+// 13px 字号下的估算字宽：全角字符 13px，半角字符按 8px 宽估；加粗和代码标记不占宽度。
+const cellTextWidth = (text: string) => Array.from(text.replace(/\*\*|`/g, ''))
+  .reduce((width, char) => width + (/[⺀-￯]/.test(char) ? 13 : 8), 0);
 
-const tableColumnStyle = (headers: string[], index: number) => {
-  return { width: `${tableColumnWidth(headers[index])}px` };
+// 列宽以表头为准；数值列和短标签列再按最长单元格放宽（最多 220px），
+// 避免"37.4%（43/115）"这类值折行。流式输出时这些列只会随更长的值变宽。
+const tableColumnWidth = (header: string, cells: string[] = []) => {
+  const width = headerColumnWidth(header);
+  if (width >= 180 || !cells.length) return width;
+  return Math.max(width, Math.min(220, Math.max(...cells.map(cellTextWidth)) + 32));
 };
 
-const startsBlock = (lines: string[], index: number) => {
+const columnCells = (rows: string[][], index: number) => rows.map((row) => row[index] || '');
+
+const tableMinWidth = (headers: string[], rows: string[][] = []) => headers.reduce(
+  (width, header, index) => width + tableColumnWidth(header, columnCells(rows, index)), 0,
+);
+
+const tableColumnStyle = (headers: string[], index: number, rows: string[][] = []) => {
+  return { width: `${tableColumnWidth(headers[index], columnCells(rows, index))}px` };
+};
+
+const startsBlock = (lines: string[], index: number, streaming = false) => {
   const line = lines[index]?.trim() || '';
   const next = lines[index + 1]?.trim() || '';
   return (
@@ -168,11 +188,19 @@ const startsBlock = (lines: string[], index: number) => {
     || /^[-*+]\s+/.test(line)
     || /^\d+[.)]\s+/.test(line)
     || (line.includes('|') && isTableSeparator(next))
+    // 流式输出时表头可能还没等到分隔行，不能并进上一段
+    || (streaming && (line.startsWith('|') || (line.includes('|') && index + 1 === lines.length - 1 && isSeparatorPrefix(next))))
   );
 };
 
-const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
+// 正在输入的一行只收到前几格：缺的格子留空，多出的格子等整行收完再判断
+const fitRow = (cells: string[], columns: number) => (
+  Array.from({ length: columns }, (_cell, index) => cells[index] ?? '')
+);
+
+const parseMarkdown = (content: string, streaming = false, truncated = false): MarkdownBlock[] => {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const last = lines.length - 1;
   const blocks: MarkdownBlock[] = [];
   let index = 0;
 
@@ -196,17 +224,25 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
       continue;
     }
 
-    if (line.includes('|') && isTableSeparator(lines[index + 1] || '') && (!streaming || index + 1 < lines.length - 1)) {
+    // 分隔行还在输入时就画出表头，之后每格随收随显，不等整行
+    const separatorTyping = streaming && index + 1 === last && isSeparatorPrefix(lines[last]);
+    if (line.includes('|') && (separatorTyping || isTableSeparator(lines[index + 1] || '') && (!streaming || index + 1 < last))) {
       const tableStart = index;
       const headers = parseTableRow(line);
       const rows: string[][] = [];
-      let malformed = parseTableRow(lines[index + 1]).length !== headers.length;
+      const piped = line.startsWith('|');
+      let malformed = !separatorTyping && parseTableRow(lines[index + 1]).length !== headers.length;
       index += 2;
       while (index < lines.length) {
-        // 最后一行仍可能继续收到单元格或分隔符。等换行/结束再提交该行，
-        // 避免每次追加字符都在 table/raw 之间切换并销毁整张表。
-        if (streaming && index === lines.length - 1) {
-          index += 1;
+        if (streaming && index === last) {
+          // 正在输入的一行：有了单元格就先显示，格数够不够等这行收完再判断，
+          // 避免每次追加字符都在 table/raw 之间切换并销毁整张表。
+          // 带竖线的表格里，不以 | 开头的行是表格后面的正文，交给下面按段落显示。
+          const typing = lines[index].trim();
+          if (typing.includes('|')) {
+            rows.push(fitRow(parseTableRow(typing), headers.length));
+            index += 1;
+          } else if (!piped) index += 1;
           break;
         }
         if (!lines[index].trim().includes('|')) break;
@@ -214,6 +250,17 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
         if (row.length !== headers.length) malformed = true;
         rows.push(row);
         index += 1;
+      }
+      // 停止或出错时最后一行可能只收到一半：完整的行仍显示为表格，这一行单独显示原文。
+      const tail = rows[rows.length - 1];
+      if (
+        truncated && !streaming && tail && tail.length < headers.length
+        && parseTableRow(lines[tableStart + 1]).length === headers.length
+        && rows.slice(0, -1).every((item) => item.length === headers.length)
+      ) {
+        blocks.push({ type: 'table', headers, rows: rows.slice(0, -1) });
+        blocks.push({ type: 'raw', text: lines[index - 1] });
+        continue;
       }
       if (malformed) {
         blocks.push({
@@ -224,6 +271,9 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
       } else blocks.push({ type: 'table', headers, rows });
       continue;
     }
+
+    // 以 | 开头、后面还没有分隔行的行多半是正在输入的表头，先不显示，免得原文闪一下
+    if (streaming && line.startsWith('|') && (index === last || (index + 1 === last && !lines[last].trim()))) break;
 
     const unordered = line.match(/^[-*+]\s+(.+)$/);
     const ordered = line.match(/^\d+[.)]\s+(.+)$/);
@@ -262,7 +312,7 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
 
     const paragraph = [line];
     index += 1;
-    while (index < lines.length && !startsBlock(lines, index)) {
+    while (index < lines.length && !startsBlock(lines, index, streaming)) {
       paragraph.push(lines[index].trim());
       index += 1;
     }
@@ -272,11 +322,13 @@ const parseMarkdown = (content: string, streaming = false): MarkdownBlock[] => {
   return blocks;
 };
 
-const markdownBlocks = computed(() => parseMarkdown(props.content, props.streaming));
+const markdownBlocks = computed(() => parseMarkdown(props.content, props.streaming, props.truncated));
 
+// 流式输出里出现 | 开头的行，就按 Markdown 显示，正在输入的表头不会先以纯文本出现
 const hasMarkdown = computed(() => (
   markdownBlocks.value.some((block) => block.type !== 'paragraph')
   || /\*\*[^*]+\*\*|`[^`]+`/.test(props.content)
+  || (Boolean(props.streaming) && /^\s*\|/m.test(props.content))
 ));
 
 const normalizeTitle = (title: string) => title.replace(/[：:]\s*$/, '').trim();
@@ -285,7 +337,8 @@ const sectionKind = (title: string): AnalysisSection['kind'] => {
   if (title.includes('结论')) return 'conclusion';
   if (title.includes('依据') || title.includes('发现')) return 'evidence';
   if (title.includes('注意')) return 'warning';
-  if (title.includes('建议')) return 'suggestion';
+  // "待复核线索"和"建议"用同一种样式
+  if (title.includes('建议') || title.includes('待复核')) return 'suggestion';
   return 'default';
 };
 

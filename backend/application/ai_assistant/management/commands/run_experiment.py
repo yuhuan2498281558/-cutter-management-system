@@ -178,11 +178,12 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _ground_truth(self, unit):
+        from application.ai_assistant.evaluation.current_data_suite import readonly_database
         sql = unit.get("gt_sql")
         if not sql:
             return None, ""
         try:
-            with connection.cursor() as cursor:
+            with readonly_database(), connection.cursor() as cursor:
                 cursor.execute(sql)
                 columns = [c[0] for c in cursor.description]
                 return [dict(zip(columns, r)) for r in cursor.fetchall()], ""
@@ -223,6 +224,8 @@ class Command(BaseCommand):
         context = {"user_id": session_id, "project_id": options["project"]}
         if arm in ("agent", "hybrid"):
             context["route_mode"] = arm
+            if "focus_sources" in case:
+                context["focus_sources"] = case["focus_sources"]
 
         started = time.perf_counter()
         try:
@@ -296,6 +299,8 @@ class Command(BaseCommand):
         }
         record.update(scored)
         record.update(routed)
+        if case.get("rubric"):
+            record["rubric"] = case["rubric"]
         return record
 
     @staticmethod

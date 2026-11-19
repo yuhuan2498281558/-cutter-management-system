@@ -1,0 +1,422 @@
+[
+ {
+  "id": "N01",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "帮我统计一下60环到200环之间（按开仓所在的环号算）所有刀具的现场观测记录有多少条，实际换了多少次，更换率是多少？"
+ },
+ {
+  "id": "N02",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请问第200环至第350环区间内，以开仓所在环号为准，滚刀的现场观测记录共计多少条？实际更换次数和更换率分别是多少？"
+ },
+ {
+  "id": "N03",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "我想看下刮刀的情况：开仓环号落在100~260环的，现场观测记录多少条，实际更换了几次，更换率多少？"
+ },
+ {
+  "id": "N04",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "麻烦查下330环到487环（以开仓所在环号为准）全部刀具的现场观测记录条数、实际更换次数，还有更换率，谢谢。"
+ },
+ {
+  "id": "N05",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "1到150环的滚刀，异常磨损记录一共几条？已分类异常率是多少？每种异常磨损类型分别有几条？"
+ },
+ {
+  "id": "N06",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "领导要个数：150环到300环所有刀具的异常磨损记录有多少条，已分类异常率是多少，再按异常磨损类型分一下各几条。"
+ },
+ {
+  "id": "N07",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "刮刀这块，第280环到第487环一共有多少条异常磨损记录？已分类异常率多少？每种异常磨损类型各几条？"
+ },
+ {
+  "id": "N08",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请汇总第1~487环全部刀具的异常磨损记录条数、已分类异常率，以及各异常磨损类型对应的条数。"
+ },
+ {
+  "id": "N09",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "45环那次开仓花了多久？换刀用了多长时间？跟上一次开仓隔了几环？"
+ },
+ {
+  "id": "N10",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请查询第151环开仓的开仓耗时、换刀耗时，以及与前一次开仓相隔的环数。"
+ },
+ {
+  "id": "N11",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "281环开仓那回，开仓、换刀各用了多长时间？离上次开仓多少环？"
+ },
+ {
+  "id": "N12",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "你好，想了解一下第339环那次开仓：开仓总共用了多长时间，换刀用了多长时间，距离上一次开仓间隔了多少环？"
+ },
+ {
+  "id": "N13",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "第15环开仓，按有效刀位上的换刀明细来算，现场观测记录有多少条、实际换了几把刀、已分类异常率多少？"
+ },
+ {
+  "id": "N14",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "258环那次开仓，只看有效刀位上的换刀明细，观测记录几条？实际更换几把？已分类异常率是多少？"
+ },
+ {
+  "id": "N15",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "麻烦统计第487环开仓的数据（以有效刀位上的换刀明细为准）：现场观测记录条数、实际更换刀具把数、已分类异常率。"
+ },
+ {
+  "id": "N16",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "整个项目所有开仓里，哪一次跟上一次开仓间隔的环数最大？是在第几环，隔了多少环？"
+ },
+ {
+  "id": "N17",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "最近8次开仓，有哪几次换刀时长超过了5.2小时？把环号和换刀时长列一下。"
+ },
+ {
+  "id": "N18",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请列出最近12次开仓中换刀时长超过4.8小时的各次开仓，注明环号及对应换刀时长。"
+ },
+ {
+  "id": "N19",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "最近4次开仓平均每次换几把刀？"
+ },
+ {
+  "id": "N20",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "咱们最近7次开仓，平均下来每次更换了多少把刀啊？"
+ },
+ {
+  "id": "N21",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "7号刀位整个项目下来，现场观测了几次，换了几次，出过几次异常磨损？"
+ },
+ {
+  "id": "N22",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "S12L刀位全项目的情况：现场观测次数、更换次数、异常磨损次数分别是多少？"
+ },
+ {
+  "id": "N23",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "查一下Y5刀位，全项目一共观测过几次、换过几次、有几次异常磨损。"
+ },
+ {
+  "id": "N24",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请问80B号刀位在全项目范围内，现场观测、更换、出现异常磨损各有多少次？"
+ },
+ {
+  "id": "N25",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "151环到339环之间，刮刀里哪些刀位换得最多？有并列的都列出来，各换了几次。"
+ },
+ {
+  "id": "N26",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "第250至487环，刮刀更换次数最多的是哪些刀位？如有并列请全部列出，并注明各自更换次数。"
+ },
+ {
+  "id": "N27",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "全项目的滚刀里，哪个刀位异常磨损次数最多？有并列的话都给我列上，出现了几次？"
+ },
+ {
+  "id": "N28",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "不分刀具类型，全项目哪个刀位异常磨损次数最多？并列的全列出来，出现了几次。"
+ },
+ {
+  "id": "N29",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "全项目来看，滚刀和刮刀的更换率分别是多少？哪个更高？"
+ },
+ {
+  "id": "N30",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "S3L刀位总共换下来几把旧刀？其中已经确认报废的有几把？"
+ },
+ {
+  "id": "N31",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "52号刀位一共换下了多少把旧刀，已确认报废的是几把？"
+ },
+ {
+  "id": "N32",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "我是做采购的，想看下100环到300环这段，各个厂家分别新装供货了多少次刀。"
+ },
+ {
+  "id": "N33",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "全项目刮刀按厂家统计一下，每家新装了几把？"
+ },
+ {
+  "id": "N34",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请提供全项目滚刀分厂家的统计：各厂家的新装供货次数及登记金额。"
+ },
+ {
+  "id": "N35",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "按原安装厂家比较一下，各家全部刀具中已确认拆下的那些，平均服役多少环，样本各有多少？"
+ },
+ {
+  "id": "N36",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "滚刀按原安装厂家分，各厂家已确认拆下的刀具里，已分类异常率分别是多少？"
+ },
+ {
+  "id": "N37",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "滚刀按型号分一下，已确认拆下的刀平均服役多少环？每个型号样本有多少？"
+ },
+ {
+  "id": "N38",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "可更换式刮刀H=389这个型号，只看样本不少于10把的原安装厂家，哪家平均服役环数最长？是多少环，样本几把？"
+ },
+ {
+  "id": "N39",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "19寸带压单刃滚刀，各厂家的新刀报价分别是多少？"
+ },
+ {
+  "id": "N40",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "螺栓型刮刀的维修报价，各个厂家分别报了多少？"
+ },
+ {
+  "id": "N41",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "可更换式刮刀H=400的新刀报价哪家最便宜？多少钱？"
+ },
+ {
+  "id": "N42",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "想比个价：19寸双联常压正滚刀180（转角）的新刀报价，哪个厂家最低？价格是多少？"
+ },
+ {
+  "id": "N43",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "17寸常压中心滚刀的新刀报价，最低多少、最高多少，两者差了多少钱？"
+ },
+ {
+  "id": "N44",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "滚刀旧刀返修现在待厂家反馈的、已确认的、已归档的各有几把？"
+ },
+ {
+  "id": "N45",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "所有刀具的旧刀返修按状态统计一下：待厂家反馈、已确认、已归档各多少把？"
+ },
+ {
+  "id": "N46",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "刮刀已经确认报废的有多少把？另外还有多少把是报废建议、还在等厂家确认的？"
+ },
+ {
+  "id": "N47",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "300到487环换下来的旧刀，已报废的几把，报废建议的几把？"
+ },
+ {
+  "id": "N48",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "刮刀旧刀返修里，厂家已确认的（包括已归档的）登记金额加起来一共多少？"
+ },
+ {
+  "id": "N49",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请汇总全部刀具旧刀返修中厂家已确认（含已归档）的登记金额合计。"
+ },
+ {
+  "id": "N50",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "所有旧刀里面，轴承失效的有几把？刀圈有损坏的有几把？"
+ },
+ {
+  "id": "N51",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "100环到300环纵断面上，各类地层的面积占比是多少？"
+ },
+ {
+  "id": "N52",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "第900~1100环，按纵断面看各地层的面积占比分别是多少？"
+ },
+ {
+  "id": "N53",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "麻烦看一下2500环到2800环这段，按纵断面算，各类地层面积各占多少比例。"
+ },
+ {
+  "id": "N54",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "700到900环，各个历史地层标签分别出现在多少环？"
+ },
+ {
+  "id": "N55",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "请统计第1800至2100环区间内，每种历史地层标签各出现在多少环。"
+ },
+ {
+  "id": "N56",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "151环开仓，从上一次开仓到这次之间经过的地层，各类面积占比是多少？"
+ },
+ {
+  "id": "N57",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "443环那次开仓，跟上一次开仓之间穿过的地层，各类面积分别占多少？"
+ },
+ {
+  "id": "N58",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "刀具GD-TEST-0534是第几环装上的、第几环拆下的？服役了多少环？厂家反馈现在处理到哪一步了？"
+ },
+ {
+  "id": "N59",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "帮我查一下刀具GD-TEST-0225：装上和拆下分别在第几环，一共服役了多少环，厂家反馈处理到什么进度了。"
+ },
+ {
+  "id": "N60",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "掘进参数一共有多少条记录？覆盖了哪些环？平均推力是多少？"
+ },
+ {
+  "id": "N61",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "盾构机主驱动电机温度最高到过多少度？"
+ },
+ {
+  "id": "N62",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "帮忙预测一下，下个月需要采购多少把19寸滚刀？"
+ },
+ {
+  "id": "N63",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "旧刀维修平均每把要花多少工时？"
+ },
+ {
+  "id": "N64",
+  "kind": "heldout",
+  "focus_sources": [],
+  "question": "最近一次换刀作业是哪几个人做的？想看下当时的人员排班。"
+ },
+ {
+  "id": "N65",
+  "kind": "heldout",
+  "focus_sources": [],
+  "turns": [
+   "100到300环的滚刀，异常磨损记录有多少条，已分类异常率多少，各异常类型分别几条？",
+   "那刮刀呢？"
+  ]
+ },
+ {
+  "id": "N66",
+  "kind": "heldout",
+  "focus_sources": [],
+  "turns": [
+   "请问第281环开仓的开仓时长、换刀时长各是多少，距上次开仓间隔了多少环？",
+   "317环那次呢？"
+  ]
+ },
+ {
+  "id": "N67",
+  "kind": "heldout",
+  "focus_sources": [],
+  "turns": [
+   "19寸常压单刃滚刀各厂家的新刀报价是多少？",
+   "维修报价呢？"
+  ]
+ },
+ {
+  "id": "N68",
+  "kind": "heldout",
+  "focus_sources": [],
+  "turns": [
+   "S12R刀位全项目现场观测了几次、换了几次、出了几次异常？",
+   "S13R呢？"
+  ]
+ }
+]

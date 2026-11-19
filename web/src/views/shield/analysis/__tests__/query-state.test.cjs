@@ -96,12 +96,12 @@ test('deactivation and unmount cancel requests still queued by filter changes', 
   }
 });
 
-test('cost global scope and local brand reset issue each endpoint once with the final scope', async t => {
-  const h = setup(t, 'pages/CostAnalysis.vue', {
+test('manufacturer global scope and local reset issue each endpoint once with the final scope', async t => {
+  const h = setup(t, 'components/ManufacturerComparison.vue', {
     props: { filter: { project: 1, summary_status: 'CONFIRMED' } },
     request: async config => ({ data: {
       meta: { schema_version: 2, scope: config.params }, manufacturers: ['A', 'B'], stratum_types: [],
-      items: [], service_rows: [], series: [], lifespan_series: [], normal_rate_series: [], abnormal_rate_series: [], time_axis: [],
+      items: [], series: [], lifespan_series: [], normal_rate_series: [], abnormal_rate_series: [], time_axis: [],
     } }),
   });
   await h.mount();
@@ -109,13 +109,27 @@ test('cost global scope and local brand reset issue each endpoint once with the 
   assert.equal(h.requests.at(-1).params.manufacturers, 'A');
   h.requests.length = 0;
   h.props.filter = { project: 2, shield_machine: 7, summary_status: 'CONFIRMED' };
-  assert.equal(h.state.costReady.value, false); assert.equal(h.state.brandReady.value, false);
+  assert.equal(h.state.brandReady.value, false);
   assert.equal(h.requests.length, 0);
   await settle();
-  assert.equal(h.requests.length, 6); assert.equal(new Set(h.requests.map(call => call.url)).size, 6);
-  for (const call of h.requests) assert.deepEqual(call.params, { project: 2, shield_machine: 7, summary_status: 'CONFIRMED',
-    ...(/brand_(price|performance)_trend/.test(call.url) ? { include_details: 'false' } : {}) });
-  assert.equal(h.state.costReady.value, true); assert.equal(h.state.brandReady.value, true);
+  // 厂家对比接口和筛选项各一次
+  assert.deepEqual(h.requests.map(call => call.url.split('/').at(-2)).sort(), ['brand_comparison', 'filter_options']);
+  for (const call of h.requests) assert.deepEqual(call.params, { project: 2, shield_machine: 7, summary_status: 'CONFIRMED' });
+  assert.equal(h.state.brandReady.value, true);
+});
+test('cost global scope issues each cost endpoint once with the final scope', async t => {
+  const h = setup(t, 'pages/CostAnalysis.vue', {
+    props: { filter: { project: 1, summary_status: 'CONFIRMED' } },
+    request: async config => ({ data: { meta: { schema_version: 2, scope: config.params }, items: [], source_rows: [], type_breakdown: [] } }),
+  });
+  await h.mount();
+  h.requests.length = 0;
+  h.props.filter = { project: 2, shield_machine: 7, summary_status: 'CONFIRMED' };
+  assert.equal(h.state.costReady.value, false);
+  await settle();
+  assert.deepEqual(h.requests.map(call => call.url.split('/').at(-2)).sort(), ['cost_overview', 'cost_trend']);
+  for (const call of h.requests) assert.deepEqual(call.params, { project: 2, shield_machine: 7, summary_status: 'CONFIRMED' });
+  assert.equal(h.state.costReady.value, true);
 });
 test('formatters preserve zero, missing values and safely escape text', () => {
   const p = compile(fs.readFileSync(path.join(root, 'utils/presentation.ts'), 'utf8'), () => ({}));

@@ -59,7 +59,18 @@ function copyCanvasToImages(source: HTMLElement, target: HTMLElement) {
   });
 }
 
+/** 页面上收进 ⓘ 的口径，PDF 里还原成一行文字（读 PDF 的人无法悬停）。 */
+function expandInfoTips(target: HTMLElement) {
+  target.querySelectorAll('[data-info-tip]').forEach(tip => {
+    const note = document.createElement('span');
+    note.className = 'chart-description info-tip-note';
+    note.textContent = tip.getAttribute('data-info-tip');
+    tip.replaceWith(note);
+  });
+}
+
 function removeExportBars(target: HTMLElement) {
+  expandInfoTips(target);
   target.querySelectorAll('.analysis-export-bar, .analysis-no-export, .el-form, .el-pagination, .el-loading-mask, .caret-wrapper, .el-table__column-resize-proxy').forEach(el => el.remove());
   target.querySelectorAll('.chart-card-header').forEach(header => Array.from(header.children).filter(child => !child.classList.contains('chart-heading')).forEach(child => child.remove()));
   target.querySelectorAll('details').forEach(details => details.setAttribute('open', ''));
@@ -94,6 +105,8 @@ function flattenTables(target: HTMLElement) {
 export interface AnalysisPdfSection {
   title: string;
   selector: string;
+  /** 小节口径：页面上收在 ⓘ 里、又不在导出区块内时，写在小节标题下 */
+  note?: string;
 }
 
 export interface AnalysisPdfMetaItem {
@@ -184,6 +197,7 @@ export function exportAnalysisPdf(
     if (!html) return '';
     return `<section class="pdf-section">
       ${section.title ? `<h2>${escapeHtml(section.title)}</h2>` : ''}
+      ${section.note ? `<p class="chart-description">${escapeHtml(section.note)}</p>` : ''}
       ${html}
     </section>`;
   }).join(''); } catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : '导出内容读取失败，请重新加载'); return false; }
@@ -224,13 +238,25 @@ h2{font-size:12px;margin:0 0 4px;color:#111827;line-height:1.25;}
 .chart-card-body > div,.chart-card-body div[_echarts_instance_]{width:100%!important;height:auto!important;min-height:0!important;overflow:visible!important;position:static!important;}
 .chart-card-header{display:flex;align-items:center;justify-content:space-between;}
 .chart-title{font-size:10px;font-weight:600;color:#111827;line-height:1.2;}
-.chart-description,.analysis-note,.analysis-scope,.reconciliation,.cost-quality,.graph-scope{font-size:9px;line-height:1.5;margin:4px 0 8px;}
+.chart-description,.analysis-note,.aggregate-line,.analysis-scope,.graph-scope{font-size:9px;line-height:1.5;margin:4px 0 8px;}
+.info-tip-note{display:block;font-weight:400;}
 .analysis-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
 .analysis-grid>section{min-width:0;}
-.analysis-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid #ddd;margin-bottom:6px;}
-.analysis-metric{padding:6px;border-right:1px solid #ddd;font-size:9px;}
-.analysis-metric span,.analysis-metric strong,.analysis-metric small{display:block;}
-.analysis-metric strong{font-size:14px;margin:4px 0;}
+.analysis-hero{display:grid;grid-template-columns:1.35fr 1fr;gap:6px;margin-bottom:6px;break-inside:avoid;page-break-inside:avoid;}
+.hero-side{display:grid;gap:6px;align-content:start;}
+.hero-card{border:1px solid #d9d9d9;border-radius:4px;padding:6px;font-size:9px;}
+.hero-label,.hero-card-title{display:block;margin:0 0 4px;font-size:9px;font-weight:600;}
+.hero-value{display:block;margin:2px 0 4px;font-size:16px;font-weight:600;}
+.hero-stat-value{display:block;font-size:12px;font-weight:600;}
+.share-bar{display:flex;height:6px;margin:4px 0;background:#f2f3f5;}
+.share-bar span,.share-swatch{display:block;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+.share-bar span{height:100%;}
+.share-swatch{width:8px;height:8px;}
+.share-legend{font-size:9px;}
+.review-list p{margin:2px 0;font-size:9px;}
+.kpi-row{display:grid;grid-template-columns:repeat(3,1fr) auto;gap:6px;margin-bottom:4px;}
+.kpi-value{display:block;font-size:13px;font-weight:600;}
+.kpi-sub,.hero-sub,.hero-stat-sub{display:block;font-size:8px;}
 .analysis-print-table{table-layout:fixed;width:100%;}
 .analysis-print-table thead{display:table-header-group;}
 .analysis-print-table tr{break-inside:avoid;page-break-inside:avoid;}

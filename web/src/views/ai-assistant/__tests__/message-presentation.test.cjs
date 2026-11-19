@@ -7,11 +7,18 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const vue = require('vue');
 
+function loadQueryTrace() {
+  const context = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.resolve(__dirname, '../queryTrace.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
+  return context.exports;
+}
+
 function loadComponent(file, props, exports, environment = {}) {
   const context = { exports: {}, defineProps: () => props, defineEmits: () => () => {}, defineExpose() {}, ...environment };
   context.require = name => {
     if (name === 'vue') return { ...vue, onUnmounted() {} };
     if (name === '../constants') return { SECTION_TITLES: ['结论', '关键依据', '注意事项'], quickQuestionGroups: [] };
+    if (name === '../queryTrace') return loadQueryTrace();
     if (name === 'element-plus') return { ElMessage: { success() {}, error() {} } };
     if (name === '@element-plus/icons-vue' || name.endsWith('.vue')) return {};
     throw new Error(`Unexpected import: ${name}`);
@@ -75,7 +82,7 @@ test('shortcut uses a current S-series cutter position rather than retired G-ser
   const context = { exports: {} };
   const source = fs.readFileSync(path.resolve(__dirname, '../constants.ts'), 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
-  const query = context.exports.quickQuestionGroups.find(group => group.title === '刀位统计').items.find(item => item.label === '指定刀位').query;
+  const query = context.exports.quickQuestionGroups.find(group => group.title === '刀位统计').items.find(item => item.label === '单个刀位').query;
   assert.equal(query, '分析S1L刀位的换刀和磨损情况');
 });
 
@@ -95,7 +102,8 @@ for (const [label, content] of [
 test('a partial streaming table has no permanent format error and recovers when the row completes', () => {
   const props = vue.reactive({ content: '| 厂家 | 更换次数 |\n| --- | --- |\n| A厂家', streaming: true });
   const h = loadComponent('AnalysisMessage.vue', props, 'markdownBlocks');
-  assert.equal(h.markdownBlocks.value[0].type, 'table'); assert.equal(h.markdownBlocks.value[0].rows.length, 0);
+  assert.equal(h.markdownBlocks.value[0].type, 'table');
+  assert.deepEqual(Array.from(h.markdownBlocks.value[0].rows[0]), ['A厂家', ''], 'the row being typed shows what has arrived');
   props.content += ' | 0 |\n';
   assert.equal(h.markdownBlocks.value[0].type, 'table');
   assert.deepEqual(Array.from(h.markdownBlocks.value[0].rows[0]), ['A厂家', '0']);
@@ -170,4 +178,123 @@ test('copying stopped/failed answers retains integrity notices and the original 
   await h.handleCopy({ content, rawError: true });
   assert.equal(copied[0], `回答已中止，内容不完整\n\n${content}`);
   assert.equal(copied[1], `查询未完成或失败，以下内容仅供核对\n\n${content}`);
+});
+
+const cutTable = '| 刀位 | 更换次数 | 主要磨损 |\n| --- | --- | --- |\n| 17 | 9 | 偏磨 |\n| 19 | 7 | 正常磨损 |\n| S1L | 3';
+
+for (const [label, content] of [
+  ['stopped', cutTable],
+  ['failed', `${cutTable}\n\n抱歉，出错了：连接提前结束，回答不完整，请重试`],
+]) {
+  test(`a ${label} answer keeps complete rows as a table and shows only the cut-off row as source`, () => {
+    const h = loadComponent('AnalysisMessage.vue', { content, streaming: false, truncated: true }, 'markdownBlocks');
+    const [table, tail, ...rest] = h.markdownBlocks.value;
+    assert.equal(table.type, 'table');
+    assert.deepEqual(Array.from(table.rows, row => Array.from(row)), [['17', '9', '偏磨'], ['19', '7', '正常磨损']]);
+    assert.deepEqual({ ...tail }, { type: 'raw', text: '| S1L | 3' });
+    assert.deepEqual(rest.map(block => block.type), label === 'failed' ? ['paragraph'] : []);
+  });
+}
+
+test('stopping mid-row keeps the complete rows that were visible while streaming and moves only the cut-off row to source', () => {
+  const props = vue.reactive({ content: cutTable, streaming: true, truncated: false });
+  const h = loadComponent('AnalysisMessage.vue', props, 'markdownBlocks');
+  const visible = h.markdownBlocks.value[0].rows.map(row => Array.from(row));
+  assert.deepEqual(visible.at(-1), ['S1L', '3', '']);
+  props.streaming = false; props.truncated = true;
+  assert.equal(h.markdownBlocks.value[0].type, 'table');
+  assert.deepEqual(h.markdownBlocks.value[0].rows.map(row => Array.from(row)), visible.slice(0, -1));
+  assert.equal(h.markdownBlocks.value[1].text, '| S1L | 3');
+});
+
+for (const [label, content] of [
+  ['an earlier short row', '| 厂家 | 更换次数 |\n| --- | --- |\n| A厂家 |\n| B厂家 | 2 |\n| C厂家'],
+  ['a long last row', '| 厂家 | 更换次数 |\n| --- | --- |\n| A厂家 | 2 | 多余列'],
+  ['a separator width mismatch', '| 厂家 | 更换次数 |\n| --- | --- | --- |\n| A厂家'],
+]) {
+  test(`a cut-off answer with ${label} still retains the whole table source with the warning`, () => {
+    const h = loadComponent('AnalysisMessage.vue', { content, streaming: false, truncated: true }, 'markdownBlocks');
+    assert.equal(h.markdownBlocks.value.length, 1);
+    assert.equal(h.markdownBlocks.value[0].type, 'raw'); assert.equal(h.markdownBlocks.value[0].text, content);
+    assert.match(h.markdownBlocks.value[0].note, /列数不一致/);
+  });
+}
+
+test('the message list marks stopped and failed answers as cut off', () => {
+  const { descriptor } = require('@vue/compiler-sfc').parse(fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8'));
+  const find = node => node.tag === 'AnalysisMessage' ? node : (node.children || []).map(find).find(Boolean);
+  const bindings = Object.fromEntries(find(descriptor.template.ast).props.filter(prop => prop.name === 'bind').map(prop => [prop.arg.content, prop.exp.content]));
+  assert.equal(bindings.truncated, 'msg.aborted || msg.rawError');
+});
+
+async function renderMessageList(props, prepare = () => {}) {
+  const { renderToString } = require('@vue/server-renderer');
+  const bindings = loadComponent('ChatMessageList.vue', props, 'welcomeChips, containerRef, handleScroll, elapsedSec, canRetry, handleCopy, isNearBottom, scrollToBottom, expandedTraces, toggleQueryTrace, describeQueryTrace, queryTraceTags, compactionDividerAfter, STATUS_TEXT');
+  prepare(bindings);
+  const template = require('@vue/compiler-sfc').parse(fs.readFileSync(path.resolve(__dirname, '../components/ChatMessageList.vue'), 'utf8')).descriptor.template.content;
+  const app = vue.createSSRApp({ template, setup: () => ({ ...props, ...bindings }) });
+  for (const name of ['ElIcon', 'ElButton', 'AnalysisMessage', 'ChatDotRound', 'User', 'DocumentCopy', 'ArrowDown', 'RefreshRight', 'Loading']) {
+    app.component(name, { setup: (_props, { slots }) => () => vue.h('span', slots.default?.()) });
+  }
+  return renderToString(app);
+}
+
+test('the first history load shows a loading state instead of the welcome shortcuts', async () => {
+  const loading = await renderMessageList({ messages: [], historyLoading: true, hasMoreHistory: false });
+  assert.match(loading, /正在加载历史对话…/);
+  assert.equal(loading.includes('你好，我是刀小智'), false);
+  const empty = await renderMessageList({ messages: [], historyLoading: false, hasMoreHistory: false });
+  assert.match(empty, /你好，我是刀小智/);
+  assert.equal(empty.includes('正在加载历史对话'), false);
+  const older = await renderMessageList({ messages: [{ id: 'm1', role: 'user', content: '旧问题', time: '' }], historyLoading: true, hasMoreHistory: true });
+  assert.equal(older.includes('正在加载历史对话'), false, 'loading earlier pages keeps the conversation on screen');
+  assert.match(older, /旧问题/);
+});
+
+test('query traces are summarised per data type with the first ring range found and the record count', () => {
+  const { describeQueryTrace, queryTraceTags } = loadQueryTrace();
+  const traces = [
+    { sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487], effective_ring_range: [390, 480], record_count: 359 } },
+    { sourceLabel: '换刀与磨损', scope: { ring_range: [1, 50], record_count: 12 } },
+    { sourceLabel: '开仓记录', scope: { ring_range: null, effective_ring_range: [100, 100], observation_count: 12 } },
+    { sourceLabel: '掘进参数', scope: { ring_min: '20', ring_max: 80, record_count: 0 } },
+    { sourceLabel: '地层', scope: null },
+    { sourceLabel: '可查数据', scope: { project_id: 1, tool_models_scope: '共用资料库' } },
+    { sourceLabel: '地层', scope: { ring_range: [100, 300] } },
+  ];
+  assert.deepEqual(Array.from(queryTraceTags(traces)), ['换刀与磨损 · 第388–487环 · 359条', '开仓记录 · 第100环 · 12条', '掘进参数 · 第20–80环 · 0条', '地层 · 第100–300环', '可查数据']);
+  assert.deepEqual(traces.map(describeQueryTrace), ['换刀与磨损 · 第388–487环 · 359条', '换刀与磨损 · 第1–50环 · 12条', '开仓记录 · 第100环 · 12条', '掘进参数 · 第20–80环 · 0条', '地层', '可查数据', '地层 · 第100–300环']);
+});
+
+test('the 本次查询 row appears under finished answers that carry traces and expands to one line per query', async () => {
+  const traced = { id: 'a1', role: 'assistant', content: '结论', time: '', queryTraces: [{ sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487], record_count: 359 } }, { sourceLabel: '换刀与磨损', scope: { ring_range: [1, 50] } }] };
+  const collapsed = await renderMessageList({ messages: [traced] });
+  assert.match(collapsed, /<span class="query-trace-title">本次查询<\/span>/);
+  assert.equal(collapsed.match(/class="query-trace-tag"/g).length, 1);
+  assert.match(collapsed, /<span class="query-trace-tag">换刀与磨损 · 第388–487环 · 359条<\/span>/);
+  assert.equal(collapsed.includes('query-trace-list'), false);
+  const expanded = await renderMessageList({ messages: [traced] }, bindings => bindings.toggleQueryTrace('a1'));
+  assert.match(expanded, /<li>换刀与磨损 · 第388–487环 · 359条<\/li><li>换刀与磨损 · 第1–50环<\/li>/);
+  for (const message of [{ ...traced, queryTraces: [] }, { ...traced, queryTraces: undefined }, { ...traced, streaming: true }]) {
+    assert.equal((await renderMessageList({ messages: [message] })).includes('本次查询'), false);
+  }
+});
+
+test('a divider follows the last message the summary covers, and compaction progress replaces the generating label', async () => {
+  const messages = [
+    { id: 'history-7', role: 'user', content: '旧问题', time: '', sequence: 7 },
+    { id: 'history-8', role: 'assistant', content: '旧回答', time: '', sequence: 8 },
+    { id: 'message-1', role: 'user', content: '新问题', time: '' },
+    { id: 'message-2', role: 'assistant', content: '', time: '', streaming: true, status: 'compacting' },
+  ];
+  const html = await renderMessageList({ messages, compactedThrough: 8, isGenerating: true });
+  const divider = html.indexOf('以上对话已整理成摘要');
+  assert.ok(divider > html.indexOf('旧回答') && divider < html.indexOf('新问题'), 'divider sits between the summarised and the newer messages');
+  assert.match(html, /正在整理早前对话 · 0s/);
+  const plain = await renderMessageList({ messages: messages.slice(0, 2), compactedThrough: 8 });
+  assert.equal(plain.includes('以上对话已整理成摘要'), false, 'no divider when nothing follows the summary');
+  const never = await renderMessageList({ messages, compactedThrough: null, isGenerating: true });
+  assert.equal(never.includes('以上对话已整理成摘要'), false);
+  const revising = await renderMessageList({ messages: [...messages.slice(0, 3), { ...messages[3], status: 'revising' }], isGenerating: true });
+  assert.match(revising, /正在补全回答 · 0s/);
 });

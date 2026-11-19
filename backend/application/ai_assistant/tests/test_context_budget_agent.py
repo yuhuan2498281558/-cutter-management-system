@@ -1,17 +1,14 @@
-"""Offline integration with the real LangChain 0.3 agent/executor protocol."""
+"""离线验证工具循环保留预算检查、用量回调和原始工具证据。"""
 
 import copy
 import json
 import unittest
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import StructuredTool
-from pydantic import Field
+from application.ai_assistant.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from application.ai_assistant.agent_loop import AgentPrompt
+from application.ai_assistant.tests.test_tooling import make_tool
 
+from application.ai_assistant.agent_loop import astream_agent, invoke_agent
 from application.ai_assistant.context_budget import (
     ContextBudgetExceeded, ContextBudgetPolicy, GuardedChatModel,
 )
@@ -22,28 +19,35 @@ from application.ai_assistant.token_estimation import estimate_tokens
 USAGE = {"input_tokens": 17, "output_tokens": 3, "total_tokens": 20}
 
 
-class RecordingToolModel(BaseChatModel):
-    """Local deterministic model; no provider, tokenization download or DB."""
+class FakeMessagesListChatModel:
+    """按顺序循环返回预设消息的测试假模型。"""
+    def __init__(self, responses):
+        self.responses, self.index = responses, 0
 
-    seen: list = Field(default_factory=list)
-    bound_names: list = Field(default_factory=list)
-    use_tool: bool = True
+    def invoke(self, input, config=None, **kwargs):
+        response = self.responses[self.index]
+        self.index = (self.index + 1) % len(self.responses)
+        return response
 
-    @property
-    def _llm_type(self):
-        return "offline-context-budget-integration"
+    async def ainvoke(self, input, config=None, **kwargs):
+        return self.invoke(input, config, **kwargs)
+
+    def stream(self, input, config=None, **kwargs):
+        yield self.invoke(input, config, **kwargs)
+
+    async def astream(self, input, config=None, **kwargs):
+        yield self.invoke(input, config, **kwargs)
+
+
+class RecordingToolModel:
+    """记录输入、片段和用量的离线模型。"""
+    def __init__(self, use_tool=True, **kwargs):
+        self.seen, self.bound_names, self.use_tool = [], [], use_tool
+        self.__dict__.update(kwargs)
 
     def bind_tools(self, tools, **kwargs):
         self.bound_names.extend(getattr(tool, "name", "unknown") for tool in tools)
         return self
-
-    def get_num_tokens(self, text):
-        # Defensive offline fallback only. Production guard uses estimate_tokens,
-        # so this fake tokenizer does not establish real provider token counts.
-        return len(text)
-
-    def get_num_tokens_from_messages(self, messages, tools=None):
-        return sum(len(str(message.content)) + 12 for message in messages)
 
     def _response(self, messages):
         self.seen.append(copy.deepcopy(messages))
@@ -57,19 +61,36 @@ class RecordingToolModel(BaseChatModel):
             response_metadata={"offline": True},
         )
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        return ChatResult(generations=[ChatGeneration(message=self._response(messages))])
+    def invoke(self, messages, config=None, **kwargs):
+        response = self._response(messages)
+        if collector := (config or {}).get("usage"):
+            collector.record(response)
+        return response
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        return self.invoke(messages, config, **kwargs)
+
+    def stream(self, messages, config=None, **kwargs):
+        observe = (config or {}).get("observe", lambda kind, value: None)
+        observe("start", messages)
+        response = None
+        for chunk in self._stream(messages, **kwargs):
+            observe("chunk", chunk)
+            response = chunk if response is None else response + chunk
+            yield chunk
+        if collector := (config or {}).get("usage"):
+            collector.record(response)
 
     def _stream(self, messages, stop=None, run_manager=None, **kwargs):
         message = self._response(messages)
-        yield ChatGenerationChunk(message=AIMessageChunk(
+        yield AIMessageChunk(
             content=message.content, tool_calls=message.tool_calls,
             usage_metadata=message.usage_metadata,
             response_metadata=message.response_metadata,
-        ))
+        )
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        for chunk in self._stream(messages, stop=stop, **kwargs):
+    async def astream(self, messages, config=None, **kwargs):
+        for chunk in self.stream(messages, config, **kwargs):
             yield chunk
 
 
@@ -85,36 +106,29 @@ def trend_payload():
     }, ensure_ascii=False)
 
 
-def make_executor(payload, policy=None):
+def make_agent(payload, policy=None):
     model = RecordingToolModel()
     guard = GuardedChatModel(model, policy or ContextBudgetPolicy(
         context_tokens=4096, output_tokens=512, safety_margin_tokens=512,
     ))
-    tool = StructuredTool.from_function(
+    tool = make_tool(
         func=lambda: payload, name="query_trend",
         description="Return exact per-ring counts, unknown values and the denominator.",
     )
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Use query_trend for statistics. Preserve scope, null and denominator."),
-        ("human", "{input}"), MessagesPlaceholder("agent_scratchpad"),
-    ])
-    agent = create_tool_calling_agent(guard, [tool], prompt)
-    executor = AgentExecutor(
-        agent=agent, tools=[tool], return_intermediate_steps=True, max_iterations=3,
-    )
-    return model, guard, executor
+    prompt = AgentPrompt("Use query_trend for statistics. Preserve scope, null and denominator.")
+    return model, guard, prompt, [tool]
 
 
 class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
-    def test_real_executor_compacts_second_round_only_and_preserves_evidence(self):
+    def test_agent_compacts_second_round_only_and_preserves_evidence(self):
         payload = trend_payload()
-        model, guard, executor = make_executor(payload)
+        model, guard, prompt, tools = make_agent(payload)
         # The raw observation alone is too large; only lossless compaction
         # allows this second model round to proceed under the selected budget.
         self.assertGreater(estimate_tokens(payload), guard.policy.input_budget)
-        result = executor.invoke({"input": "查询1至160环异常率"})
+        result = invoke_agent(guard, prompt, tools, {"input": "查询1至160环异常率"})
         self.assertEqual(len(model.seen), 2)
-        self.assertEqual(model.bound_names, ["query_trend"])
+        self.assertEqual(model.bound_names, ["query_trend", "query_trend"])
         self.assertFalse(any(isinstance(message, ToolMessage) for message in model.seen[0]))
         observation = next(message for message in model.seen[1] if isinstance(message, ToolMessage))
         self.assertEqual(json.loads(observation.content)["format"], COLUMNAR_FORMAT)
@@ -123,10 +137,11 @@ class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["intermediate_steps"][0][1], payload)
         self.assertEqual(result["output"], "已按原始统计口径返回。")
 
-    async def test_async_executor_also_guards_each_round(self):
+    async def test_async_agent_also_guards_each_round(self):
         payload = trend_payload()
-        model, _, executor = make_executor(payload)
-        result = await executor.ainvoke({"input": "查询1至160环异常率"})
+        model, guard, prompt, tools = make_agent(payload)
+        events = [event async for event in astream_agent(guard, prompt, tools, {"input": "查询1至160环异常率"})]
+        result = events[-1]
         self.assertEqual(len(model.seen), 2)
         observation = next(message for message in model.seen[1] if isinstance(message, ToolMessage))
         self.assertEqual(unpack_columnar(observation.content), json.loads(payload))
@@ -134,48 +149,52 @@ class ContextBudgetAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_event_stream_retains_model_events_usage_and_original_tool_output(self):
         payload = trend_payload()
-        model, _, executor = make_executor(payload)
-        events = [event async for event in executor.astream_events(
-            {"input": "查询1至160环异常率"}, version="v2",
+        model, guard, prompt, tools = make_agent(payload)
+        starts, streams = [], []
+
+        def observe(kind, value):
+            (starts if kind == "start" else streams).append(value)
+
+        events = [event async for event in astream_agent(
+            guard, prompt, tools, {"input": "查询1至160环异常率"}, config={"observe": observe},
         )]
-        starts = [event for event in events if event["event"] == "on_chat_model_start"]
-        streams = [event for event in events if event["event"] == "on_chat_model_stream"]
         self.assertEqual(len(model.seen), 2)
         self.assertGreaterEqual(len(starts), 2)
         self.assertTrue(streams)
-        self.assertTrue(any(event["data"]["chunk"].content == "已按原始统计口径返回。"
-                            for event in streams))
-        self.assertTrue(any(event["data"]["chunk"].usage_metadata == USAGE for event in streams))
-        tool_ends = [event for event in events if event["event"] == "on_tool_end"]
+        self.assertTrue(any(chunk.content == "已按原始统计口径返回。" for chunk in streams))
+        self.assertTrue(any(chunk.usage_metadata == USAGE for chunk in streams))
+        self.assertTrue(any(event["type"] == "model_text" and event["content"] == "已按原始统计口径返回。"
+                            for event in events))
+        tool_ends = [event for event in events if event["type"] == "tool_end"]
         self.assertEqual(len(tool_ends), 1)
-        self.assertEqual(tool_ends[0]["data"]["output"], payload)
+        self.assertEqual(tool_ends[0]["observation"], payload)
 
     def test_oversized_second_round_is_blocked_before_another_model_call(self):
         payload = json.dumps({"narrative": "无法结构压缩的长结果" * 5000}, ensure_ascii=False)
-        model, _, executor = make_executor(payload, ContextBudgetPolicy(
+        model, guard, prompt, tools = make_agent(payload, ContextBudgetPolicy(
             context_tokens=4096, output_tokens=256, safety_margin_tokens=256,
         ))
         with self.assertRaises(ContextBudgetExceeded):
-            executor.invoke({"input": "查询1至160环异常率"})
+            invoke_agent(guard, prompt, tools, {"input": "查询1至160环异常率"})
         self.assertEqual(len(model.seen), 1)
 
     async def test_async_event_second_round_is_blocked_after_original_tool_event(self):
         payload = json.dumps({"narrative": "巨大工具输出" * 5000}, ensure_ascii=False)
-        model, _, executor = make_executor(payload, ContextBudgetPolicy(
+        model, guard, prompt, tools = make_agent(payload, ContextBudgetPolicy(
             context_tokens=4096, output_tokens=256, safety_margin_tokens=256,
         ))
         events = []
         with self.assertRaises(ContextBudgetExceeded):
-            async for event in executor.astream_events({"input": "查询"}, version="v2"):
+            async for event in astream_agent(guard, prompt, tools, {"input": "查询"}):
                 events.append(event)
         self.assertEqual(len(model.seen), 1)
-        self.assertTrue(any(event["event"] == "on_tool_end"
-                            and event["data"]["output"] == payload for event in events))
+        self.assertTrue(any(event["type"] == "tool_end"
+                            and event["observation"] == payload for event in events))
 
     def test_error_observation_is_never_reformatted(self):
         payload = json.dumps({"error": "invalid ring range", "details": [1, 160]}, indent=4)
-        model, _, executor = make_executor(payload)
-        result = executor.invoke({"input": "查询"})
+        model, guard, prompt, tools = make_agent(payload)
+        result = invoke_agent(guard, prompt, tools, {"input": "查询"})
         observation = next(message for message in model.seen[1] if isinstance(message, ToolMessage))
         self.assertEqual(observation.content, payload)
         self.assertEqual(result["intermediate_steps"][0][1], payload)

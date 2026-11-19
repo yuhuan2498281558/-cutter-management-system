@@ -82,16 +82,25 @@ function progressPercent(task: any) {
 function openTask(task: any) {
   router.push(`/mobile/tasks/${task.id}`);
 }
+// 快速切换标签时只采用最后一次请求的结果，旧请求的数据和收尾都丢弃。
+let latestRequestId = 0;
 async function loadTasks() {
+  const requestId = ++latestRequestId;
+  const submitted = tab.value === 'submitted';
   loading.value = true;
   try {
-    const res: any = await getMobileTasks(tab.value === 'submitted' ? '' : 'active');
-    tasks.value = (res.data || []).filter((item: any) => tab.value === 'submitted' ? ['SUBMITTED', 'COMPLETED'].includes(item.status) : !['SUBMITTED', 'COMPLETED', 'CANCELLED'].includes(item.status));
+    const res: any = await getMobileTasks(submitted ? '' : 'active');
+    if (requestId !== latestRequestId) return;
+    tasks.value = (res.data || []).filter((item: any) => submitted ? ['SUBMITTED', 'COMPLETED'].includes(item.status) : !['SUBMITTED', 'COMPLETED', 'CANCELLED'].includes(item.status));
   } catch (e: any) {
+    if (requestId !== latestRequestId) return;
+    tasks.value = [];
     showToast(e?.msg || e?.response?.data?.msg || e?.message || '任务加载失败');
   } finally {
-    loading.value = false;
-    refreshing.value = false;
+    if (requestId === latestRequestId) {
+      loading.value = false;
+      refreshing.value = false;
+    }
   }
 }
 onMounted(loadTasks);

@@ -1,10 +1,12 @@
 <template>
-  <el-card class="chart-card" shadow="never" :style="{ height: height || 'auto' }">
+  <el-card class="chart-card analysis-card" shadow="never" :style="{ height: height || 'auto' }">
     <template #header>
       <div class="chart-card-header">
         <div class="chart-heading">
-          <h3 class="chart-title">{{ title }}</h3>
-          <p v-if="description" class="chart-description">{{ description }}</p>
+          <slot name="heading">
+            <h3 class="chart-title">{{ title }}</h3>
+            <InfoTip v-if="description" :content="description" />
+          </slot>
         </div>
         <slot name="toolbar" />
       </div>
@@ -30,9 +32,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import InfoTip from '/@/components/InfoTip.vue';
 
 const props = defineProps<{
-  title: string;
+  title?: string;
   description?: string;
   loading?: boolean;
   height?: string;
@@ -48,9 +51,7 @@ const chartHeight = computed(() => props.chartHeight || '300px');
 
 <style scoped>
 .chart-card {
-  border-radius: 6px;
   margin-bottom: 12px;
-  border-color: var(--el-border-color-light);
   min-width: 0;
 }
 .chart-card :deep(.el-card__header) {
@@ -63,14 +64,13 @@ const chartHeight = computed(() => props.chartHeight || '300px');
   justify-content: space-between;
   gap: 12px;
 }
-.chart-heading { min-width: 0; }
+.chart-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .chart-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--el-font-size-base);
   font-weight: 600;
   color: var(--el-text-color-primary);
 }
-.chart-description { margin: 5px 0 0; font-size: 12px; line-height: 1.6; color: var(--el-text-color-secondary); }
 .chart-card :deep(.el-card__body) { padding: 12px; }
 .chart-content { min-width: 0; height: 100%; }
 .chart-card-body {

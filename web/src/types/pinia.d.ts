@@ -42,6 +42,7 @@ declare interface RoutesListState<T = any> {
 declare interface ThemeConfigState {
 	themeConfig: {
 		isDrawer: boolean;
+		colorScheme: 'claude' | 'blue';
 		primary: string;
 		topBar: string;
 		topBarColor: string;

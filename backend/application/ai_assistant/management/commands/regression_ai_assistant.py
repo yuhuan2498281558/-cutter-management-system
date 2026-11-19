@@ -22,7 +22,7 @@ DEFAULT_CASES = [
         "category": "tunneling_trend",
         "question": "第5环掘进参数趋势怎么样",
         "expected_type": "analysis",
-        "must_contain": ["掘进", "第 1/10 段", "贯入力"],
+        "must_contain": ["掘进", "第 1/10 段", "贯入度"],
     },
     {
         "id": "tunneling_summary",

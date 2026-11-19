@@ -7,19 +7,30 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8', status = 200, fetchImpl, response } = {}) {
-  const requests = [];
+function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8', status = 200, fetchImpl, response, axiosStatus } = {}) {
+  const requests = [], redirects = [];
+  let responseInterceptor;
+  // axios stand-in: runs the client's response interceptor; axiosStatus simulates an HTTP error for history/reset/chat.
+  const send = async () => {
+    if (axiosStatus) {
+      const error = Object.assign(new Error(`Request failed with status code ${axiosStatus}`), { response: { status: axiosStatus } });
+      return responseInterceptor ? responseInterceptor.rejected(error) : Promise.reject(error);
+    }
+    const result = { data: response || { code: 2000, data: {} } };
+    return responseInterceptor ? responseInterceptor.fulfilled(result) : result;
+  };
   const context = { exports: {}, TextDecoder, fetch: async (url, options) => {
     requests.push({ url, options });
     return fetchImpl ? fetchImpl(url, options) : new Response(payload, { status, headers: { 'Content-Type': contentType } });
   }};
   context.require = name => {
     if (name === 'axios') return { create: () => ({
-      interceptors: { request: { use() {} } },
-      get: async () => ({ data: response || { code: 2000, data: {} } }),
-      post: async () => ({ data: response || { code: 2000, data: {} } }),
+      interceptors: { request: { use() {} }, response: { use(fulfilled, rejected) { responseInterceptor = { fulfilled, rejected }; } } },
+      get: send,
+      post: send,
     }) };
     if (name === '/@/utils/storage') return { Session: { get: () => 'test-token' } };
+    if (name === '/@/utils/service') return { redirectToLogin: message => redirects.push(message) };
     throw new Error(`Unexpected import: ${name}`);
   };
   const source = fs.readFileSync(path.resolve(__dirname, '../index.ts'), 'utf8').replaceAll('import.meta.env.VITE_API_URL', "''");
@@ -27,7 +38,7 @@ function setup({ payload = '', contentType = 'text/event-stream; charset=utf-8',
   const api = context.exports.useAiAssistantApi();
   const events = [];
   const callbacks = { onChunk: value => events.push(['chunk', value]), onDone: () => events.push(['done']), onError: value => events.push(['error', value]), onMemory: value => events.push(['memory', value]) };
-  return { api, requests, events, callbacks, run: signal => api.chatStream({ query: '当前项目换刀汇总', route_mode: 'rule' }, callbacks, signal) };
+  return { api, requests, redirects, events, callbacks, run: signal => api.chatStream({ query: '当前项目换刀汇总', route_mode: 'rule' }, callbacks, signal) };
 }
 
 test('preserves POST/JWT/query/mode and parses split UTF-8, CRLF, comments, memory and an unterminated final done event', async () => {
@@ -49,6 +60,9 @@ for (const [label, options, pattern] of [
   ['premature EOF', { payload: 'data: {"type":"chunk","content":"未完成"}\n\n' }, /回答不完整/],
   ['HTML response', { payload: '<html>proxy error</html>', contentType: 'text/html' }, /未返回流式响应/],
   ['HTTP error', { status: 401 }, /401/],
+  ['HTTP error with a JSON reason', { status: 400, contentType: 'application/json', payload: JSON.stringify({ code: 4000, msg: '查询内容不能超过 10000 个字符' }) }, /^查询内容不能超过 10000 个字符（400）$/],
+  ['HTTP error with JSON but no reason', { status: 500, contentType: 'application/json', payload: JSON.stringify({ code: 5000 }) }, /^请求失败：500$/],
+  ['HTTP error with an HTML page', { status: 502, contentType: 'text/html', payload: '<html>Bad Gateway</html>' }, /^请求失败：502$/],
   ['invalid chunk shape', { payload: 'data: {"type":"chunk","content":{}}\n\n' }, /文本格式无效/],
 ]) {
   test(`${label} is one visible error, never a successful done`, async () => {
@@ -97,10 +111,72 @@ test('business failures in HTTP 200 reject history/reset/chat and do not masquer
   await assert.rejects(h.api.reset(), /数据库操作失败/);
   await assert.rejects(h.api.history(), /数据库操作失败/);
   await assert.rejects(h.api.chat({ query: 'test' }), /数据库操作失败/);
+  await assert.rejects(h.api.compact(), /数据库操作失败/);
+});
+
+test('compaction status and the saved turn sequences reach the page', async () => {
+  const h = setup({ payload: 'data: {"type":"status","stage":"compacting"}\n\ndata: {"type":"status","stage":"done"}\n\ndata: {"type":"memory","message_count":4,"turn_sequences":[9,10]}\n\ndata: {"type":"done"}\n\n' });
+  h.callbacks.onStatus = stage => h.events.push(['status', stage]);
+  await h.run();
+  assert.deepEqual(h.events.map(event => event[0]), ['status', 'status', 'memory', 'done']);
+  assert.deepEqual(h.events.slice(0, 2).map(event => event[1]), ['compacting', 'done']);
+  assert.deepEqual(Array.from(h.events[2][1].turnSequences), [9, 10]);
 });
 
 test('authoritative answer is delivered separately from transient chunks before done', async () => {
   const h = setup({ payload: 'data: {"type":"chunk","content":"临时分析"}\n\ndata: {"type":"answer","content":"最终结论"}\n\ndata: {"type":"done"}\n\n' });
   h.callbacks.onAnswer = value => h.events.push(['answer', value]);
   await h.run(); assert.deepEqual(h.events, [['chunk', '临时分析'], ['answer', '最终结论'], ['done']]);
+});
+
+test('meta route and query traces from done reach the page before done, without tool names or arguments', async () => {
+  const toolCalls = [
+    { tool: 'query_tool_change_data', args: { ring_range: [388, 487] }, source_label: '换刀与磨损', scope: { ring_range: [388, 487], record_count: 359 } },
+    { tool: 'query_data_catalog', args: {}, source_label: '可查数据', scope: null },
+    { tool: 'legacy_tool', args: {} },
+    { tool: 'odd_scope', source_label: '地层', scope: [1, 2] },
+  ];
+  const h = setup({ payload: `data: {"type":"meta","route":"llm","route_label":"模型分析"}\n\ndata: ${JSON.stringify({ type: 'done', tool_calls: toolCalls })}\n\n` });
+  h.callbacks.onMeta = value => h.events.push(['meta', value]);
+  h.callbacks.onQueryTraces = value => h.events.push(['traces', value]);
+  await h.run();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.events)), [
+    ['meta', { route: 'llm' }],
+    ['traces', [{ sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487], record_count: 359 } }, { sourceLabel: '可查数据', scope: null }, { sourceLabel: '地层', scope: null }]],
+    ['done'],
+  ]);
+});
+
+test('done without tool calls, or with an empty list, reports no query traces', async () => {
+  for (const done of ['{"type":"done"}', '{"type":"done","tool_calls":[]}', '{"type":"done","tool_calls":[{"tool":"old","args":{}}]}']) {
+    const h = setup({ payload: `data: ${done}\n\n` });
+    h.callbacks.onQueryTraces = value => h.events.push(['traces', value]);
+    await h.run();
+    assert.deepEqual(h.events, [['done']]);
+  }
+});
+
+test('an expired login on the stream uses the shared redirect to the login page, other errors do not', async () => {
+  const expired = setup({ status: 401, contentType: 'application/json', payload: JSON.stringify({ code: 4010, msg: '未授权' }) });
+  await expired.run();
+  assert.deepEqual(expired.redirects, ['登录授权过期，请重新登录']);
+  assert.deepEqual(expired.events, [['error', '未授权（401）']]);
+  for (const status of [400, 403, 500]) {
+    const other = setup({ status });
+    await other.run();
+    assert.deepEqual(other.redirects, [], String(status));
+  }
+});
+
+test('an expired login on history, reset or chat also uses the shared redirect, and the request still fails', async () => {
+  for (const call of ['history', 'reset', 'chat', 'compact']) {
+    const h = setup({ axiosStatus: 401 });
+    await assert.rejects(h.api[call]({ query: 'test' }), /status code 401/);
+    assert.deepEqual(h.redirects, ['登录授权过期，请重新登录'], call);
+  }
+  for (const axiosStatus of [403, 500]) {
+    const h = setup({ axiosStatus });
+    await assert.rejects(h.api.reset(), new RegExp(`status code ${axiosStatus}`));
+    assert.deepEqual(h.redirects, [], String(axiosStatus));
+  }
 });

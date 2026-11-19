@@ -18,6 +18,8 @@ import { useTagsViewRoutes } from '/@/stores/tagsViewRoutes';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import other from '/@/utils/other';
 import { Local, Session } from '/@/utils/storage';
+import { resetStaleThemeCache } from '/@/theme/themeVersion';
+import { applyColorScheme } from '/@/theme/colorSchemes';
 import mittBus from '/@/utils/mitt';
 import setIntroduction from '/@/utils/setIconfont';
 
@@ -27,6 +29,13 @@ const Setings = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/
 const CloseFull = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/closeFull.vue'));
 // 注释编号: django-vue3-admin_App153915:取消更新
 // const Upgrade = defineAsyncComponent(() => import('/@/layout/upgrade/index.vue'));
+
+// 主题换版后先清掉旧的布局配置缓存。要在首次渲染前执行：组件大小等计算属性一渲染就会读这份缓存
+resetStaleThemeCache(Local);
+// 配色写在 <html data-scheme> 上：缓存的布局配置要到挂载后才读进 store，这里先按缓存设好，免得首屏先闪一下暖白
+applyColorScheme(Local.get('themeConfig')?.colorScheme);
+// 顶栏"组件大小"选了大型/小型时，正文字号和图标一起变（tokens.scss 按 <html data-size> 换字号和图标倍数）；切换后页面会刷新
+document.documentElement.dataset.size = other.globalComponentSize();
 
 // 定义变量内容
 const { messages, locale } = useI18n();
@@ -84,6 +93,11 @@ onMounted(() => {
 onUnmounted(() => {
 	mittBus.off('openSetingsDrawer', () => {});
 });
+// 配色跟着布局配置走（设置抽屉里切换、读入缓存的配置）
+watch(
+	() => themeConfig.value.colorScheme,
+	(scheme) => applyColorScheme(scheme)
+);
 // 监听路由的变化，设置网站标题
 watch(
 	() => route.path,

@@ -762,16 +762,58 @@ def _build_tunneling_record(row, project_id, shield_machine_id, ring_no=None):
     if ring_no is None or str(ring_no).strip() == '':
         return None
 
-    return ShieldTunnelingData(
+    record = ShieldTunnelingData(
         project_id=project_id,
         shield_machine_id=shield_machine_id,
         ring_no=str(ring_no).strip(),
         thrust=_parse_float(_get_csv_value(row, ['推进油缸总推力(kN)', '推进油缸总推力', '总推力', '推力', 'thrust'])),
         torque=_parse_float(_get_csv_value(row, ['刀盘扭矩(kNm)', '刀盘扭矩', '总扭矩', '扭矩', 'torque'])),
         cutterhead_speed=_parse_float(_get_csv_value(row, ['刀盘转速(r/min)', '刀盘转速', '转速', 'cutterhead_speed'])),
-        penetration=_parse_float(_get_csv_value(row, ['贯入度(mm)', '贯入度', '贯入力', 'penetration'])),
+        penetration=_parse_float(_get_csv_value(row, ['贯入度(mm)', '贯入度', 'penetration'])),
+        advance_speed=_parse_float(_get_csv_value(row, ['推进速度(mm/min)', '推进速度', 'advance_speed'])),
         record_time=_parse_record_time(row),
     )
+    # 累计旋转数只用来算圈数，不入库
+    record.right_revolution_reading = _parse_float(_get_csv_value(row, ['刀盘右转累计旋转数(rev)', '刀盘右转累计旋转数']))
+    record.left_revolution_reading = _parse_float(_get_csv_value(row, ['刀盘左转累计旋转数(rev)', '刀盘左转累计旋转数']))
+    return record
+
+
+# 相邻两个采样点相隔超过这么多秒算断档，积分时跳过
+TUNNELING_GAP_SECONDS = 120
+REVOLUTION_READINGS = ('right_revolution_reading', 'left_revolution_reading')
+
+
+def _segment_revolutions(segments, counters=True):
+    """一环按时间分好的各段 → 每段的 (计数器圈数, 积分圈数)。
+
+    两种圈数都按相邻两个采样点累加，这一小段记在后一个点所在的段，所以各段首尾相接，相加就是整环。
+    计数器：右转、左转累计旋转数各自的差相加；任一侧读数变小（计数器清零）或不足两个读数，整环为空；
+    分段时丢掉了采样点（counters=False）也为空，因为丢掉的点里可能正好有清零。
+    积分：前一个点的推进速度(mm/min) ÷ 贯入度(mm/r) × 间隔；断档、贯入度不大于 0 的小段不计，整环一段都算不了时为空。
+    """
+    counter, integrated = [0.0] * len(segments), [0.0] * len(segments)
+    last_reading, steps, reset, integrable, previous = {}, dict.fromkeys(REVOLUTION_READINGS, 0), False, False, None
+    for index, (_segment_index, records) in enumerate(segments):
+        for record in records:
+            for side in REVOLUTION_READINGS:
+                value = getattr(record, side, None)
+                if value is None:
+                    continue
+                if side in last_reading:
+                    reset = reset or value < last_reading[side]
+                    counter[index] += value - last_reading[side]
+                    steps[side] += 1
+                last_reading[side] = value
+            if previous is not None and previous.record_time and record.record_time:
+                seconds = (record.record_time - previous.record_time).total_seconds()
+                if (0 < seconds <= TUNNELING_GAP_SECONDS and previous.advance_speed is not None
+                        and previous.penetration is not None and previous.penetration > 0):
+                    integrated[index] += previous.advance_speed / previous.penetration * seconds / 60
+                    integrable = True
+            previous = record
+    counted = counters and not reset and all(steps.values())
+    return [(round(c, 3) if counted else None, round(i, 3) if integrable else None) for c, i in zip(counter, integrated)]
 
 
 def _average_tunneling_records(records, import_source='', segment_index=None, segment_count=None):
@@ -791,7 +833,7 @@ def _average_tunneling_records(records, import_source='', segment_index=None, se
             if segment_index and segment_count else 'CSV按环平均导入'
         ),
     )
-    for field in ('thrust', 'torque', 'cutterhead_speed', 'penetration'):
+    for field in ('thrust', 'torque', 'cutterhead_speed', 'penetration', 'advance_speed'):
         values = [getattr(record, field) for record in records if getattr(record, field) is not None]
         setattr(averaged, field, round(sum(values) / len(values), 4) if values else None)
 
@@ -847,15 +889,17 @@ class ShieldTunnelingDataViewSet(CustomModelViewSet):
         records = []
         for group in grouped_records.values():
             segments = _split_records_into_time_segments(group, segment_count, lambda item: item.record_time)
-            records.extend([
-                _average_tunneling_records(
+            # 有采集时间的点存在时，缺时间的点排不出先后，分段会丢掉它们
+            kept_all = sum(len(segment) for _, segment in segments) == len(group)
+            for (segment_index, segment), (counter, integrated) in zip(segments, _segment_revolutions(segments, kept_all)):
+                record = _average_tunneling_records(
                     segment,
                     import_source=upload_file.name,
                     segment_index=segment_index,
                     segment_count=segment_count,
                 )
-                for segment_index, segment in segments
-            ])
+                record.counter_revolutions, record.integrated_revolutions = counter, integrated
+                records.append(record)
         # 重复导入保护：同一(项目,盾构机,环号)已有数据时，按 overwrite 决定
         # 覆盖还是跳过。原实现直接 bulk_create，重点一次导入就让该环数据翻倍，
         # 平均推力/扭矩被重复点稀释。与 XML 导入保持同一套语义。
@@ -1996,6 +2040,15 @@ class StratumBasicInfoViewSet(CustomModelViewSet, ImportSerializerMixin, ExportS
     import_serializer_class = StratumBasicInfoCreateUpdateSerializer
     filter_fields = ['project', 'ring_no']
     search_fields = ['ring_no', 'stratum_info']
+
+    def filter_queryset(self, queryset):
+        """页面按环号范围查询：ring_no 是字符串，用数值注解 ring_int 比较。"""
+        queryset = super().filter_queryset(queryset)
+        for param, lookup in (('ring_start', 'ring_int__gte'), ('ring_end', 'ring_int__lte')):
+            value = (self.request.query_params.get(param) or '').strip()
+            if value.isdigit():
+                queryset = queryset.filter(**{lookup: int(value)})
+        return queryset
 
     # 导入字段配置
     import_field_dict = {
