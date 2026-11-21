@@ -1,19 +1,17 @@
 <template>
 	<fs-page>
 		<el-row class="menu-el-row">
-			<el-col :span="6">
-				<div class="menu-box menu-left-box">
-					<MenuTreeCom
-						ref="menuTreeRef"
-						:treeData="menuTreeData"
-						@treeClick="handleTreeClick"
-						@updateDept="handleUpdateMenu"
-						@deleteDept="handleDeleteMenu"
-					/>
-				</div>
+			<el-col :xs="24" :sm="8" :md="7" :lg="6" :xl="5" class="menu-side">
+				<MenuTreeCom
+					ref="menuTreeRef"
+					:treeData="menuTreeData"
+					@treeClick="handleTreeClick"
+					@updateDept="handleUpdateMenu"
+					@deleteDept="handleDeleteMenu"
+				/>
 			</el-col>
 
-			<el-col :span="18">
+			<el-col :xs="24" :sm="16" :md="17" :lg="18" :xl="19">
         <el-tabs type="border-card">
           <el-tab-pane label="按钮权限配置" >
             <div style="height: 80vh">
@@ -135,20 +133,14 @@ onMounted(() => {
 	}
 }
 
-.menu-box {
-	height: 100%;
-	padding: 10px;
-	background-color: #fff;
-	box-sizing: border-box;
-}
+// 窄屏时菜单树在上、配置页签在下：树按内容撑开，整体滚动
+@media (max-width: 767px) {
+	.menu-el-row {
+		overflow-y: auto;
 
-.menu-left-box {
-	position: relative;
-	border-radius: 0 8px 8px 0;
-	margin-right: 10px;
-}
-
-.menu-right-box {
-	border-radius: 8px 0 0 8px;
+		.menu-side {
+			height: auto;
+		}
+	}
 }
 </style>

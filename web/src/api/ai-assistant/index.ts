@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { Session } from '/@/utils/storage';
+import { redirectToLogin } from '/@/utils/service';
 
 // 创建专用的axios实例，不使用全局拦截器
 const aiService = axios.create({
@@ -22,6 +23,17 @@ function unwrapResponse(response: { data: any }) {
 	return response.data;
 }
 
+// 流式接口非 2xx 时优先显示后端给的原因（JSON 的 msg），取不到再只显示状态码
+async function httpErrorMessage(res: Response) {
+	try {
+		const body = await res.json();
+		if (typeof body?.msg === 'string' && body.msg.trim()) return `${body.msg.trim()}（${res.status}）`;
+	} catch {
+		/* 响应体不是 JSON，沿用状态码提示。 */
+	}
+	return `请求失败：${res.status}`;
+}
+
 // 添加请求拦截器（只添加token）
 aiService.interceptors.request.use(
 	(config) => {
@@ -37,12 +49,46 @@ aiService.interceptors.request.use(
 	}
 );
 
+// 历史、重置等接口登录过期时和其他页面一样跳登录页；错误仍交给调用方按原方式处理
+aiService.interceptors.response.use(
+	(response) => response,
+	(error) => {
+		if (error?.response?.status === 401) redirectToLogin('登录授权过期，请重新登录');
+		return Promise.reject(error);
+	}
+);
+
+// 一次数据查询：类别名和查询范围（scope 字段不固定，可能为 null）
+export interface QueryTrace {
+	sourceLabel: string;
+	scope: Record<string, unknown> | null;
+}
+
 export interface ChatStreamCallbacks {
 	onChunk: (text: string) => void;
 	onDone: () => void;
 	onError: (msg: string) => void;
 	onMemory?: (info: any) => void;
 	onAnswer?: (text: string) => void;
+	// 回答走的路径：route 为 'rule'（规则直答）或 'llm'（模型分析）
+	onMeta?: (info: { route?: string }) => void;
+	// done 事件里的数据查询记录，在 onDone 之前回调；没有记录时不回调
+	onQueryTraces?: (traces: QueryTrace[]) => void;
+	// 本轮上下文用量（估算），在 done 或 error 之前回调
+	onContext?: (info: Record<string, any>) => void;
+	// 回答之外的进度：compacting 正在整理早前对话，revising 正在补全回答，其他值表示这一步结束
+	onStatus?: (stage: string) => void;
+}
+
+// 只保留类别名和查询范围，工具名和参数原文不交给页面
+function toQueryTraces(calls: unknown): QueryTrace[] {
+	if (!Array.isArray(calls)) return [];
+	return calls
+		.filter((call) => typeof call?.source_label === 'string' && call.source_label.trim())
+		.map((call) => ({
+			sourceLabel: call.source_label.trim(),
+			scope: call.scope && typeof call.scope === 'object' && !Array.isArray(call.scope) ? call.scope : null,
+		}));
 }
 
 export interface ChatRequest {
@@ -52,6 +98,8 @@ export interface ChatRequest {
 	route_mode?: 'rule' | 'agent';
 	context_mode?: 'auto' | 'new' | 'continue';
 	clear_slots?: Array<'ring_range' | 'tool_type' | 'cutter_position_no'>;
+	// 模型路径选中的数据类型，只在 route_mode=agent 时发送
+	focus_sources?: string[];
 }
 
 /**
@@ -84,7 +132,9 @@ export function useAiAssistantApi() {
 					signal,
 				});
 				if (!res.ok) {
-					throw new Error(`请求失败：${res.status}`);
+					// 登录过期时和其他页面一样：清登录态、跳登录页
+					if (res.status === 401) redirectToLogin('登录授权过期，请重新登录');
+					throw new Error(await httpErrorMessage(res));
 				}
 				if (res.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream') {
 					throw new Error('服务未返回流式响应，请重试');
@@ -121,9 +171,18 @@ export function useAiAssistantApi() {
 							slots: evt.slot_names,
 							activeSlots: evt.active_slots,
 							contextMode: evt.context_mode,
+							turnSequences: Array.isArray(evt.turn_sequences) ? evt.turn_sequences : undefined,
 						});
+					} else if (evt.type === 'meta') {
+						callbacks.onMeta?.({ route: typeof evt.route === 'string' ? evt.route : undefined });
+					} else if (evt.type === 'status') {
+						if (typeof evt.stage === 'string') callbacks.onStatus?.(evt.stage);
+					} else if (evt.type === 'context') {
+						if (evt.context && typeof evt.context === 'object') callbacks.onContext?.(evt.context);
 					} else if (evt.type === 'done') {
 						finished = true;
+						const traces = toQueryTraces(evt.tool_calls);
+						if (traces.length) callbacks.onQueryTraces?.(traces);
 						callbacks.onDone();
 					} else if (evt.type === 'error') {
 						finished = true;
@@ -176,6 +235,10 @@ export function useAiAssistantApi() {
 		// 重置对话
 		reset: () => {
 			return aiService.post('/api/ai/reset/').then(unwrapResponse);
+		},
+		// 立即把早前对话整理成摘要，返回整理后的下一问起步用量
+		compact: () => {
+			return aiService.post('/api/ai/compact/').then(unwrapResponse);
 		},
 	};
 }

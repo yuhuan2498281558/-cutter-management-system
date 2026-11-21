@@ -50,7 +50,8 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 		const project = form?.project;
 		const ringNo = form?.ring_no;
 		clearAutoStratum(form);
-		if (!project || ringNo === undefined || ringNo === null || String(ringNo).trim() === '') {
+		// 与后端环号校验一致：只接受半角数字，其他输入不发预览请求。
+		if (!project || !/^\d+$/.test(String(ringNo ?? ''))) {
 			previewState.value = 'waiting';
 			return;
 		}
@@ -206,7 +207,10 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 					search: { show: true, order: 2, component: { clearable: true } },
 					column: { minWidth: 120, sortable: true },
 					form: {
-						rules: [{ required: true, message: '请输入换刀环号' }],
+						rules: [
+							{ required: true, message: '请输入换刀环号' },
+							{ pattern: /^\d+$/, message: '环号必须是纯数字' },
+						],
 						component: { placeholder: '请输入换刀环号' },
 						valueChange: ({ form }: any) => queueAutoStratumPreview(form),
 						order: 2,
@@ -336,6 +340,25 @@ export const createCrudOptions = function ({ crudExpose, onSupplement, onWithdra
 					form: {
 						component: { placeholder: '按掘进环数自动计算', disabled: true, precision: 2 },
 						order: 8,
+					},
+				},
+				// 与同机上一次开仓的读数相减，得到期间刀盘转了多少圈，用于刀具里程
+				right_revolution_reading: {
+					title: '刀盘右转累计读数（圈）',
+					type: 'number',
+					column: { minWidth: 170 },
+					form: {
+						component: { placeholder: '开仓时设备上的读数', min: 0, controls: false },
+						order: 6,
+					},
+				},
+				left_revolution_reading: {
+					title: '刀盘左转累计读数（圈）',
+					type: 'number',
+					column: { minWidth: 170 },
+					form: {
+						component: { placeholder: '开仓时设备上的读数', min: 0, controls: false },
+						order: 7,
 					},
 				},
 				checked_tool_count: {

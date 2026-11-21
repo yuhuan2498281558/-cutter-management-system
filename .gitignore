@@ -124,6 +124,7 @@ backend/*.py
 !backend/extract_stratum_area_ratios.py
 !backend/extract_longitudinal_ratios.py
 !backend/extract_six_class_ratios.py
+!backend/complete_stratum_ratios.py
 !backend/audit_stratum_ratio_source.py
 backend/*.md
 backend/*.jsonl

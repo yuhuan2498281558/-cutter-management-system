@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from django.test import SimpleTestCase
 
 from application.ai_assistant import llm_service
+from application.ai_assistant.context_budget import ContextBudgetPolicy
 from application.ai_assistant.llm_service import ToolAssistant
 from application.ai_assistant.memory_service import MemorySnapshot
 
@@ -23,7 +24,7 @@ class LazyInitializationTests(SimpleTestCase):
         with (
             patch("application.ai_assistant.llm_service.get_llm_config") as get_config,
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
-            patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
+            patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
         ):
             assistant = ToolAssistant()
 
@@ -37,7 +38,7 @@ class LazyInitializationTests(SimpleTestCase):
         snapshot = MemorySnapshot(scope_key="user:1", backend="legacy")
         with (
             patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
-            patch("application.ai_assistant.llm_service.create_tool_calling_agent") as create_agent,
+            patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
         ):
             assistant = ToolAssistant()
             assistant._load_memory = Mock(return_value=snapshot)
@@ -59,7 +60,7 @@ class LazyInitializationTests(SimpleTestCase):
 
         self.assertEqual(
             [event["type"] for event in events],
-            ["meta", "chunk", "memory", "done"],
+            ["meta", "chunk", "memory", "context", "done"],
         )
         self.assertEqual(events[0]["route_stage"], "rule")
         self.assertEqual(events[1]["content"], "规则答案")
@@ -83,25 +84,48 @@ class LazyInitializationTests(SimpleTestCase):
         get_config.assert_called_once_with(None)
         create_model.assert_called_once_with(None)
 
-    def test_agent_runtime_and_group_executor_are_cached(self):
-        all_executor = object()
-        group_executor = object()
+    def test_history_baseline_keeps_llm_and_agent_cold(self):
+        with (
+            patch("application.ai_assistant.context_budget.prepare_messages", side_effect=AssertionError("history must be read-only")),
+            patch("application.ai_assistant.llm_service.create_chat_model") as create_model,
+            patch("application.ai_assistant.llm_service.ToolAssistant._ensure_agent_runtime") as create_agent,
+            patch("application.ai_assistant.llm_service.get_llm_config", return_value=SimpleNamespace(provider="deepseek", api_key="test-not-a-secret")),
+            patch("application.ai_assistant.llm_service.get_context_policy", return_value=ContextBudgetPolicy(32768)),
+        ):
+            assistant = ToolAssistant()
+            assistant._load_memory = Mock(return_value=MemorySnapshot(scope_key="user:1", backend="legacy"))
+            assistant.memory.history_page = Mock(return_value={
+                "messages": [], "has_more": False, "next_before_sequence": None,
+            })
+            history = assistant.get_history("1")
+
+        self.assertEqual(history["context"]["kind"], "baseline")
+        self.assertGreater(history["context"]["used"], 0)
+        self.assertFalse(assistant.llm_runtime_ready)
+        self.assertFalse(assistant.agent_runtime_ready)
+        create_model.assert_not_called()
+        create_agent.assert_not_called()
+
+    def test_agent_runtime_and_group_tools_are_cached(self):
         with (
             patch("application.ai_assistant.llm_service.get_llm_config", return_value=_config()),
             patch("application.ai_assistant.llm_service.create_chat_model", return_value=object()) as create_model,
         ):
             assistant = ToolAssistant()
-            assistant._create_executor = Mock(side_effect=[all_executor, group_executor])
+            first = assistant._get_tools_for_query("分析掘进趋势")
+            second = assistant._get_tools_for_query("分析掘进趋势")
+            prompt = assistant._prompt
+            all_tools = assistant._get_tools_for_query("综合返修、报价和掘进参数")
 
-            first = assistant._get_executor_for_query("分析掘进趋势")
-            second = assistant._get_executor_for_query("分析掘进趋势")
-
-        self.assertIs(first, group_executor)
-        self.assertIs(second, group_executor)
+        self.assertIs(first, second)
+        self.assertEqual(first, llm_service.TOOL_GROUPS['tunneling'])
+        self.assertIs(all_tools, assistant._tools_cache['all'])
+        self.assertEqual(all_tools, llm_service.TOOLS)
+        self.assertIs(assistant._prompt, prompt)
         self.assertTrue(assistant.llm_runtime_ready)
         self.assertTrue(assistant.agent_runtime_ready)
         create_model.assert_called_once_with(None)
-        self.assertEqual(assistant._create_executor.call_count, 2)
+        self.assertEqual(set(assistant._tools_cache), {'all', 'tunneling'})
 
     def test_concurrent_llm_initialization_runs_once(self):
         model = object()

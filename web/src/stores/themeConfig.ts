@@ -1,4 +1,8 @@
 import { defineStore } from 'pinia';
+import { colorSchemeColors } from '/@/theme/colorSchemes';
+
+// 默认配色（暖白）下主题色、顶栏、菜单的颜色，见 theme/colorSchemes.ts
+const defaultColors = colorSchemeColors('claude');
 
 /**
  * 布局配置
@@ -17,8 +21,10 @@ export const useThemeConfig = defineStore('themeConfig', {
 			/**
 			 * 全局主题
 			 */
+			// 配色：'claude' 暖白（默认）| 'blue' 灰白蓝；下面的主题色、顶栏和菜单颜色跟着配色走
+			colorScheme: 'claude',
 			// 默认 primary 主题颜色
-			primary: '#409eff',
+			primary: defaultColors.primary,
 			// 是否开启深色模式
 			isIsDark: false,
 
@@ -26,9 +32,9 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 顶栏设置
 			 */
 			// 默认顶栏导航背景颜色
-			topBar: '#ffffff',
+			topBar: defaultColors.topBar,
 			// 默认顶栏导航字体颜色
-			topBarColor: '#606266',
+			topBarColor: defaultColors.topBarColor,
 			// 是否开启顶栏背景颜色渐变
 			isTopBarColorGradual: false,
 
@@ -36,11 +42,11 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 菜单设置
 			 */
 			// 默认菜单导航背景颜色
-			menuBar: '#334054',
+			menuBar: defaultColors.menuBar,
 			// 默认菜单导航字体颜色
-			menuBarColor: '#eaeaea',
-			// 默认菜单高亮背景色
-			menuBarActiveColor: 'rgba(0, 0, 0, 0.2)',
+			menuBarColor: defaultColors.menuBarColor,
+			// 默认菜单高亮背景色（选中项的灰底，左侧另有主题色竖线）
+			menuBarActiveColor: defaultColors.menuBarActiveColor,
 			// 是否开启菜单背景颜色渐变
 			isMenuBarColorGradual: false,
 
@@ -48,9 +54,9 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 分栏设置
 			 */
 			// 默认分栏菜单背景颜色
-			columnsMenuBar: '#334054',
+			columnsMenuBar: defaultColors.columnsMenuBar,
 			// 默认分栏菜单字体颜色
-			columnsMenuBarColor: '#e6e6e6',
+			columnsMenuBarColor: defaultColors.columnsMenuBarColor,
 			// 是否开启分栏菜单背景颜色渐变
 			isColumnsMenuBarColorGradual: false,
 			// 是否开启分栏菜单鼠标悬停预加载(预览菜单)
@@ -125,7 +131,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 中的 `initSetLayoutChange(设置布局切换，重置主题样式)` 方法
 			 */
 			// 布局切换：可选值"<defaults|classic|transverse|columns>"，默认 defaults
-			layout: 'transverse',
+			layout: 'defaults',
 
 			/**
 			 * 后端控制路由
@@ -137,7 +143,7 @@ export const useThemeConfig = defineStore('themeConfig', {
 			 * 全局网站标题 / 副标题
 			 */
 			// 网站主标题（菜单导航、浏览器当前网页标题）
-			globalTitle: 'DVAdmin',
+			globalTitle: '盾构刀具管理系统',
 			// 网站副标题（登录页顶部文字）
 			globalViceTitle: 'DVAdmin',
 			// 网站副标题（登录页顶部文字）

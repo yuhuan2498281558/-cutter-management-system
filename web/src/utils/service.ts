@@ -20,7 +20,7 @@ const redirectMobileToLogin = () => {
 
 let authRedirecting = false;
 
-const redirectToLogin = (message: string) => {
+export const redirectToLogin = (message: string) => {
 	if (isMobileRoute()) {
 		redirectMobileToLogin();
 		return;

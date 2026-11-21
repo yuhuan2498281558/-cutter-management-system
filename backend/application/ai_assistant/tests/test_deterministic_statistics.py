@@ -1,11 +1,13 @@
 """Exact tool statistics from isolated DB fixtures, without any model calls."""
 
 import json
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
 from application.ai_assistant import tools
+from application.ai_assistant.llm_service import ToolAssistant
 from application.shield.models import (
     ProjectInfo, ShieldMachineBasicInfo, ShieldTunnelingData, StratumBasicInfo,
     ToolChangeDetail, WarehouseOpeningBasicInfo,
@@ -106,6 +108,90 @@ class DeterministicStatisticsTests(TestCase):
         self.assertEqual(empty['summary']['segment_count'], 0)
         self.assertIsNone(empty['summary']['replacement_rate_pct'])
         self.assertIsNone(empty['summary']['effective_ring_range'])
+
+    def test_tunneling_scalar_routes_and_explicit_changes(self):
+        self.tunnel(100, thrust=12)
+        assistant = ToolAssistant.__new__(ToolAssistant)
+        cases = [
+            ('有记录范围内掘进分段平均推力的最大值是多少', 'tunneling'),
+            ('有记录范围内各分段均值的平均推力多少？', 'tunneling'),
+            ('平均总推力是多少', 'tunneling'),
+            ('分析掘进分段推力的最小值', 'tunneling'),
+            ('推力分段均值情况怎么样', 'tunneling'),
+            ('推力随环号怎么变化', 'tunneling_trend'),
+            ('按50环分段统计推力', 'tunneling_trend'),
+            ('每50环平均推力多少', 'tunneling_trend'),
+            ('按区间分段统计平均推力', 'tunneling_trend'),
+            ('各阶段平均推力多少', 'tunneling_trend'),
+            ('掘进参数有没有异常偏高', 'tunneling_anomaly'),
+            ('分析掘进参数与换刀磨损的关联', 'tunneling_wear_correlation'),
+        ]
+        with patch.object(assistant, '_ensure_llm_runtime', side_effect=AssertionError('禁止调用模型')), \
+                patch('application.ai_assistant.llm_service.query_tunneling_summary',
+                      wraps=tools.query_tunneling_summary) as summary_tool:
+            for question, branch in cases:
+                with self.subTest(question=question):
+                    summary_tool.reset_mock()
+                    result = assistant._direct_route(question, {'project_id': self.project.project_id})
+                    self.assertEqual(result['rule_branch'], branch)
+                    self.assertEqual(summary_tool.call_count, int(branch == 'tunneling'))
+
+    def test_change_abnormal_summary_uses_all_filtered_records(self):
+        first, last = self.opening(100), self.opening(200)
+        self.detail(first, wear_condition=' 偏磨 ', is_replaced=False)
+        for position in ['1', '2', '3']:
+            self.detail(last, position, wear_condition='正常', is_replaced=True)
+        self.detail(last, '4', wear_condition='未识别状态')
+        result = self.call(tools.query_tool_change_trend, ring_range=[100, 200], interval=50)
+        summary = result['summary']
+        self.assertEqual((summary['total_records'], summary['replaced_count']), (5, 3))
+        self.assertEqual((summary['normal_count'], summary['abnormal_count'], summary['unknown_count']), (3, 1, 1))
+        self.assertEqual(summary['abnormal_rate'], '25.0%')
+        for name in ['normal_count', 'abnormal_count', 'unknown_count']:
+            self.assertEqual(summary[name], sum(segment[name] for segment in result['segments']))
+        assistant = ToolAssistant.__new__(ToolAssistant)
+        answer = assistant._format_trend_answer(json.dumps(result))
+        for name in ['normal_count', 'abnormal_count', 'unknown_count', 'abnormal_rate']:
+            del summary[name]
+        self.assertEqual(answer, assistant._format_trend_answer(json.dumps(result)))
+
+    def test_position_abnormal_summary_includes_positions_beyond_top_n(self):
+        opening = self.opening(100)
+        for position, wear, replaced in [('1', '正常', True), ('01', '正常', True), ('001', '未识别状态', False)]:
+            self.detail(opening, position, wear_condition=wear, is_replaced=replaced)
+        self.detail(opening, '2', wear_condition=' abnormal ', is_replaced=False)
+        self.detail(opening, '3', wear_condition='偏磨', is_checked=False)
+        self.detail(opening, 'G1R', wear_condition='偏磨', is_replaced=True)
+        self.detail(self.opening(99), wear_condition='偏磨')
+        self.detail(self.opening(100, project=self.other_project), wear_condition='偏磨')
+        self.detail(self.opening(100, machine=self.other_machine), wear_condition='偏磨')
+        result = self.call(tools.query_cutter_position_stats, ring_range=[100, 100],
+                           shield_machine_id=self.machine.pk, top_n=1)
+        summary = result['summary']
+        self.assertTrue(result['truncated'])
+        self.assertEqual(result['top_positions'][0]['abnormal_observation_count'], 0)
+        self.assertEqual((summary['total_records'], summary['position_count']), (4, 2))
+        self.assertEqual((summary['abnormal_observation_count'], summary['classified_observation_count']), (1, 3))
+        self.assertEqual(summary['abnormal_observation_rate'], 33.3)
+        assistant = ToolAssistant.__new__(ToolAssistant)
+        answer = assistant._format_cutter_position_answer(json.dumps(result))
+        for name in ['abnormal_observation_count', 'classified_observation_count', 'abnormal_observation_rate']:
+            del summary[name]
+        self.assertEqual(answer, assistant._format_cutter_position_answer(json.dumps(result)))
+
+    def test_abnormal_summary_rate_is_null_without_classified_observations(self):
+        self.detail(self.opening(100), wear_condition='未识别状态')
+        for bounds in [[100, 100], [101, 200]]:
+            for function, count, rate in [
+                (tools.query_tool_change_trend, 'abnormal_count', 'abnormal_rate'),
+                (tools.query_cutter_position_stats, 'abnormal_observation_count', 'abnormal_observation_rate'),
+            ]:
+                with self.subTest(tool=function.__name__, bounds=bounds):
+                    summary = self.call(function, ring_range=bounds)['summary']
+                    self.assertEqual(summary[count], 0)
+                    self.assertIsNone(summary[rate])
+                    if function == tools.query_cutter_position_stats:
+                        self.assertEqual(summary['classified_observation_count'], 0)
 
     def test_stratum_associations_are_not_unique_rings(self):
         self.stratum(100, "CLAY_SAND,BOULDER, CLAY_SAND")

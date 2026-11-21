@@ -8,10 +8,14 @@ from application.shield.models import (
     ProjectInfo, WarehouseOpeningBasicInfo,
     ShieldTunnelingData,
 )
-from django.db.models import Count, Avg, Q, Sum, Max, Min, Case, When, F, CharField
+from django.db.models import Count, Avg, Q, Sum, Max, Min, Case, When, F, CharField, Prefetch
 from django.db.models.functions import Cast, Upper, Trim
 from django.db.models import IntegerField
-from application.shield.cutter_position_scope import ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no
+from application.shield.cutter_position_scope import (
+    ACTIVE_CUTTER_POSITION_CODES, normalize_cutter_position_no, cutter_position_sort_key,
+)
+from application.shield.analysis_metrics import ANALYSIS_REQUEST, confirmed_service_segments, scoped_queryset
+from application.shield.longitudinal_ratios import AREA_LABELS
 from application.shield.wear import normalize_wear
 import json
 import logging
@@ -27,7 +31,11 @@ def _active_detail_query(params=None, *, checked_only=True):
     not backfilled. Empty precreated rows are never statistical observations.
     """
     params = params or {}
-    query = ToolChangeDetail.objects.annotate(
+    query = scoped_queryset(ToolChangeDetail.objects.all())
+    if ANALYSIS_REQUEST.get() is not None:
+        # 与数据分析页一样，明细还要落在可见的开仓里
+        query = query.filter(warehouse__in=scoped_queryset(WarehouseOpeningBasicInfo.objects.all()))
+    query = query.annotate(
         _ai_position=Upper(Trim('cutter_position_no')),
         _ai_type=Upper(Trim('tool_parent_type')),
     ).annotate(_ai_position=Case(
@@ -44,6 +52,17 @@ def _active_detail_query(params=None, *, checked_only=True):
     if checked_only:
         query = query.filter(Q(is_checked=True) | Q(is_replaced=True))
     return query
+
+
+def _visible_records(query, **instance_fields):
+    """明细带出的新刀、旧刀记录及其刀具实例各按权限范围过滤，看不到的当作没有，与数据分析页一致。"""
+    models = {'new_tool_record': NewToolRecord, 'old_tool_record': OldToolRecord}
+    instances = scoped_queryset(ToolInstance.objects.select_related('tool_info'))
+    return query.prefetch_related(*(
+        Prefetch(name, queryset=scoped_queryset(models[name].objects.all()).prefetch_related(
+            *(Prefetch(field, queryset=instances) for field in fields)))
+        for name, fields in instance_fields.items()
+    ))
 
 # 地层类型中文映射（与系统字典数据保持一致）
 STRATUM_TYPE_NAMES = {
@@ -145,7 +164,7 @@ def _enrich_tool_change_result(result: dict) -> dict:
     wear_distribution = result.get("wear_distribution") or []
     top_positions = result.get("top_replaced_positions") or []
     facts = [
-        f"共查询到 {total} 条换刀检查记录",
+        f"共查询到 {total} 条现场观测记录",
         f"其中实际更换 {replaced} 次，更换率为 {rate}",
     ]
     highlights = []
@@ -295,11 +314,26 @@ def _parse_ring_range(ring_range):
         return None
 
 
+def _checked_ring_range(value):
+    if value is None or value == []:
+        return None
+    parsed = _parse_ring_range(value)
+    if parsed is None or int(value[0]) > int(value[1]):
+        raise ValueError('环段格式错误，请使用 [起始环号, 结束环号]，起始环号不能大于结束环号')
+    return parsed
+
+
+def _checked_tool_type(value):
+    if value and value not in {'DISC', 'RIPPER', 'SCRAPER'}:
+        raise ValueError('刀具类型只支持 DISC、RIPPER 或 SCRAPER')
+    return value
+
+
 def _filter_tunneling_query(params: dict):
-    query = ShieldTunnelingData.objects.select_related('project', 'shield_machine').all()
+    query = scoped_queryset(ShieldTunnelingData.objects.all()).select_related('project', 'shield_machine')
     project_id = (params.get('project_id') or '').strip()
     shield_machine_id = params.get('shield_machine_id')
-    ring_range = _parse_ring_range(params.get('ring_range', []))
+    ring_range = _checked_ring_range(params.get('ring_range'))
     start_time = params.get('start_time')
     end_time = params.get('end_time')
 
@@ -319,7 +353,7 @@ def _filter_tunneling_query(params: dict):
     return query
 
 
-def _summarize_tunneling_records(query):
+def _summarize_tunneling_records(query, limit=10):
     total = query.count()
     if total == 0:
         return {
@@ -332,10 +366,11 @@ def _summarize_tunneling_records(query):
         "torque": query.aggregate(avg=Avg('torque'), max=Max('torque'), min=Min('torque')),
         "cutterhead_speed": query.aggregate(avg=Avg('cutterhead_speed'), max=Max('cutterhead_speed'), min=Min('cutterhead_speed')),
         "penetration": query.aggregate(avg=Avg('penetration'), max=Max('penetration'), min=Min('penetration')),
+        "advance_speed": query.aggregate(avg=Avg('advance_speed'), max=Max('advance_speed'), min=Min('advance_speed')),
     }
     recent = list(query.order_by('-record_time', '-id').values(
         'ring_no', 'thrust', 'torque', 'cutterhead_speed', 'penetration', 'record_time'
-    )[:10])
+    )[:limit])
     for item in recent:
         rt = item.get('record_time')
         if isinstance(rt, datetime):
@@ -348,11 +383,21 @@ def _summarize_tunneling_records(query):
             query.aggregate(max_ring=Max(Cast('ring_no', IntegerField())))['max_ring'],
         ],
         "metrics": metrics,
+        **_tunneling_revolution_counts(query),
         "recent_records": recent,
     }
 
 
-def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "") -> dict:
+def _tunneling_revolution_counts(query):
+    rings = query.filter(ring_no__regex=r'^[0-9]{1,9}$').annotate(
+        revolution_ring=Cast('ring_no', IntegerField())).order_by().values('project_id', 'shield_machine_id', 'revolution_ring').annotate(
+        total=Count('pk'), counter=Count('counter_revolutions'), integrated=Count('integrated_revolutions'))
+    return {'counter_ring_count': sum(row['counter'] == row['total'] for row in rings),
+            'integrated_ring_count': sum(row['integrated'] == row['total'] for row in rings)}
+
+
+def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "", threshold_k=1.5) -> dict:
+    data['threshold_k'] = threshold_k
     total = data.get("total_records", 0) or 0
     if total == 0:
         data.update(_analysis_payload(
@@ -368,7 +413,7 @@ def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "") -> dict:
         "thrust": ("总推力", "kN"),
         "torque": ("刀盘扭矩", "kNm"),
         "cutterhead_speed": ("刀盘转速", "r/min"),
-        "penetration": ("贯入力", ""),
+        "penetration": ("贯入度", "mm/r"),
     }
     for key, (label, unit) in metric_names.items():
         stat = data.get("metrics", {}).get(key, {})
@@ -379,18 +424,19 @@ def _enrich_tunneling_analysis(data: dict, conclusion_hint: str = "") -> dict:
             warnings.append(f"{label}缺少有效数据")
             continue
         facts.append(f"{label}平均值为 {avg}{unit}，范围为 {min_value}-{max_value}{unit}")
-        if avg not in (None, 0) and max_value is not None and max_value >= avg * 1.5:
-            highlights.append(f"{label}最大值达到平均值的 1.5 倍以上，存在峰值偏高现象")
+        if (key in ('thrust', 'torque', 'penetration') and stat.get('avg') not in (None, 0)
+                and stat.get('max') is not None and stat['max'] > stat['avg'] * threshold_k):
+            highlights.append(f"分段均值偏高筛查：{label}最高分段均值超过记录均值的 {threshold_k:g} 倍")
 
     if not highlights:
-        highlights.append("按平均值和峰值对比，未发现明显突出的掘进参数峰值")
+        highlights.append("分段均值偏高筛查：按当前阈值未发现推力、扭矩或贯入度均值偏高的记录")
 
     data.update(_analysis_payload(
         summary={"total_records": total, "ring_range": data.get("ring_range")},
         facts=facts,
         highlights=highlights,
         warnings=warnings,
-        conclusion_hint=conclusion_hint or "可结合推力、扭矩、转速和贯入力判断该区段掘进负荷与效率变化。",
+        conclusion_hint=conclusion_hint or "可结合推力、扭矩、转速和贯入度判断该区段掘进负荷与效率变化。",
     ))
     return data
 
@@ -406,7 +452,7 @@ def _trend_segments(query, interval: int = 50):
     if not ring_values:
         return []
 
-    if len(set(ring_values)) == 1 and len(records) > 1:
+    if len(set(ring_values)) == 1:
         def segment_sort_key(row):
             raw = row.get('raw_parameters') or {}
             return (
@@ -477,8 +523,8 @@ def query_tool_change_data(params_str: str) -> str:
         logger.info(f"查询换刀数据，参数：{params}")
 
         project_id = params.get('project_id')
-        tool_type = params.get('tool_type')
-        ring_range = params.get('ring_range', [])
+        tool_type = _checked_tool_type(params.get('tool_type'))
+        ring_range = _checked_ring_range(params.get('ring_range'))
         last_n_openings = params.get('last_n_openings')
         cutter_position_no = params.get('cutter_position_no', '').strip()
 
@@ -499,23 +545,18 @@ def query_tool_change_data(params_str: str) -> str:
         if cutter_position_no:
             query = query.filter(_ai_position=normalize_cutter_position_no(cutter_position_no))
 
-        # 最近N次开仓：取最近N条开仓记录的环号范围
+        # 同环可能多次开仓，按主键限定所选开仓，不能扩成环段。
+        opening_ids = None
         if last_n_openings:
-            opening_qs = WarehouseOpeningBasicInfo.objects.annotate(
+            opening_qs = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).annotate(
                 ring_int=Cast('ring_no', output_field=IntegerField())
-            ).order_by('-ring_int')
+            ).order_by('-ring_int', '-open_time', '-id')
             if project_id:
                 opening_qs = opening_qs.filter(project__project_id=project_id)
-            recent_openings = list(opening_qs.values('ring_no', 'last_ring_no')[:last_n_openings])
-            if recent_openings:
-                # 取这N次开仓覆盖的环号范围
-                ring_nos = [int(o['ring_no']) for o in recent_openings]
-                last_ring_nos = [int(o['last_ring_no']) for o in recent_openings if o['last_ring_no']]
-                range_min = min(last_ring_nos) + 1 if last_ring_nos else min(ring_nos)
-                range_max = max(ring_nos)
-                query = query.annotate(
-                    ring_int=Cast('warehouse__ring_no', output_field=IntegerField())
-                ).filter(ring_int__gte=range_min, ring_int__lte=range_max)
+            if params.get('shield_machine_id'):
+                opening_qs = opening_qs.filter(shield_model_id=params['shield_machine_id'])
+            opening_ids = list(opening_qs.values_list('id', flat=True)[:int(last_n_openings)])
+            query = query.filter(warehouse_id__in=opening_ids)
 
         # 环号范围筛选
         elif ring_range and len(ring_range) == 2:
@@ -528,11 +569,20 @@ def query_tool_change_data(params_str: str) -> str:
 
         # 统计数据
         total = query.count()
+        scope_note = '统计范围是 122 个有效刀位上已检查或已更换的现场观测记录，不是开仓时人工填写的整仓汇总数。'
+        bounds = query.aggregate(start=Min(Cast('warehouse__ring_no', IntegerField())),
+                                 end=Max(Cast('warehouse__ring_no', IntegerField())))
+        scope = {'project_id': project_id, 'shield_machine_id': params.get('shield_machine_id'),
+                 'tool_type': tool_type, 'cutter_position_no': normalize_cutter_position_no(cutter_position_no) or None,
+                 'ring_range': ring_range if opening_ids is None else None,
+                 'last_n_openings': last_n_openings, 'opening_ids': opening_ids, 'observation_count': total,
+                 'effective_ring_range': [bounds['start'], bounds['end']] if total else None}
 
         if total == 0:
             return json.dumps({
                 "message": "未找到符合条件的数据",
-                "total_records": 0
+                "total_records": 0, "scope_note": scope_note, "scope": scope,
+                "note": scope_note, **_analysis_payload(warnings=['未找到现场观测记录']),
             }, ensure_ascii=False)
 
         replaced = query.filter(is_replaced=True).count()
@@ -544,17 +594,21 @@ def query_tool_change_data(params_str: str) -> str:
 
         # 按刀位统计更换次数（取前5个）
         position_stats = list(query.filter(is_replaced=True).values(
-            'cutter_position_no'
+            '_ai_position'
         ).annotate(
             replacement_count=Count('id')
-        ).order_by('-replacement_count')[:5])
+        ).order_by())
+        position_stats.sort(key=lambda row: (-row['replacement_count'], cutter_position_sort_key(row['_ai_position'])))
+        position_stats = [dict(cutter_position_no=row['_ai_position'], replacement_count=row['replacement_count'])
+                          for row in position_stats[:5]]
 
         result = {
             "total_records": total,
             "replaced_count": replaced,
             "replacement_rate": f"{replaced/total*100:.1f}%",
             "wear_distribution": wear_stats,
-            "top_replaced_positions": position_stats
+            "top_replaced_positions": position_stats,
+            "scope_note": scope_note, "scope": scope, "note": scope_note,
         }
 
         logger.info(f"查询成功，返回数据：{result}")
@@ -592,7 +646,7 @@ def query_stratum_data(params_str: str) -> str:
         project_id = params.get('project_id')
         ring_range = params.get('ring_range', [])
 
-        query = StratumBasicInfo.objects.select_related('project')
+        query = scoped_queryset(StratumBasicInfo.objects.all()).select_related('project')
 
         if project_id:
             query = query.filter(project__project_id=project_id)
@@ -742,9 +796,9 @@ def calculate_tool_performance(params_str: str) -> str:
                          "若要按型号比较请用 recommend_tools。"
             })
 
-        rows_qs = _active_detail_query(params).filter(
+        rows_qs = _visible_records(_active_detail_query(params).filter(
             tool_number__in=tool_numbers
-        ).select_related('warehouse', 'new_tool_record__tool_instance__tool_info')
+        ).select_related('warehouse'), new_tool_record=('tool_instance',))
         if project_id:
             rows_qs = rows_qs.filter(warehouse__project__project_id=project_id)
 
@@ -775,7 +829,7 @@ def calculate_tool_performance(params_str: str) -> str:
                     install_rows = [next((r for r in rows if r.is_replaced), rows[0])]
                 for install_row in install_rows:
                     installation = getattr(install_row, 'new_tool_record', None)
-                    instance = installation.tool_instance if installation else None
+                    instance = getattr(installation, 'tool_instance', None)  # 实例看不到时为 None
                     install_inferred = installation is None
                     install_ring = int(install_row.warehouse.ring_no)
                     removal_ring, removal_record, removal_inferred = _installation_removal(
@@ -862,7 +916,7 @@ def _ring_int(value):
 
 def _stratum_codes_by_ring(project_id=None) -> dict:
     """返回 {环号(int): {地层代码大写}}，用于按地层筛选服役区间。"""
-    qs = StratumBasicInfo.objects.all()
+    qs = scoped_queryset(StratumBasicInfo.objects.all())
     if project_id:
         qs = qs.filter(project__project_id=project_id)
     mapping = {}
@@ -895,7 +949,7 @@ def _replacement_rings_by_position(project_id=None) -> dict:
 
 
 def _removal_records(project_id=None):
-    query = OldToolRecord.objects.filter(
+    query = scoped_queryset(OldToolRecord.objects.all()).filter(
         tool_change_detail_id__in=_active_detail_query({'project_id': project_id}).filter(is_replaced=True).values('id'),
     ).select_related('tool_change_detail__warehouse')
     return list(query)
@@ -944,9 +998,8 @@ def recommend_tools(params_str: str) -> str:
         等于把上一把刀的报废算到下一把刀头上，语义是反的。
 
     正确的型号维度是 ToolInfo，经 NewToolRecord → ToolInstance.tool_info 关联。
-    单把刀的服役寿命 = 同刀位下一次换刀的环号 − 本次安装的环号（与
-    mobile_views.tool_life_info 的口径一致）；尚未被拆下的实例属于右删失
-    (right-censored) 样本，不计入均值，但单独计数并在结果中说明。
+    完成服役段复用 confirmed_service_segments，仅使用确认旧刀身份且无冲突的配对。
+    尚未确认的拆下记录和在役实例分别计数，不计入均值。
 
     Args:
         params_str: JSON字符串，格式：
@@ -980,8 +1033,22 @@ def recommend_tools(params_str: str) -> str:
             for code in (params.get('stratum_types') or [])
             if str(code).strip()
         }
+        stratum_basis = params.get('stratum_basis', 'label')
+        sort_by = params.get('sort_by', 'service')
+        if sort_by not in {'service', 'price_per_ring'}:
+            return _build_json({'error': 'sort_by 只支持 service 或 price_per_ring'})
+        if stratum_basis not in {'label', 'longitudinal_area'}:
+            return _build_json({'error': 'stratum_basis 只支持 label 或 longitudinal_area'})
+        allowed_codes = STRATUM_TYPE_NAMES if stratum_basis == 'label' else AREA_LABELS
+        unknown_codes = stratum_types - allowed_codes.keys()
+        if unknown_codes:
+            return _build_json({'error': (
+                f"不认识的地层编码：{'、'.join(sorted(unknown_codes))}。"
+                f"历史地层标签可用：{'、'.join(STRATUM_TYPE_NAMES)}；"
+                f"纵断面面积分类可用：{'、'.join(AREA_LABELS)}。"
+            )})
         tool_type = (params.get('tool_type') or '').strip().upper()
-        parsed_range = _parse_ring_range(params.get('ring_range', []))
+        parsed_range = _checked_ring_range(params.get('ring_range'))
 
         raw_price_cap = params.get('max_unit_price', params.get('budget'))
         try:
@@ -1001,25 +1068,29 @@ def recommend_tools(params_str: str) -> str:
             min_samples = 3
 
         warnings = []
+        service_note = (
+            '平均服役环数只用厂家已确认或已归档的拆下记录；还没确认的单独计数，没有算进平均值。'
+            '服役区间为（安装环, 拆下环]；在役刀截止到同项目同机器的最新开仓环。'
+        )
         criteria = {
             "project_id": project_id,
             "stratum_types": sorted(stratum_types) or "全部",
+            "stratum_basis": stratum_basis,
             "tool_type": tool_type or "全部",
             "ring_range": parsed_range or "全部",
             "max_unit_price_yuan": max_unit_price,
             "min_samples": min_samples,
-            "rank_metric": "avg_service_rings（平均服役环数），降序",
+            "sort_by": sort_by,
+            "rank_metric": "最低每环报价，升序" if sort_by == 'price_per_ring' else "avg_service_rings（平均服役环数），降序",
             "grouping": "ToolInfo（刀具型号），经 NewToolRecord → ToolInstance 关联",
         }
 
         if tool_type and tool_type not in {'DISC', 'RIPPER', 'SCRAPER'}:
-            warnings.append(f"未知的刀具类型 {tool_type}，已忽略该筛选条件")
-            tool_type = ''
-            criteria["tool_type"] = "全部"
+            return _build_json({'error': '刀具类型只支持 DISC、RIPPER 或 SCRAPER'})
 
         # 所有安装事件（每条 NewToolRecord = 一把物理刀装到某个刀位）
         installs = (
-            NewToolRecord.objects
+            scoped_queryset(NewToolRecord.objects.all())
             .filter(tool_change_detail_id__in=_active_detail_query(params).values('id'))
             .select_related(
                 'tool_instance', 'tool_instance__tool_info',
@@ -1032,6 +1103,9 @@ def recommend_tools(params_str: str) -> str:
             )
         if tool_type:
             installs = installs.filter(tool_instance__tool_parent_type=tool_type)
+        if ANALYSIS_REQUEST.get() is not None:
+            # 型号来自刀具实例，看不到实例的安装不计入
+            installs = installs.filter(tool_instance__in=scoped_queryset(ToolInstance.objects.all()))
 
         install_rows = list(installs)
         if not install_rows:
@@ -1044,15 +1118,36 @@ def recommend_tools(params_str: str) -> str:
                 ),
                 "criteria": criteria,
                 "recommendations": [],
-                "warnings": warnings,
+                "tool_model_count": 0, "ranked_count": 0, "insufficient_evidence": [],
+                "scope": {**criteria, 'shield_machine_id': params.get('shield_machine_id'), 'installed_count': 0},
+                "note": service_note, **_analysis_payload(warnings=warnings),
             })
 
         removal_rings = _replacement_rings_by_position(project_id)
         removal_records = _removal_records(project_id)
-        stratum_map = _stratum_codes_by_ring(project_id) if stratum_types else {}
-        max_known_ring = max(
-            [r for rings in removal_rings.values() for r in rings] or [0]
-        )
+        confirmed_segments = {
+            row['installation_detail_id']: row for row in confirmed_service_segments(
+                _active_detail_query(params).filter(is_replaced=True).select_related('warehouse')
+            ) if row['paired']
+        }
+        stratum_map = {}
+        if stratum_types:
+            strata = scoped_queryset(StratumBasicInfo.objects.all())
+            if project_id:
+                strata = strata.filter(project__project_id=project_id)
+            for row in strata.values('project_id', 'ring_no', 'stratum_type_codes', 'longitudinal_type_ratios'):
+                codes = ({code.strip().upper() for code in (row['stratum_type_codes'] or '').split(',') if code.strip()}
+                         if stratum_basis == 'label' else
+                         {code for code, ratio in (row['longitudinal_type_ratios'] or {}).items() if ratio > 0})
+                stratum_map.setdefault((row['project_id'], _ring_int(row['ring_no'])), set()).update(codes)
+        opening_scope = scoped_queryset(WarehouseOpeningBasicInfo.objects.all())
+        if project_id:
+            opening_scope = opening_scope.filter(project__project_id=project_id)
+        if params.get('shield_machine_id'):
+            opening_scope = opening_scope.filter(shield_model_id=params['shield_machine_id'])
+        latest_rings = {(row['project_id'], row['shield_model_id']): row['latest'] for row in
+                        opening_scope.values('project_id', 'shield_model_id').annotate(
+                            latest=Max(Cast('ring_no', IntegerField()))).order_by()}
 
         # 按型号归并
         models_acc = {}
@@ -1075,16 +1170,20 @@ def recommend_tools(params_str: str) -> str:
             removal_ring, removal_record, removal_inferred = _installation_removal(
                 detail, record.tool_instance, removal_records, removal_rings,
             )
-            service_rings = removal_ring - install_ring if removal_ring is not None else None
-            if removal_inferred:
+            confirmed_segment = confirmed_segments.get(detail.id)
+            service_rings = confirmed_segment['service_rings'] if confirmed_segment else None
+            if confirmed_segment:
+                removal_ring = _ring_int(confirmed_segment['ring_no'])
+            if removal_inferred and not confirmed_segment:
                 warnings.append(f'{record.tool_instance.display_tool_no} 的拆卸环号由同机同刀位历史换刀推断')
 
             # 地层筛选：服役区间途经的地层与所选地层有交集才计入
             if stratum_types:
-                span_end = removal_ring if removal_ring is not None else max_known_ring
+                span_end = removal_ring if removal_ring is not None else latest_rings.get(
+                    (warehouse.project_id, warehouse.shield_model_id), install_ring)
                 passed = set()
-                for ring in range(install_ring, max(install_ring, span_end) + 1):
-                    passed |= stratum_map.get(ring, set())
+                for ring in range(install_ring + 1, max(install_ring, span_end) + 1):
+                    passed |= stratum_map.get((warehouse.project_id, ring), set())
                 if not (passed & stratum_types):
                     skipped_stratum += 1
                     continue
@@ -1102,10 +1201,13 @@ def recommend_tools(params_str: str) -> str:
                 "installed_count": 0,
                 "service_samples": [],
                 "in_service_count": 0,
+                "unconfirmed_removed_count": 0,
             })
             acc["installed_count"] += 1
             if service_rings is not None and service_rings >= 0:
                 acc["service_samples"].append(service_rings)
+            elif removal_ring is not None:
+                acc["unconfirmed_removed_count"] += 1
             else:
                 acc["in_service_count"] += 1
 
@@ -1123,27 +1225,34 @@ def recommend_tools(params_str: str) -> str:
                 "message": "筛选条件过窄，没有符合条件的安装记录",
                 "criteria": criteria,
                 "recommendations": [],
-                "warnings": warnings,
+                "tool_model_count": 0, "ranked_count": 0, "insufficient_evidence": [],
+                "scope": {**criteria, 'shield_machine_id': params.get('shield_machine_id'), 'installed_count': 0},
+                "note": service_note, **_analysis_payload(warnings=warnings),
             })
 
-        # 取每个型号最新的一条成本记录（ToolInfo.unit_price 属性会产生 N+1 查询）
+        # 报价厂家不代表型号历史表现的厂家；保留全部有价格的新刀报价。
         cost_map = {}
         info_ids = [v["tool_info_id"] for v in models_acc.values() if v["tool_info_id"]]
         if info_ids:
             for cost in (
-                ToolCost.objects.filter(tool_info_id__in=info_ids)
-                .order_by('tool_info_id', '-create_datetime')
+                scoped_queryset(ToolCost.objects.all()).filter(tool_info_id__in=info_ids, cost_type='NEW_TOOL', unit_price__isnull=False)
+                .order_by('tool_info_id', 'unit_price', 'id')
             ):
-                if cost.tool_info_id not in cost_map:
-                    cost_map[cost.tool_info_id] = cost
+                cost_map.setdefault(cost.tool_info_id, []).append({
+                    'brand': cost.brand, 'manufacturer': cost.manufacturer, 'unit_price_yuan': float(cost.unit_price),
+                })
 
-        ranked, insufficient, price_filtered_out = [], [], 0
+        ranked, insufficient, price_filtered_out, missing_price_count = [], [], 0, 0
         for acc in models_acc.values():
-            cost = cost_map.get(acc["tool_info_id"])
-            unit_price = float(cost.unit_price) if (cost and cost.unit_price is not None) else None
+            quotes = cost_map.get(acc['tool_info_id'], [])
+            unit_price = quotes[0]['unit_price_yuan'] if quotes else None
+            max_price = quotes[-1]['unit_price_yuan'] if quotes else None
 
             if max_unit_price is not None:
-                if unit_price is None or unit_price > max_unit_price:
+                if unit_price is None:
+                    missing_price_count += 1
+                    continue
+                if unit_price > max_unit_price:
                     price_filtered_out += 1
                     continue
 
@@ -1155,19 +1264,34 @@ def recommend_tools(params_str: str) -> str:
                 "installed_count": acc["installed_count"],
                 "completed_service_count": len(samples),
                 "in_service_count": acc["in_service_count"],
+                "unconfirmed_removed_count": acc["unconfirmed_removed_count"],
                 "avg_service_rings": round(sum(samples) / len(samples), 1) if samples else None,
                 "min_service_rings": min(samples) if samples else None,
                 "max_service_rings": max(samples) if samples else None,
                 "unit_price_yuan": unit_price,
-                "manufacturer": cost.manufacturer if cost else None,
-                "inventory": cost.inventory if cost else None,
+                "manufacturer": None,
+                "inventory": None,
+                "price_basis": "NEW_TOOL", "new_tool_price_min_yuan": unit_price,
+                "new_tool_price_max_yuan": max_price, "new_tool_quote_count": len(quotes),
+                "new_tool_quotes": quotes,
             }
+            avg_rings = entry['avg_service_rings']
+            entry['cost_per_ring_yuan'] = round(unit_price / avg_rings, 2) if unit_price is not None and avg_rings else None
+            entry['manufacturer_prices'] = [
+                {**quote, 'price_per_ring_yuan': round(quote['unit_price_yuan'] / avg_rings, 2) if avg_rings else None}
+                for quote in quotes]
+            entry['cost_per_ring_range_yuan'] = (
+                [round(unit_price / avg_rings, 2), round(max_price / avg_rings, 2)]
+                if unit_price is not None and max_price is not None and avg_rings else None
+            )
             (ranked if len(samples) >= min_samples else insufficient).append(entry)
 
         if price_filtered_out:
             warnings.append(
-                f"{price_filtered_out} 种型号因单价高于 {max_unit_price:.0f} 元或缺少单价记录被排除"
+                f"{price_filtered_out} 种型号因最低新刀报价高于 {max_unit_price:.0f} 元被排除"
             )
+        if missing_price_count:
+            warnings.append(f'{missing_price_count} 种型号因没有新刀报价被排除')
         if insufficient:
             warnings.append(
                 f"{len(insufficient)} 种型号的完整服役样本少于 {min_samples} 把，样本量不足，未参与排名"
@@ -1179,25 +1303,23 @@ def recommend_tools(params_str: str) -> str:
             -x["completed_service_count"],
             str(x["tool_type_name"]),
         ))
+        if sort_by == 'price_per_ring':
+            ranked.sort(key=lambda x: (x['cost_per_ring_yuan'] is None, x['cost_per_ring_yuan'] or 0))
 
         total_ranked = len(ranked)
         for index, entry in enumerate(ranked, start=1):
             entry["rank"] = index
             price_note = (
-                f"，单价 {entry['unit_price_yuan']:.0f} 元，"
+                f"，最低新刀报价 {entry['unit_price_yuan']:.0f} 元，"
                 f"折合每环 {entry['unit_price_yuan'] / entry['avg_service_rings']:.2f} 元"
-                if entry["unit_price_yuan"] and entry["avg_service_rings"] else ""
-            )
-            entry["cost_per_ring_yuan"] = (
-                round(entry["unit_price_yuan"] / entry["avg_service_rings"], 2)
-                if entry["unit_price_yuan"] and entry["avg_service_rings"] else None
+                if entry["unit_price_yuan"] is not None and entry["avg_service_rings"] else ""
             )
             entry["recommendation_reason"] = (
                 f"在所选范围内共安装 {entry['installed_count']} 把，其中 "
                 f"{entry['completed_service_count']} 把已完成服役，平均服役 "
                 f"{entry['avg_service_rings']} 环（{entry['min_service_rings']}~"
                 f"{entry['max_service_rings']} 环）{price_note}；"
-                f"在满足样本量要求的 {total_ranked} 种型号中按平均服役环数由高到低排名第 {index}"
+                f"在满足样本量要求的 {total_ranked} 种型号中按{criteria['rank_metric']}排名第 {index}"
             )
         for entry in insufficient:
             entry["recommendation_reason"] = (
@@ -1207,7 +1329,14 @@ def recommend_tools(params_str: str) -> str:
         insufficient.sort(key=lambda x: (-x["completed_service_count"], str(x["tool_type_name"])))
 
         total_in_service = sum(v["in_service_count"] for v in models_acc.values())
+        service_count = sum(len(v['service_samples']) for v in models_acc.values())
+        total_rings = sum(sum(v['service_samples']) for v in models_acc.values())
         result = {
+            'service_summary': {'completed_service_count': service_count, 'total_service_rings': total_rings,
+                                'avg_service_rings': round(total_rings / service_count, 1) if service_count else None},
+            'service_by_model': [{'tool_type_name': v['tool_type_name'], 'completed_service_count': len(v['service_samples']),
+                                  'avg_service_rings': round(sum(v['service_samples']) / len(v['service_samples']), 1)
+                                  if v['service_samples'] else None} for v in models_acc.values()],
             "criteria": criteria,
             "tool_model_count": len(models_acc),
             "ranked_count": total_ranked,
@@ -1215,10 +1344,18 @@ def recommend_tools(params_str: str) -> str:
             "insufficient_evidence": insufficient[:top_n],
             "warnings": warnings,
             "note": (
-                "recommendations 按所选范围内的平均服役环数由高到低排序。"
+                f"recommendations 按所选范围内的{criteria['rank_metric']}排序。"
                 f"另有 {total_in_service} 把刀仍在役、尚未拆下，属于右删失样本，"
                 "未计入已完成服役样本的平均值；该均值可能存在选择偏差，不能当作总体寿命或其确定下界。"
                 "该结果基于历史服役记录，不构成对在役刀具剩余寿命的预测。"
+                + service_note
+            ),
+            "scope": {**criteria, 'shield_machine_id': params.get('shield_machine_id'),
+                      'installed_count': sum(v['installed_count'] for v in models_acc.values())},
+            **_analysis_payload(
+                summary={'tool_model_count': len(models_acc), 'ranked_count': total_ranked},
+                facts=[f'共匹配 {len(models_acc)} 种型号，其中 {total_ranked} 种满足报价和确认样本数要求'],
+                warnings=warnings,
             ),
         }
 
@@ -1380,7 +1517,7 @@ def analyze_stratum_wear_correlation(params_str: str) -> str:
         ring_range = params.get('ring_range', [])
 
         # 1. 获取地层数据
-        stratum_query = StratumBasicInfo.objects.select_related('project')
+        stratum_query = scoped_queryset(StratumBasicInfo.objects.all()).select_related('project')
         if project_id:
             stratum_query = stratum_query.filter(project__project_id=project_id)
         if ring_range and len(ring_range) == 2:
@@ -1517,6 +1654,15 @@ def analyze_stratum_wear_correlation(params_str: str) -> str:
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
+def _opening_summary_missing_fields(record):
+    # 对齐 shield.views.opening_completion_missing_fields：真实的 0 不算缺失。
+    labels = {
+        'opening_duration': '开仓持续时间', 'tool_change_duration': '换刀总时长',
+        'checked_tool_count': '检查刀具数量', 'replaced_tool_count': '更换刀具数量',
+    }
+    return [label for field, label in labels.items() if record.get(field) is None]
+
+
 def query_opening_records(params_str: str) -> str:
     """
     查询开仓记录，支持按项目、环号范围过滤，返回开仓次数、平均间隔环数、开仓时长等统计。
@@ -1533,53 +1679,100 @@ def query_opening_records(params_str: str) -> str:
     try:
         params = json.loads(params_str)
         project_id = params.get('project_id')
-        ring_range = params.get('ring_range', [])
+        ring_range = _checked_ring_range(params.get('ring_range'))
         limit = params.get('limit', 10)
+        summary_status = params.get('summary_status')
+        if summary_status is not None and summary_status not in {'CONFIRMED', 'DRAFT'}:
+            return _build_json({'error': '汇总状态只支持 CONFIRMED 或 DRAFT'})
 
-        query = WarehouseOpeningBasicInfo.objects.select_related('project').annotate(
+        query = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).select_related('project').annotate(
             ring_int=Cast('ring_no', output_field=IntegerField())
         )
         if project_id:
             query = query.filter(project__project_id=project_id)
+        if params.get('shield_machine_id'):
+            query = query.filter(shield_model_id=params['shield_machine_id'])
+        if summary_status:
+            query = query.filter(summary_status=summary_status)
         if ring_range and len(ring_range) == 2:
             query = query.filter(ring_int__gte=ring_range[0], ring_int__lte=ring_range[1])
 
         total = query.count()
+        status_counts = {row['summary_status']: row['count'] for row in
+                         query.values('summary_status').annotate(count=Count('id')).order_by()}
+        scope = {**params, 'opening_count': total}
         if total == 0:
-            return json.dumps({"message": "未找到开仓记录", "total": 0}, ensure_ascii=False)
+            return _build_json({"message": "未找到开仓记录", "total": 0, 'total_openings': 0,
+                                'summary_status_counts': status_counts, 'recent_records': [],
+                                'scope': scope, 'note': '未找到符合筛选条件的开仓记录。',
+                                **_analysis_payload(warnings=['未找到开仓记录'])})
 
         # 整体统计
         avg_interval = query.aggregate(avg=Avg('rings_between_openings'))['avg']
         avg_duration = query.aggregate(avg=Avg('opening_duration'))['avg']
 
-        # 按环号数字从大到小取最近N条
-        recent_qs = list(
-            query.order_by('-ring_int').values(
+        # 先聚合完整筛选集，再截取展示记录。
+        all_records = list(
+            query.order_by('-ring_int', '-open_time', '-id').values(
                 'id', 'ring_no', 'last_ring_no', 'rings_between_openings',
                 'open_time', 'opening_duration', 'geological_conditions',
                 'summary_status', 'checked_tool_count', 'replaced_tool_count',
-                'shield_model_id',
-            )[:limit]
+                'project_id', 'shield_model_id', 'summary_confirmed_at', 'summary_withdrawn_at', 'tool_change_duration',
+                'right_revolution_reading', 'left_revolution_reading',
+            )
         )
+        details = _active_detail_query(params, checked_only=False)
+        counts = {row['warehouse_id']: row for row in details.filter(warehouse_id__in=query.values('pk')).order_by()
+                  .values('warehouse_id').annotate(detail_record_count=Count('pk'),
+                                                   detail_checked_count=Count('pk', filter=Q(is_checked=True)),
+                                                   detail_replaced_count=Count('pk', filter=Q(is_replaced=True)))}
+        for r in all_records:
+            r.update({field: counts.get(r['id'], {}).get(field, 0) for field in
+                      ('detail_record_count', 'detail_checked_count', 'detail_replaced_count')})
+            confirmed = r['summary_status'] == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED
+            r['count_source'] = 'confirmed_summary' if confirmed else 'detail_draft'
+            r['tool_change_total'] = r['checked_tool_count'] if confirmed else r['detail_checked_count']
+            r['tool_change_replaced'] = r['replaced_tool_count'] if confirmed else r['detail_replaced_count']
+            r['tool_change_duration_hours'] = r['tool_change_duration']
+        efficiency_all = _opening_efficiency(all_records)
+        recent_qs = all_records[:limit]
+        efficiency_recent = _opening_efficiency(recent_qs)
+        readings = scoped_queryset(WarehouseOpeningBasicInfo.objects.all()).filter(
+            project_id__in={r['project_id'] for r in recent_qs},
+            right_revolution_reading__isnull=False, left_revolution_reading__isnull=False,
+            ring_no__regex=r'^[0-9]{1,9}$',
+        ).annotate(ring_int=Cast('ring_no', IntegerField())).order_by('ring_int', 'open_time', 'id')
+        previous, increments = {}, {}
+        for reading in readings:
+            key = (reading.project_id, reading.shield_model_id)
+            current = (reading.right_revolution_reading, reading.left_revolution_reading)
+            prior = previous.get(key)
+            steps = [after - before for before, after in zip(prior, current)] if prior else []
+            increments[reading.pk] = sum(steps) if steps and min(steps) >= 0 else None
+            previous[key] = current
 
         # 异常磨损判定统一走 normalize_wear_condition，兼容英文枚举码与中文描述。
         # 为每条开仓记录补充换刀统计
         for r in recent_qs:
+            r['revolutions_since_previous'] = increments.get(r['id'])
+            r['summary_missing_fields'] = _opening_summary_missing_fields(r)
+            r['tool_change_duration_hours'] = r.pop('tool_change_duration')
+            for field in ('summary_confirmed_at', 'summary_withdrawn_at'):
+                r[field] = r[field].strftime('%Y-%m-%d %H:%M') if r[field] else None
             if r['open_time']:
                 r['open_time'] = r['open_time'].strftime('%Y-%m-%d %H:%M')
-            changes = _active_detail_query(params, checked_only=False).filter(warehouse_id=r['id'])
-            r['detail_record_count'] = changes.count()
-            r['detail_checked_count'] = changes.filter(is_checked=True).count()
-            r['detail_replaced_count'] = changes.filter(is_replaced=True).count()
+            changes = details.filter(warehouse_id=r['id'])
             confirmed = r['summary_status'] == WarehouseOpeningBasicInfo.SUMMARY_STATUS_CONFIRMED
-            total_c = r['checked_tool_count'] if confirmed else r['detail_checked_count']
-            replaced_c = r['replaced_tool_count'] if confirmed else r['detail_replaced_count']
-            r['count_source'] = 'confirmed_summary' if confirmed else 'detail_draft'
-            r['tool_change_total'] = total_c
-            r['tool_change_replaced'] = replaced_c
+            total_c, replaced_c = r['tool_change_total'], r['tool_change_replaced']
             valid_counts = total_c is not None and replaced_c is not None and 0 <= replaced_c <= total_c
             r['replacement_rate'] = f"{replaced_c/total_c*100:.1f}%" if valid_counts and total_c else None
             r['warnings'] = []
+            r['count_difference'] = {
+                'checked': r['checked_tool_count'] - r['detail_checked_count'] if r['checked_tool_count'] is not None else None,
+                'replaced': r['replaced_tool_count'] - r['detail_replaced_count'] if r['replaced_tool_count'] is not None else None,
+            }
+            if any(value not in (None, 0) for value in r['count_difference'].values()):
+                r['warnings'].append('人工汇总数和明细统计数不同：人工汇总按整仓填写，明细只统计 122 个有效刀位上已检查或已更换的记录。')
             if not confirmed:
                 r['warnings'].append('开仓汇总尚未确认，当前明细统计可能继续变化')
             if not valid_counts:
@@ -1598,26 +1791,52 @@ def query_opening_records(params_str: str) -> str:
             r['unclassified_wear_count'] = wear_buckets['unknown']
             r['abnormal_rate_denominator'] = classified_c
             r['abnormal_rate'] = f"{abnormal_c/classified_c*100:.1f}%" if classified_c else None
-            # 高频更换刀位（前3）
             top_pos = list(
                 changes.filter(is_replaced=True)
-                .values('cutter_position_no')
-                .annotate(cnt=Count('id'))
-                .order_by('-cnt')[:3]
+                .values('_ai_position')
+                .annotate(count=Count('id'))
+                .order_by('-count', '_ai_position')
             )
-            r['top_replaced_positions'] = [p['cutter_position_no'] for p in top_pos]
+            cutoff = top_pos[min(2, len(top_pos) - 1)]['count'] if top_pos else 0
+            r['top_replaced_positions'] = [{'cutter_position_no': p['_ai_position'], 'count': p['count']}
+                                           for p in top_pos if p['count'] >= max(2, cutoff)]
+            r['replaced_position_count'] = len(top_pos)
+            r['positions_all_once'] = bool(top_pos) and top_pos[0]['count'] == 1
+            r['top_positions_tied'] = sum(p['count'] == cutoff for p in top_pos) > 1
             del r['id']
 
-        return json.dumps({
+        for r in recent_qs:
+            r['tool_change_duration_hours'] = _round_num(r['tool_change_duration_hours'], 1)
+        def recent_mean(field):
+            values = [row[field] for row in recent_qs if row[field] is not None]
+            return round(sum(values) / len(values), 1) if values else None
+
+        return _build_json(_enrich_opening_result({
             "INSTRUCTION": "以下是真实数据库数据，回答时必须原样使用这些数字，禁止修改任何环号、比率或刀位编号",
             "total_openings": total,
-            "avg_rings_between_openings": round(avg_interval, 1) if avg_interval else None,
-            "avg_opening_duration_hours": round(avg_duration, 1) if avg_duration else None,
+            "avg_rings_between_openings": _round_num(avg_interval, 1),
+            "avg_opening_duration_hours": _round_num(avg_duration, 1),
+            "recent_avg_rings_between_openings": recent_mean('rings_between_openings'),
+            "recent_avg_opening_duration_hours": recent_mean('opening_duration'),
+            "efficiency_all": efficiency_all, "efficiency_recent": efficiency_recent,
             "recent_records": recent_qs,
-        }, ensure_ascii=False)
+            "summary_status_counts": status_counts, "scope": scope,
+            "note": "人工汇总与有效刀位现场观测分别列出；确认时间为空不代表汇总未确认。",
+        }))
 
     except Exception as e:
         return json.dumps({"error": f"查询失败：{str(e)}"}, ensure_ascii=False)
+
+
+def _opening_efficiency(records):
+    result = {'opening_count': len(records)}
+    for name, duration, count in [('check', 'opening_duration', 'tool_change_total'),
+                                  ('replace', 'tool_change_duration_hours', 'tool_change_replaced')]:
+        valid = [r for r in records if r[duration] is not None and r[count]]
+        denominator = sum(r[count] for r in valid)
+        result[f'{name}_denominator'] = denominator
+        result[f'{name}_minutes_per_tool'] = round(sum(r[duration] for r in valid) * 60 / denominator, 1) if denominator else None
+    return result
 
 
 def query_cutter_position_stats(params_str: str) -> str:
@@ -1636,41 +1855,72 @@ def query_cutter_position_stats(params_str: str) -> str:
     try:
         params = json.loads(params_str)
         project_id = params.get('project_id')
-        tool_type = params.get('tool_type')
-        top_n = params.get('top_n', 10)
-        ring_range = _parse_ring_range(params.get('ring_range'))
+        tool_type = _checked_tool_type(params.get('tool_type'))
+        top_n = max(1, min(int(params.get('top_n', 10)), 122))
+        ring_range = _checked_ring_range(params.get('ring_range'))
+        position = normalize_cutter_position_no(params.get('cutter_position_no'))
+        if params.get('cutter_position_no') is not None and position not in ACTIVE_CUTTER_POSITION_CODES:
+            return _build_json({'error': '刀位编号不在 122 个有效刀位内，请使用 1–79、80A、80B、Y1、Y3、Y5 或 S1L–S19R'})
+        include_all = params.get('include_all', False)
+        if not isinstance(include_all, bool):
+            return _build_json({'error': 'include_all 只支持布尔值 true 或 false'})
+        sort_by = params.get('sort_by', 'replaced')
+        if sort_by not in {'replaced', 'abnormal'}:
+            return _build_json({'error': 'sort_by 只支持 replaced 或 abnormal'})
 
         query = _active_detail_query(params).select_related('warehouse__project')
         if project_id:
             query = query.filter(warehouse__project__project_id=project_id)
         if tool_type:
             query = query.filter(tool_parent_type=tool_type)
+        if position:
+            query = query.filter(_ai_position=position)
         if ring_range:
             query = query.annotate(ring_int=Cast('warehouse__ring_no', IntegerField())).filter(
                 ring_int__gte=ring_range[0], ring_int__lte=ring_range[1],
             )
 
         total = query.count()
-        if total == 0:
-            return json.dumps({"message": "未找到换刀记录", "total": 0}, ensure_ascii=False)
-
+        # 异常合计直接由全部筛选记录计算，避免模型把分段数相加出错。
+        observation_wear = list(query.values('wear_condition').annotate(count=Count('id')).order_by())
+        buckets = classify_wear_counts(observation_wear, count_key='count')
+        classified = buckets['normal'] + buckets['abnormal']
+        summary = {
+            'total_records': total,
+            'abnormal_observation_count': buckets['abnormal'],
+            'classified_observation_count': classified,
+            'abnormal_observation_rate': round(buckets['abnormal'] / classified * 100, 1) if classified else None,
+        }
         # 按刀位统计更换次数和磨损分布
         position_stats = list(
-            query.filter(is_replaced=True)
-            .values('cutter_position_no', 'tool_parent_type')
-            .annotate(replacement_count=Count('id'))
-            .order_by('-replacement_count')[:top_n]
+            query.values('_ai_position')
+            .annotate(replacement_count=Count('id', filter=Q(is_replaced=True)), observation_count=Count('id'))
+            .order_by()
         )
 
         # 为每个高频刀位补充磨损类型分布
         for pos in position_stats:
+            pos['cutter_position_no'] = pos.pop('_ai_position')
+            pos['tool_parent_type'] = 'SCRAPER' if pos['cutter_position_no'].startswith('S') else 'DISC'
+            observations = query.filter(_ai_position=pos['cutter_position_no'])
             wear_dist = list(
-                query.filter(
-                    cutter_position_no=pos['cutter_position_no'],
-                    is_replaced=True
-                ).values('wear_condition').annotate(count=Count('id')).order_by('-count')
+                observations.filter(is_replaced=True).values('wear_condition').annotate(count=Count('id')).order_by('-count', 'wear_condition')
             )
             pos['wear_distribution'] = wear_dist
+            observation_wear = list(observations.values('wear_condition').annotate(count=Count('id')).order_by())
+            buckets = classify_wear_counts(observation_wear, count_key='count')
+            classified = buckets['normal'] + buckets['abnormal']
+            pos.update({
+                'abnormal_observation_count': buckets['abnormal'],
+                'classified_observation_count': classified,
+                'abnormal_observation_rate': round(buckets['abnormal'] / classified * 100, 1) if classified else None,
+                'observation_wear_distribution': {row['wear_condition']: row['count'] for row in observation_wear},
+            })
+        rank_field = 'replacement_count' if sort_by == 'replaced' else 'abnormal_observation_count'
+        position_stats.sort(key=lambda row: (-row[rank_field], cutter_position_sort_key(row['cutter_position_no'])))
+        matched_count = len(position_stats)
+        if not include_all:
+            position_stats = position_stats[:top_n]
 
         # 刀位类型分布（按 tool_parent_type 汇总）
         type_summary = list(
@@ -1680,12 +1930,20 @@ def query_cutter_position_stats(params_str: str) -> str:
             .order_by('-count')
         )
 
-        return json.dumps({
+        result = {
             "total_records": total,
             "top_positions": position_stats,
             "replacement_by_type": type_summary,
-            "note": "更换次数反映所选范围的记录数量，不等于磨损严重程度；需结合样本、服役距离和更换原因复核"
-        }, ensure_ascii=False)
+            "matched_position_count": matched_count, "returned_position_count": len(position_stats),
+            "truncated": len(position_stats) < matched_count, "sort_by": sort_by,
+            "scope": {**params, 'cutter_position_no': position or None, 'top_n': top_n, 'observation_count': total},
+            "note": "更换次数反映所选范围的记录数量，不等于磨损严重程度；wear_distribution 仅统计更换行，observation_wear_distribution 统计全部现场观测记录。",
+            **_analysis_payload(summary={**summary, 'position_count': matched_count},
+                                facts=[f'共查询到 {total} 条现场观测记录，匹配 {matched_count} 个刀位，返回 {len(position_stats)} 个']),
+        }
+        if not total:
+            result.update(message='未找到换刀记录', total=0)
+        return _build_json(result)
 
     except Exception as e:
         return json.dumps({"error": f"查询失败：{str(e)}"}, ensure_ascii=False)
@@ -1708,8 +1966,8 @@ def query_tool_change_trend(params_str: str) -> str:
     try:
         params = json.loads(params_str)
         project_id = params.get('project_id')
-        tool_type = params.get('tool_type')
-        ring_range = _parse_ring_range(params.get('ring_range', []))
+        tool_type = _checked_tool_type(params.get('tool_type'))
+        ring_range = _checked_ring_range(params.get('ring_range'))
         # interval 必须为正整数：为 0 或负数会让下方的分段 while 循环
         # （seg_start += interval）永不递增，导致死循环与无界内存增长。
         # 与 query_tunneling_trend / query_tunneling_wear_correlation 保持一致的钳制范围。
@@ -1737,11 +1995,18 @@ def query_tool_change_trend(params_str: str) -> str:
         records = list(
             query.values('ring_int', 'is_replaced', 'wear_condition')
         )
+        # 异常合计直接由全部筛选记录计算，避免模型把分段数相加出错。
+        buckets = classify_wear_counts(records)
+        classified = buckets['normal'] + buckets['abnormal']
         summary = {
             "segment_count": 0,
             "nonempty_segment_count": 0,
             "total_records": len(records),
             "replaced_count": sum(1 for row in records if row['is_replaced']),
+            "normal_count": buckets['normal'],
+            "abnormal_count": buckets['abnormal'],
+            "unknown_count": buckets['unknown'],
+            "abnormal_rate": f"{buckets['abnormal']/classified*100:.1f}%" if classified else None,
             "requested_ring_range": ring_range,
             "effective_ring_range": None,
             "project_id": project_id,
@@ -1763,6 +2028,9 @@ def query_tool_change_trend(params_str: str) -> str:
         if not records:
             return json.dumps({
                 "message": "未找到换刀记录", "total": 0, "summary": summary,
+                "trend": "数据不足", "first_last_change_pct_points": None, "segments": [],
+                "scope": summary, "note": "只有 0 个环段有数据，无法判断趋势。",
+                **{key: value for key, value in _analysis_payload().items() if key != 'summary'},
             }, ensure_ascii=False)
 
         # 按区间分组
@@ -1775,17 +2043,30 @@ def query_tool_change_trend(params_str: str) -> str:
             seg_end = min(seg_start + interval - 1, max_ring)
             seg_records = [r for r in records if seg_start <= r['ring_int'] <= seg_end]
             replaced = sum(1 for r in seg_records if r['is_replaced'])
+            buckets = classify_wear_counts(seg_records)
+            classified = buckets['normal'] + buckets['abnormal']
             segments.append({
                 "ring_range": f"{seg_start}-{seg_end}",
                 "total": len(seg_records),
                 "replaced": replaced,
                 "replacement_rate": f"{replaced/len(seg_records)*100:.1f}%" if seg_records else "0%",
+                "normal_count": buckets['normal'], "abnormal_count": buckets['abnormal'],
+                "unknown_count": buckets['unknown'],
+                "abnormal_rate": f"{buckets['abnormal']/classified*100:.1f}%" if classified else None,
             })
             seg_start += interval
 
         # 判断趋势
-        rates = [float(s['replacement_rate'].rstrip('%')) for s in segments if s['total'] > 0]
-        trend = "上升" if len(rates) >= 2 and rates[-1] > rates[0] else "下降" if len(rates) >= 2 and rates[-1] < rates[0] else "平稳"
+        rates = [s['replaced'] / s['total'] * 100 for s in segments if s['total'] > 0]
+        raw_change = rates[-1] - rates[0] if len(rates) >= 2 else None
+        change = round(raw_change, 1) if raw_change is not None else None
+        if change is None:
+            trend, note = '数据不足', f'只有 {len(rates)} 个环段有数据，无法判断趋势。'
+        elif abs(raw_change) < 0.1:
+            trend, note = '首末持平', '首末两段更换率持平。这只比较了首末两段，不是趋势检验。'
+        else:
+            trend = '末段高于首段' if change > 0 else '末段低于首段'
+            note = f"末段更换率比首段{'高' if change > 0 else '低'} {abs(change):.1f} 个百分点。这只比较了首末两段，不是趋势检验。"
         summary.update({
             "segment_count": len(segments),
             "nonempty_segment_count": sum(1 for segment in segments if segment['total']),
@@ -1798,7 +2079,8 @@ def query_tool_change_trend(params_str: str) -> str:
             "trend": trend,
             "segments": segments,
             "summary": summary,
-            "note": f"换刀率整体呈{trend}趋势，interval={interval}环/段"
+            "first_last_change_pct_points": change, "scope": summary, "note": note,
+            **{key: value for key, value in _analysis_payload(facts=[note]).items() if key != 'summary'},
         }, ensure_ascii=False)
 
     except Exception as e:
@@ -1809,8 +2091,12 @@ def query_tunneling_summary(params_str: str) -> str:
     """查询掘进动态数据概览"""
     try:
         params = json.loads(params_str)
+        limit = max(1, min(int(params.get('limit', 10)), 100))
         query = _filter_tunneling_query(params)
-        return _build_json(_enrich_tunneling_analysis(_summarize_tunneling_records(query)))
+        result = _enrich_tunneling_analysis(_summarize_tunneling_records(query, limit=limit))
+        result.update(scope={**params, 'limit': limit, 'record_count': result['total_records']},
+                      note='均值按已导入的分段记录计算，不是原始采样点总体均值；贯入度单位 mm/r。')
+        return _build_json(result)
     except Exception as e:
         return _build_json({"error": f"掘进概览查询失败：{str(e)}"})
 
@@ -1846,13 +2132,16 @@ def query_tunneling_trend(params_str: str) -> str:
         if not segments:
             return _build_json({
                 "message": "未找到符合条件的掘进动态数据", "total_records": 0,
-                "summary": summary,
+                "trend": "数据不足", "segments": [], "scope": {**params, 'record_count': 0},
+                "note": "只有 0 个分段有数据，无法判断趋势。",
+                **_analysis_payload(summary=summary, warnings=['没有可用于判断趋势的分段']),
             })
 
         first = next((s for s in segments if s.get('avg_penetration') is not None), None)
         last = next((s for s in reversed(segments) if s.get('avg_penetration') is not None), None)
-        trend = "稳定"
-        if first and last and first['avg_penetration'] is not None and last['avg_penetration'] is not None:
+        valid_segments = [s for s in segments if s.get('avg_penetration') is not None]
+        trend = "数据不足" if len(valid_segments) < 2 else "稳定"
+        if len(valid_segments) >= 2:
             if last['avg_penetration'] > first['avg_penetration']:
                 trend = "上升"
             elif last['avg_penetration'] < first['avg_penetration']:
@@ -1863,6 +2152,8 @@ def query_tunneling_trend(params_str: str) -> str:
             "interval": interval,
             "trend": trend,
             "segments": segments,
+            "scope": {**params, 'record_count': summary['total_records'], 'interval': interval},
+            "note": "分段均值按导入记录计算；贯入度单位 mm/r。",
         }
         segment_mode = any(s.get("segment_index") for s in segments)
         result.update(_analysis_payload(
@@ -1880,14 +2171,14 @@ def query_tunneling_trend(params_str: str) -> str:
                     if segment_mode else
                     f"按 {interval} 环分段统计，形成 {len(segments)} 个有效区段"
                 ),
-                f"贯入力整体趋势为 {trend}",
+                f"只有 {len(valid_segments)} 个分段有贯入度数据，无法判断趋势。" if trend == '数据不足' else f"贯入度整体趋势为 {trend}",
             ],
             highlights=[
-                f"首个有效区段平均贯入力为 {first.get('avg_penetration') if first else None}",
-                f"末个有效区段平均贯入力为 {last.get('avg_penetration') if last else None}",
+                f"首个有效区段平均贯入度为 {first.get('avg_penetration') if first else None}",
+                f"末个有效区段平均贯入度为 {last.get('avg_penetration') if last else None}",
             ],
-            warnings=[] if len(segments) >= 2 else ["有效分段少于 2 个，趋势判断仅供参考"],
-            conclusion_hint="贯入力趋势可作为掘进效率变化的参考，需结合推力、扭矩和地层条件共同判断。",
+            warnings=[] if trend != '数据不足' else ["有贯入度数据的分段少于 2 个，无法判断趋势"],
+            conclusion_hint="贯入度趋势可作为掘进效率变化的参考，需结合推力、扭矩和地层条件共同判断。",
         ))
         return _build_json(result)
     except Exception as e:
@@ -1900,11 +2191,14 @@ def query_tunneling_anomaly(params_str: str) -> str:
         params = json.loads(params_str)
         query = _filter_tunneling_query(params)
         summary = _summarize_tunneling_records(query)
+        threshold_k = float(params.get('threshold_k', 1.5) or 1.5)
+        summary.update(threshold_k=threshold_k, anomaly_fields=[], anomaly_records=[],
+                       scope={**params, 'threshold_k': threshold_k, 'record_count': summary['total_records']},
+                       note='分段均值偏高筛查：将每条导入记录与这些记录的均值比较；贯入度单位 mm/r。')
         if summary.get("total_records", 0) == 0:
-            return _build_json(summary)
+            return _build_json(_enrich_tunneling_analysis(summary, threshold_k=threshold_k))
 
         metrics = summary["metrics"]
-        threshold_k = float(params.get('threshold_k', 1.5) or 1.5)
         anomaly_fields = []
         for field in ('thrust', 'torque', 'penetration'):
             avg = metrics.get(field, {}).get('avg')
@@ -1917,17 +2211,25 @@ def query_tunneling_anomaly(params_str: str) -> str:
                 })
 
         summary["anomaly_fields"] = anomaly_fields
+        for row in query.order_by('record_time', 'id').values(
+                'id', 'ring_no', 'record_time', 'raw_parameters', 'thrust', 'torque', 'penetration'):
+            raw = row['raw_parameters'] or {}
+            for item in anomaly_fields:
+                value = row[item['field']]
+                average = metrics[item['field']]['avg']
+                if value is not None and value > average * threshold_k:
+                    summary['anomaly_records'].append({
+                        'record_id': row['id'], 'ring_no': row['ring_no'], 'segment_index': raw.get('segment_index'),
+                        'start_time': raw.get('start_time'),
+                        'end_time': raw.get('end_time') or (row['record_time'].strftime('%Y-%m-%d %H:%M:%S') if row['record_time'] else None),
+                        'metric': item['field'], 'value': _round_num(value), 'average': _round_num(average),
+                        'ratio': _round_num(value / average),
+                    })
         summary = _enrich_tunneling_analysis(
             summary,
-            conclusion_hint="异常峰值需要结合对应环号的地层、换刀和刀具磨损记录进一步判断原因。",
+            conclusion_hint="分段均值偏高筛查只定位待复核记录，不能据此判断瞬时峰值或原因。",
+            threshold_k=threshold_k,
         )
-        if anomaly_fields:
-            summary["highlights"] = [
-                f"{item['field']} 最大值 {item['max']} 明显高于平均值 {item['avg']}"
-                for item in anomaly_fields
-            ] + summary.get("highlights", [])
-        else:
-            summary["highlights"] = ["按当前阈值未发现推力、扭矩或贯入力的明显异常峰值"] + summary.get("highlights", [])
         return _build_json(summary)
     except Exception as e:
         return _build_json({"error": f"掘进异常查询失败：{str(e)}"})
@@ -1941,45 +2243,60 @@ def query_tunneling_wear_correlation(params_str: str) -> str:
         interval = int(params.get('interval', 50) or 50)
         interval = max(1, min(interval, 500))
 
-        tunneling_qs = _filter_tunneling_query(params).annotate(
+        tunneling_qs = _filter_tunneling_query({'project_id': project_id}).annotate(
             ring_int=Cast('ring_no', output_field=IntegerField())
         )
         tunneling_records = list(tunneling_qs.values(
-            'ring_int', 'thrust', 'torque', 'cutterhead_speed', 'penetration'
+            'ring_int', 'thrust', 'torque', 'cutterhead_speed', 'penetration', 'record_time',
         ))
         tunneling_records = [r for r in tunneling_records if r.get('ring_int') is not None]
-        if not tunneling_records:
-            return _build_json({
-                "message": "未找到符合条件的掘进动态数据",
-                "total_records": 0,
-                **_analysis_payload(
-                    warnings=["未找到可用于关联分析的掘进动态数据"],
-                    conclusion_hint="需要先导入对应项目和环号范围内的掘进动态数据。",
-                ),
-            })
-
-        ring_range = _parse_ring_range(params.get('ring_range', []))
-        min_ring = ring_range[0] if ring_range else min(r['ring_int'] for r in tunneling_records)
-        max_ring = ring_range[1] if ring_range else max(r['ring_int'] for r in tunneling_records)
-
-        change_qs = _active_detail_query(params).select_related('warehouse__project')
-        stratum_qs = StratumBasicInfo.objects.select_related('project')
+        ring_range = _checked_ring_range(params.get('ring_range'))
+        change_qs = _active_detail_query({'project_id': project_id}).select_related('warehouse__project')
+        stratum_qs = scoped_queryset(StratumBasicInfo.objects.all()).select_related('project')
         if project_id:
             change_qs = change_qs.filter(warehouse__project__project_id=project_id)
             stratum_qs = stratum_qs.filter(project__project_id=project_id)
+        change_qs = change_qs.filter(warehouse__ring_no__regex=r'^\d+$').annotate(ring_int=Cast('warehouse__ring_no', IntegerField()))
+        stratum_qs = stratum_qs.filter(ring_no__regex=r'^\d+$').annotate(ring_int=Cast('ring_no', IntegerField()))
 
         change_records = list(
-            change_qs.annotate(ring_int=Cast('warehouse__ring_no', output_field=IntegerField()))
-            .filter(ring_int__gte=min_ring, ring_int__lte=max_ring)
-            .values('ring_int', 'is_replaced', 'wear_condition')
+            change_qs.values('ring_int', 'is_replaced', 'wear_condition', 'warehouse__open_time')
         )
         stratum_records = list(
-            stratum_qs.annotate(ring_int=Cast('ring_no', output_field=IntegerField()))
-            .filter(ring_int__gte=min_ring, ring_int__lte=max_ring)
-            .values('ring_int', 'stratum_type_codes')
+            stratum_qs.values('ring_int', 'stratum_type_codes', 'create_datetime')
         )
+        if not ring_range:
+            rings = [row['ring_int'] for row in tunneling_records + change_records]
+            ring_range = [min(rings), max(rings)] if rings else None
+        min_ring, max_ring = ring_range if ring_range else (0, -1)
+
+        def _coverage_range(records, time_field=None):
+            rings = [row['ring_int'] for row in records]
+            result = {'ring_min': min(rings) if rings else None, 'ring_max': max(rings) if rings else None}
+            if time_field:
+                times = [row[time_field] for row in records if row[time_field] is not None]
+                result.update(time_min=min(times).strftime('%Y-%m-%d %H:%M:%S') if times else None,
+                              time_max=max(times).strftime('%Y-%m-%d %H:%M:%S') if times else None)
+            return result
+
+        change_coverage = _coverage_range(change_records, 'warehouse__open_time')
+        coverage = {
+            'tunneling': {'record_count': len(tunneling_records), **_coverage_range(tunneling_records, 'record_time')},
+            'tool_change': {'observation_count': len(change_records),
+                            'ring_min': change_coverage['ring_min'], 'ring_max': change_coverage['ring_max'],
+                            'open_time_min': change_coverage['time_min'], 'open_time_max': change_coverage['time_max']},
+            'stratum': {'record_count': len(stratum_records), 'ring_count': len({row['ring_int'] for row in stratum_records}),
+                        **_coverage_range(stratum_records, 'create_datetime')},
+        }
+
+        # 覆盖说明使用全项目；分段计算只使用分析窗口内的记录。
+        tunneling_records = [r for r in tunneling_records if min_ring <= r['ring_int'] <= max_ring]
+        change_records = [r for r in change_records if min_ring <= r['ring_int'] <= max_ring]
+        stratum_records = [r for r in stratum_records if min_ring <= r['ring_int'] <= max_ring]
+        window_counts = {'tunneling': len(tunneling_records), 'tool_change': len(change_records), 'stratum': len(stratum_records)}
 
         segments = []
+        comparable_segments = []
         seg_start = min_ring
         while seg_start <= max_ring:
             seg_end = min(seg_start + interval - 1, max_ring)
@@ -2017,63 +2334,49 @@ def query_tunneling_wear_correlation(params_str: str) -> str:
                 "abnormal_wear_count": abnormal_wear_count,
                 "main_stratum": main_stratum,
             })
+            # 同一粗分段内环号不重合也不能对照，避免第 5 环与第 15 环被当成共同覆盖。
+            if {row['ring_int'] for row in t_seg} & {row['ring_int'] for row in c_seg}:
+                comparable_segments.append(segments[-1])
             seg_start += interval
 
-        max_torque_seg = max(segments, key=lambda item: item.get('avg_torque') or 0)
-        max_wear_seg = max(segments, key=lambda item: item.get('abnormal_wear_count') or 0)
-        max_replacement_seg = max(segments, key=lambda item: item.get('replacement_count') or 0)
-
         facts = [
             f"共形成 {len(segments)} 个环号分段",
-            f"掘进动态记录 {len(tunneling_records)} 条，换刀明细记录 {len(change_records)} 条，地层记录 {len(stratum_records)} 条",
-            f"平均扭矩最高区段为 {max_torque_seg.get('ring_range')}，平均扭矩 {max_torque_seg.get('avg_torque')}kNm",
-            f"异常磨损最多区段为 {max_wear_seg.get('ring_range')}，异常磨损 {max_wear_seg.get('abnormal_wear_count')} 次",
-            f"更换次数最多区段为 {max_replacement_seg.get('ring_range')}，更换 {max_replacement_seg.get('replacement_count')} 次",
+            f"掘进动态记录 {len(tunneling_records)} 条，现场观测记录 {len(change_records)} 条，地层记录 {len(stratum_records)} 条",
         ]
-        facts = [
-            f"共形成 {len(segments)} 个环号分段",
-            f"掘进动态记录 {len(tunneling_records)} 条，换刀明细记录 {len(change_records)} 条，地层记录 {len(stratum_records)} 条",
-            f"平均扭矩最高区段为 {max_torque_seg.get('ring_range')}，平均扭矩 {max_torque_seg.get('avg_torque')}kNm",
-        ]
-        if max_wear_seg.get('abnormal_wear_count', 0) > 0:
-            facts.append(
-                f"异常磨损最多区段为 {max_wear_seg.get('ring_range')}，异常磨损 {max_wear_seg.get('abnormal_wear_count')} 次"
-            )
-        if max_replacement_seg.get('replacement_count', 0) > 0:
-            facts.append(
-                f"更换次数最多区段为 {max_replacement_seg.get('ring_range')}，更换 {max_replacement_seg.get('replacement_count')} 次"
-            )
         highlights = []
-        if max_wear_seg.get('abnormal_wear_count', 0) > 0 and max_torque_seg.get('ring_range') == max_wear_seg.get('ring_range'):
-            highlights.append("平均扭矩最高区段与异常磨损最多区段重合，掘进负荷与刀具异常磨损可能存在关联")
-        if max_replacement_seg.get('replacement_count', 0) > 0 and max_torque_seg.get('ring_range') == max_replacement_seg.get('ring_range'):
-            highlights.append("平均扭矩最高区段与换刀最多区段重合，应重点复核该区段刀具受力和地层条件")
-        if max_torque_seg.get('main_stratum'):
-            highlights.append(f"平均扭矩最高区段的主要地层为 {max_torque_seg.get('main_stratum')}")
-        if not highlights:
-            highlights.append("当前分段内掘进峰值与换刀/异常磨损高发区段未明显重合")
-
         warnings = []
-        if len(segments) < 2:
-            warnings.append("有效分段少于 2 个，关联判断仅供参考")
+        if len(comparable_segments) < 2:
+            warnings.append('掘进数据和换刀数据没有足够的共同环段，下面只分别列出两类数据，不做对照。')
+        else:
+            torque_segments = [s for s in comparable_segments if s['avg_torque'] is not None]
+            if torque_segments:
+                max_torque_seg = max(torque_segments, key=lambda item: item['avg_torque'])
+                facts.append(f"可比分段中平均扭矩最高区段为 {max_torque_seg['ring_range']}，平均扭矩 {max_torque_seg['avg_torque']}kNm")
         if not stratum_records:
-            warnings.append("未找到对应环号范围内的地层数据，无法判断地层影响")
+            warnings.append("未找到对应环号范围内的地层数据")
         if not change_records:
-            warnings.append("未找到对应环号范围内的换刀明细，无法判断刀具磨损关联")
+            warnings.append("未找到对应环号范围内的现场观测记录")
 
         result = {
             "total_records": len(tunneling_records),
-            "ring_range": [min_ring, max_ring],
+            "ring_range": ring_range,
             "interval": interval,
             "segments": segments,
+            "coverage": coverage, "window_counts": window_counts, "comparable_segment_count": len(comparable_segments),
+            "segments_missing_tunneling": [s['ring_range'] for s in segments if not s['tunneling_count']],
+            "segments_missing_observation": [s['ring_range'] for s in segments if not s['tool_change_count']],
+            "scope": {**params, 'ring_range': ring_range, 'interval': interval},
+            "note": "这里只是把掘进、换刀和地层数据按环段并列，不代表它们之间有关联或因果。main_stratum 是历史地层标签出现次数最多的类别，不是面积最多。可比分段要求两类记录在段内至少有一个共同环号。",
         }
         result.update(_analysis_payload(
-            summary={"ring_range": [min_ring, max_ring], "interval": interval, "segment_count": len(segments)},
+            summary={"ring_range": ring_range, "interval": interval, "segment_count": len(segments)},
             facts=facts,
             highlights=highlights,
             warnings=warnings,
-            conclusion_hint="该结果用于判断掘进负荷、地层条件与刀具磨损/换刀之间是否存在同区段聚集现象。",
+            conclusion_hint="先核对各类数据覆盖范围；并列数据不能用来判断关联或原因。",
         ))
+        if not tunneling_records:
+            result['message'] = '未找到符合条件的掘进动态数据'
         return _build_json(result)
     except Exception as e:
         return _build_json({"error": f"掘进-磨损关联分析失败：{str(e)}"})
@@ -2084,8 +2387,8 @@ def query_position_stratum_impact(params_str: str) -> str:
     try:
         params = json.loads(params_str)
         project_id = params.get('project_id')
-        tool_type = params.get('tool_type')
-        ring_range = params.get('ring_range', [])
+        tool_type = _checked_tool_type(params.get('tool_type'))
+        ring_range = _checked_ring_range(params.get('ring_range'))
         top_n = params.get('top_n', 10)
 
         change_query = _active_detail_query(params).select_related('warehouse__project').filter(is_replaced=True)
@@ -2099,9 +2402,12 @@ def query_position_stratum_impact(params_str: str) -> str:
             ).filter(ring_int__gte=ring_range[0], ring_int__lte=ring_range[1])
 
         if not change_query.exists():
-            return json.dumps({"message": "未找到换刀记录", "total": 0}, ensure_ascii=False)
+            return _build_json({"message": "未找到换刀记录", "total": 0, "top_positions": [],
+                                "scope": {**params, 'replacement_count': 0},
+                                "note": "标签关联次数按每次更换所在开仓的历史地层标签计数，一次更换可能对应多个标签，所以会多于实际更换次数。",
+                                **_analysis_payload(warnings=['未找到实际更换记录'])})
 
-        stratum_query = StratumBasicInfo.objects.all()
+        stratum_query = scoped_queryset(StratumBasicInfo.objects.all())
         if project_id:
             stratum_query = stratum_query.filter(project__project_id=project_id)
         stratum_map = {}
@@ -2112,10 +2418,12 @@ def query_position_stratum_impact(params_str: str) -> str:
                 ]
 
         position_stratum = {}
+        replacements = {}
         for change in change_query:
             pos = change.cutter_position_no
             if not pos:
                 continue
+            replacements[pos] = replacements.get(pos, 0) + 1
             strata = stratum_map.get(str(change.warehouse.ring_no).strip(), ['未知地层'])
             if pos not in position_stratum:
                 position_stratum[pos] = {}
@@ -2124,15 +2432,17 @@ def query_position_stratum_impact(params_str: str) -> str:
                 position_stratum[pos][name] = position_stratum[pos].get(name, 0) + 1
 
         ranked = sorted(
-            [{"position": pos, "total": sum(v.values()), "by_stratum": v}
+            [{"position": pos, "total": sum(v.values()), "by_stratum": v, "replacement_count": replacements[pos]}
              for pos, v in position_stratum.items()],
             key=lambda x: x['total'], reverse=True
         )[:top_n]
 
         return json.dumps({
             "INSTRUCTION": "以下是真实数据库数据，回答时必须原样使用这些数字",
-            "note": "by_stratum按开仓点标签计数；一条记录可对应多个标签，total不可解释为独立更换总数或地层因果影响强度。",
+            "note": "by_stratum按开仓点标签计数；一条记录可对应多个标签，total不可解释为独立更换总数或地层因果影响强度。标签关联次数按每次更换所在开仓的历史地层标签计数，一次更换可能对应多个标签，所以会多于实际更换次数。",
             "top_positions": ranked,
+            "scope": {**params, 'replacement_count': change_query.count()},
+            **_analysis_payload(facts=[f'共查询到 {change_query.count()} 次实际更换']),
         }, ensure_ascii=False)
 
     except Exception as e:

@@ -48,35 +48,3 @@ export function BatchDel(ids: string[]) {
 		data: { ids }
 	});
 }
-
-export function exportData(params: any) {
-	return request({
-		url: apiPrefix + 'export_data/',
-		method: 'get',
-		params: params,
-	});
-}
-
-export function importData(data: any) {
-	return request({
-		url: apiPrefix + 'import_data/',
-		method: 'post',
-		data: data,
-	});
-}
-
-export function downloadTemplate() {
-	return request({
-		url: apiPrefix + 'import_data/',
-		method: 'get',
-		responseType: 'blob',
-	});
-}
-
-export function importFromPdf(params: { project: number; dry_run?: boolean }) {
-	return request({
-		url: apiPrefix + 'import_from_pdf/',
-		method: 'post',
-		data: params,
-	});
-}

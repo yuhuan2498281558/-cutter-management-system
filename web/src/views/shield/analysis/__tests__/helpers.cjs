@@ -45,6 +45,7 @@ function setup(t, filename, options = {}) {
     window: { addEventListener() {}, removeEventListener() {}, innerWidth: 1366, setTimeout, clearTimeout },
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,
+    ...options.globals,
   };
   const vueMock = { ...vue, ...Object.fromEntries(Object.keys(hooks).map(key => [key, fn => hooks[key].push(fn)])) };
   const cache = new Map();
@@ -59,8 +60,8 @@ function setup(t, filename, options = {}) {
     if (name === '/@/utils/service') return { request };
     if (name === 'vue-router') return { useRouter: () => ({ push: value => { routes.push(value); return Promise.resolve(); } }) };
     if (name === 'element-plus') return { ElMessage: Object.fromEntries(['success', 'warning', 'error', 'info'].map(key => [key, value => notices.push([key, value])])) };
-    if (name === 'echarts') return { init: element => {
-      const chart = { element, options: [], disposed: false, width: 900,
+    if (name === 'echarts') return { registerTheme() {}, init: (element, theme) => {
+      const chart = { element, theme, options: [], disposed: false, width: 900,
         getDom: () => element, getWidth() { return this.width; }, getHeight: () => 360,
         isDisposed() { return this.disposed; }, setOption(value) { this.options.push(value); },
         resize() {}, clear() { this.options = []; }, dispose() { this.disposed = true; }, on() {}, off() {},
@@ -81,9 +82,12 @@ function setup(t, filename, options = {}) {
   const state = scope.run(() => component.setup(props, { expose() {}, emit: (...args) => events.push(plain(args)) }));
   const { render } = compile(template.code, name => {
     assert.equal(name, 'vue');
-    return { ...vue, resolveComponent: name => ({ name }), resolveDirective: () => ({}) };
+    // 没有组件实例时 Vue 的 withDirectives 会丢掉指令、renderSlot 会报错；这里把指令和值留在 vnode 上，插槽按传入的 slots 渲染
+    const withDirectives = (vnode, directives) => Object.assign(vnode, { dirs: directives.map(([dir, value]) => ({ dir, value })) });
+    const renderSlot = (slots, slotName, slotProps = {}, fallback) => vue.createVNode(vue.Fragment, null, (slots[slotName] || fallback || (() => []))(slotProps));
+    return { ...vue, withDirectives, renderSlot, resolveComponent: name => ({ name }), resolveDirective: name => ({ name }) };
   }, globals);
-  const context = vue.proxyRefs({ ...state, ...vue.toRefs(props) });
+  const context = vue.proxyRefs({ $slots: options.slots || {}, ...state, ...vue.toRefs(props) });
   let destroyed = false;
   const unmount = () => {
     if (destroyed) return;
@@ -96,4 +100,8 @@ function setup(t, filename, options = {}) {
     mount: async () => { await Promise.all(hooks.onMounted.map(fn => fn())); await settle(); },
   };
 }
-module.exports = { root, plain, settle, deferred, compile, descendants, setup };
+// 节点里显示出来的文字（不含 v-if 留下的注释占位）
+const textOf = node => descendants(node).filter(item => item.type !== vue.Comment).map(item => typeof item.children === 'string' ? item.children : '').join('');
+// 只加载图表配置模块时用：chartTheme.ts 在加载时向 echarts 注册主题
+const echartsStub = { registerTheme() {} };
+module.exports = { root, plain, settle, deferred, compile, descendants, textOf, setup, echartsStub };

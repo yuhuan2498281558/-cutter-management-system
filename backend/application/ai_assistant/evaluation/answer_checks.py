@@ -56,12 +56,41 @@ def check_answer(tool, answer, expected):
         if any(len(row) != len(headers) for row in rows):
             errors.append("Answer table has a different number of cells than its header")
 
-    if tool not in {"query_tool_change_trend", "compare_manufacturer_performance"}:
+    if tool not in {"query_tool_change_data", "query_tool_change_trend", "compare_manufacturer_performance"}:
         return {"checks": checks, "failures": errors}
     if expected.get("total") == 0 or expected.get("total_records") == 0:
         checks.append("empty_result")
         if not re.search(r"未找到|暂无|没有.*记录|无.*数据", answer):
             errors.append("Empty result is not explicitly identified in the answer")
+        return {"checks": checks, "failures": errors}
+
+    if tool == "query_tool_change_data":
+        checks.append("change_counts_and_rates")
+        table = next(((headers, rows) for headers, rows in tables
+                      if _column(headers, r"观测.*数|记录数|检查.*数") is not None
+                      and _column(headers, r"更换次数|已更换|更换数") is not None), None)
+        if table is None:
+            text = answer.replace('**', '').replace(',', '')
+            for pattern, field in ((r'共\s*(\d+)\s*条现场观测记录', 'total_records'),
+                                   (r'实际更换\s*(\d+)\s*次', 'replaced_count')):
+                match = re.search(pattern, text)
+                if not match or int(match[1]) != expected.get(field):
+                    errors.append(f"Answer {field} differs from independent facts")
+        elif len(table[1]) != 1:
+            errors.append("Answer summary table must contain one row")
+        else:
+            headers, rows = table
+            row = rows[0]
+            if len(row) == len(headers):
+                for pattern, field in ((r"观测.*数|记录数|检查.*数", "total_records"),
+                                       (r"更换次数|已更换|更换数", "replaced_count")):
+                    if _number(row[_column(headers, pattern)]) != expected.get(field):
+                        errors.append(f"Answer {field} differs from independent facts")
+                rate_col = _column(headers, "更换率")
+                if rate_col is not None:
+                    rate = _number(row[rate_col])
+                    if rate is None or not math.isclose(rate, 100 * expected['replaced_count'] / expected['total_records'], abs_tol=0.051):
+                        errors.append("Answer replacement rate differs from independent facts")
         return {"checks": checks, "failures": errors}
 
     trend = tool == "query_tool_change_trend"
@@ -101,6 +130,9 @@ def check_answer(tool, answer, expected):
             rate = _number(row[rate_col])
             if rate is None or not math.isclose(rate, 100 * fact["replaced"] / fact["total"], abs_tol=0.051):
                 errors.append(f"Answer replacement rate differs from independent facts: {key}")
+        elif trend and rate_col is not None:
+            if not re.search(r"暂无|无样本", row[rate_col]) or re.search(r"\d\s*%", row[rate_col]):
+                errors.append(f"Zero denominator must display 暂无 or 无样本: {key}")
     if len(seen) < min(len(wanted), 12):
         errors.append("Answer omitted expected comparison rows")
     if len(seen) < len(wanted):

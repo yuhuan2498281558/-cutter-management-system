@@ -252,6 +252,9 @@ const form = reactive<any>({
   repair_price: null,
   remark: '',
 });
+// Scalar fields that held a value when the record loaded. Clearing one of them
+// must be submitted as '' because the backend only updates fields it receives.
+let loadedScalarKeys = new Set<string>();
 
 const toolParentType = computed(() => row.value?.tool_parent_type || '');
 const trajectoryDisplay = computed(() => row.value?.trajectory?.display || '待按最终图纸核对');
@@ -278,6 +281,7 @@ function resetForm() {
     scraper_wear_amount: null, scraper_chipped: null, scraper_broken: null, scraper_detached: null,
     repair_result: '', repair_price: null, remark: '',
   });
+  loadedScalarKeys = new Set();
   existingPhotos.value = [];
   resolvedOldToolNumber.value = '';
   inspectionStatus.value = 'PENDING_VENDOR_FEEDBACK';
@@ -295,6 +299,9 @@ function applyRecord(record: any) {
   form.bearing_failure_reasons = record.bearing_failure_reasons || [];
   form.hub_failure_reasons = record.hub_failure_reasons || [];
   existingPhotos.value = record.photos || [];
+  loadedScalarKeys = new Set(Object.keys(form).filter(key => (
+    !Array.isArray(form[key]) && form[key] !== null && form[key] !== undefined && form[key] !== ''
+  )));
 }
 
 function invalidateLoad() {
@@ -354,6 +361,8 @@ function appendValue(data: FormData, key: string, value: any) {
     data.append(key, JSON.stringify(value));
   } else if (value !== undefined && value !== null) {
     data.append(key, String(value));
+  } else if (loadedScalarKeys.has(key)) {
+    data.append(key, '');
   }
 }
 

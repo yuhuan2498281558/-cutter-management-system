@@ -13,13 +13,13 @@ import json
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from django.db import transaction
 from django.db.models import Count, Max
 
-from langchain_core.messages import AIMessage, HumanMessage, message_to_dict
+from .messages import AIMessage, HumanMessage, message_to_dict
 from sqlalchemy import (
     Column, Index, Integer, MetaData, String, Table, Text, create_engine,
     func, insert, select, update,
@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .models import AssistantMemoryMessage, AssistantMemoryScope
+from .context_events import ContextEventStore
 from .token_estimation import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,8 @@ class MemorySnapshot:
     latest_sequence: int = 0
     summary_messages: list[StoredMessage] | None = field(default=None, repr=False)
     summary_source_truncated: bool = field(default=False, repr=False)
+    context_events: list = field(default_factory=list, repr=False)
+    withheld_turns: int = 0
 
     @property
     def last_sequence(self) -> int:
@@ -138,6 +141,7 @@ class MemoryService:
                             for table in (_legacy_messages, _legacy_scopes):
                                 connection.execute(CreateTable(table, if_not_exists=True))
                             connection.execute(CreateIndex(_legacy_message_index, if_not_exists=True))
+                            ContextEventStore.create(connection)
                     except Exception:
                         engine.dispose()
                         raise
@@ -165,6 +169,31 @@ class MemoryService:
             except BaseException:
                 connection.rollback()
                 raise
+
+    @contextmanager
+    def _legacy_read(self, session_id):
+        """只读快照，不占写锁，其他用户的保存和重置不用等这里读完。
+
+        作用域行还不存在时先短暂取写锁建好：全量 reset 只递增已有作用域，
+        没有这一行，读到旧快照后的迟到写入就不会被拒绝。
+        """
+        for _ in range(2):
+            with self._get_legacy_engine().connect() as connection:
+                if connection.dialect.name == "sqlite":
+                    connection.exec_driver_sql("BEGIN")
+                else:
+                    connection.begin()
+                try:
+                    scope = connection.execute(select(_legacy_scopes).where(
+                        _legacy_scopes.c.session_id == session_id,
+                    )).mappings().one_or_none()
+                    if scope is not None:
+                        yield connection, scope
+                        return
+                finally:
+                    connection.rollback()
+            with self._legacy_transaction() as connection:
+                self._legacy_scope(connection, session_id)
 
     @staticmethod
     def _legacy_scope(connection, session_id):
@@ -217,10 +246,6 @@ class MemoryService:
             dict(row.metadata) if isinstance(row.metadata, dict) else {},
         ) for row in rows]
 
-    @staticmethod
-    def _context_limit():
-        return min(100, _int_setting("AI_MEMORY_RECENT_TURNS", 3) * 2)
-
     def _get_scope(self, scope_key: str, owner_id: int | None = None) -> AssistantMemoryScope:
         defaults = {"owner_id": owner_id} if owner_id is not None else {}
         scope, created = AssistantMemoryScope.objects.get_or_create(
@@ -235,29 +260,28 @@ class MemoryService:
     def load(self, scope_key: str, owner_id: int | None = None) -> MemorySnapshot:
         if self.backend == "legacy":
             session_id = self.legacy_session_id(scope_key)
-            with self._legacy_transaction() as connection:
-                scope = self._legacy_scope(connection, session_id)
-                filtered = _legacy_messages.c.session_id == session_id
-                count, last = connection.execute(select(
-                    func.count(), func.max(_legacy_messages.c.id),
-                ).where(filtered)).one()
-                rows = list(connection.execute(select(_legacy_messages).where(filtered)
-                    .order_by(_legacy_messages.c.id.desc()).limit(self._context_limit())).mappings())
-                messages, saved_slots = self._decode_legacy_rows(reversed(rows))
-                slots = json.loads(scope["slots"]) if scope["slots"] is not None else saved_slots or {}
-                return MemorySnapshot(
-                    scope_key=scope_key, slots=slots, messages=messages, backend="legacy",
-                    generation=scope["generation"], message_count=count, latest_sequence=last or 0,
-                )
+            with self._legacy_read(session_id) as (connection, scope):
+                rows = list(connection.execute(select(_legacy_messages)
+                    .where(_legacy_messages.c.session_id == session_id)
+                    .order_by(_legacy_messages.c.id)).mappings())
+                events = ContextEventStore.load(connection, scope_key, scope["generation"])
+            # 解码放在事务之外，长历史也不拖住数据库
+            messages, saved_slots = self._decode_legacy_rows(rows)
+            slots = json.loads(scope["slots"]) if scope["slots"] is not None else saved_slots or {}
+            return MemorySnapshot(
+                scope_key=scope_key, slots=slots, messages=messages, backend="legacy",
+                generation=scope["generation"], message_count=len(rows),
+                latest_sequence=rows[-1]["id"] if rows else 0, context_events=events,
+            )
 
         with transaction.atomic():
             scope = self._get_scope(scope_key, owner_id=owner_id)
             scope = AssistantMemoryScope.objects.select_for_update().get(pk=scope.pk)
             stats = scope.messages.aggregate(count=Count("id"), last=Max("sequence"))
-            rows = list(scope.messages.order_by("-sequence")[:self._context_limit()])
+            rows = list(scope.messages.order_by("sequence"))
             return MemorySnapshot(
                 scope_key=scope_key, summary=scope.summary or "", slots=dict(scope.slots or {}),
-                messages=self._stored_rows(reversed(rows)),
+                messages=self._stored_rows(rows),
                 summary_through_sequence=scope.summary_through_sequence,
                 summary_revision=scope.summary_revision, revision=scope.revision,
                 backend="django", generation=scope.generation,
@@ -272,8 +296,7 @@ class MemoryService:
             raise ValueError("before_sequence must be positive")
         if self.backend == "legacy":
             session_id = self.legacy_session_id(scope_key)
-            with self._legacy_transaction() as connection:
-                scope = self._legacy_scope(connection, session_id)
+            with self._legacy_read(session_id) as (connection, scope):
                 filtered = _legacy_messages.c.session_id == session_id
                 count = connection.scalar(select(func.count()).select_from(_legacy_messages).where(filtered))
                 query = select(_legacy_messages).where(filtered)
@@ -281,10 +304,10 @@ class MemoryService:
                     query = query.where(_legacy_messages.c.id < int(before_sequence))
                 rows = list(connection.execute(query.order_by(_legacy_messages.c.id.desc())
                                               .limit(limit + 1)).mappings())
-                selected = rows[:limit]
-                messages, _ = self._decode_legacy_rows(reversed(selected))
-                generation = scope["generation"]
-                cursor = selected[-1]["id"] if selected else None
+            selected = rows[:limit]
+            messages, _ = self._decode_legacy_rows(reversed(selected))
+            generation = scope["generation"]
+            cursor = selected[-1]["id"] if selected else None
         else:
             with transaction.atomic():
                 scope = self._get_scope(scope_key, owner_id=owner_id)
@@ -309,19 +332,42 @@ class MemoryService:
         recent_turns: int | None = None,
         budget: int | None = None,
     ) -> list[StoredMessage]:
-        """Return recent, unsummarized complete turns inside the memory budget."""
-
-        recent_turns = recent_turns or _int_setting("AI_MEMORY_RECENT_TURNS", 3)
-        budget = budget or _int_setting("AI_MEMORY_CONTEXT_TOKEN_BUDGET", 1200)
-        eligible = [
-            item
-            for item in snapshot.messages
-            if item.sequence > snapshot.summary_through_sequence
-        ]
-        turns = self._complete_turns(eligible)[-recent_turns:]
-        while turns and sum(self._message_tokens(item) for turn in turns for item in turn) > budget:
-            turns.pop(0)
+        """返回全部完整轮次，阶段 B 再处理压缩。"""
+        turns = self._complete_turns(snapshot.messages)
         return [item for turn in turns for item in turn]
+
+    def append_compaction(self, snapshot: MemorySnapshot, project_id, payload) -> MemorySnapshot | None:
+        """追加一次整理记录；对话已被重置（generation 变了）时不写，返回 None。"""
+        if snapshot.backend != "legacy":
+            return None
+        turn = ContextEventStore.compaction_turn(snapshot.scope_key, snapshot.generation, project_id, payload)
+        with self._legacy_transaction() as connection:
+            scope = self._legacy_scope(connection, self.legacy_session_id(snapshot.scope_key))
+            if scope["generation"] != snapshot.generation:
+                return None
+            ContextEventStore.append_compaction(connection, turn)
+        return replace(snapshot, context_events=[*snapshot.context_events, turn])
+
+    def protocol_history(self, snapshot, project_id=None):
+        messages, stats, anchor = ContextEventStore.replay(
+            self._complete_turns(snapshot.messages), snapshot.context_events, project_id,
+        )
+        stats["other_project_turns"] += snapshot.withheld_turns
+        return messages, stats, anchor
+
+    def context_info(self, snapshot: MemorySnapshot, include_recent: bool = True) -> dict:
+        recent = self.context_messages(snapshot) if include_recent else []
+        django = snapshot.backend == "django"
+        return {
+            "backend": self.backend if snapshot.backend == "ablate" else snapshot.backend,
+            "recent_turns": None,
+            "recent_budget": None,
+            "recent_tokens": sum(self._message_tokens(item) for item in recent),
+            "included_turns": len(recent) // 2,
+            "summary_tokens": estimate_tokens(snapshot.summary),
+            "summary_trigger_tokens": _int_setting("AI_MEMORY_SUMMARY_TRIGGER_TOKENS", 1800) if django else None,
+            "pending_tokens": sum(item.token_count for item in self.summary_source(snapshot)) if django else None,
+        }
 
     @staticmethod
     def _complete_turns(messages):
@@ -436,6 +482,8 @@ class MemoryService:
         owner_id: int | None = None,
         metadata: dict | None = None,
         expected_generation: int | None = None,
+        context_messages: list | None = None,
+        usage: dict | None = None,
     ) -> MemorySnapshot:
         if not ai_content:
             return self.load(scope_key, owner_id=owner_id)
@@ -458,6 +506,7 @@ class MemoryService:
             appended = self._append_backend_turn(
                 scope_key, user_content, ai_content, slots=slots, owner_id=owner_id,
                 metadata=metadata, expected_generation=expected_generation,
+                context_messages=context_messages, usage=usage,
             )
             if appended and mirror is not None:
                 try:
@@ -480,7 +529,8 @@ class MemoryService:
         return self._get_scope(scope_key, owner_id=owner_id).generation
 
     def _append_backend_turn(self, scope_key, user_content, ai_content, slots=None,
-                             owner_id=None, metadata=None, expected_generation=None):
+                             owner_id=None, metadata=None, expected_generation=None,
+                             context_messages=None, usage=None):
         if self.backend == "django":
             return self._append_django_turn(
                 scope_key, user_content, ai_content, slots=slots, owner_id=owner_id,
@@ -498,8 +548,8 @@ class MemoryService:
                 else:
                     rows = list(connection.execute(select(_legacy_messages).where(
                         _legacy_messages.c.session_id == session_id,
-                    ).order_by(_legacy_messages.c.id.desc()).limit(self._context_limit())).mappings())
-                    _, saved_slots = self._decode_legacy_rows(reversed(rows))
+                    ).order_by(_legacy_messages.c.id)).mappings())
+                    _, saved_slots = self._decode_legacy_rows(rows)
                     current_slots = saved_slots or {}
             messages = [HumanMessage(content=user_content, additional_kwargs={
                 "memory_slots": dict(current_slots),
@@ -509,13 +559,18 @@ class MemoryService:
             })]
             # One transaction owns both inserts and slots, including rollback
             # when the second insert fails. No SQLChat per-message commits.
-            connection.execute(insert(_legacy_messages), [{
-                "session_id": session_id,
-                "message": json.dumps(message_to_dict(message), ensure_ascii=False),
-            } for message in messages])
+            sequences = [connection.execute(insert(_legacy_messages).values(
+                session_id=session_id,
+                message=json.dumps(message_to_dict(message), ensure_ascii=False),
+            )).inserted_primary_key[0] for message in messages]
             connection.execute(update(_legacy_scopes).where(
                 _legacy_scopes.c.session_id == session_id,
             ).values(slots=json.dumps(current_slots, ensure_ascii=False)))
+            if context_messages is not None:
+                ContextEventStore.append(
+                    connection, scope_key, scope["generation"], (metadata or {}).get("project_id"),
+                    sequences, context_messages, usage, access_stamp=(metadata or {}).get("access_stamp"),
+                )
         return True
 
     def _append_django_turn(
@@ -624,6 +679,7 @@ class MemoryService:
                     list(connection.execute(select(_legacy_scopes.c.session_id)
                          .order_by(_legacy_scopes.c.session_id).with_for_update()))
                 connection.execute(delete)
+                ContextEventStore.clear(connection, scope_key)
                 connection.execute(change.values(
                     generation=_legacy_scopes.c.generation + 1, slots="{}",
                 ))

@@ -40,6 +40,7 @@ export interface AnalysisMeta {
   excluded_invalid_ring_opening_count?: number;
   filter_capabilities?: string[];
   blade_track_basis?: string;
+  stratum_basis?: string;
 }
 
 export interface CostSources {
@@ -185,6 +186,8 @@ export interface BrandCostItem {
   total_cost: number;
   count: number;
   opening_count?: number;
+  installation_count?: number;
+  legacy_replacement_count?: number;
   abnormal_count?: number;
   normal_count?: number;
   avg_cost: number | null;
@@ -208,13 +211,6 @@ export interface BrandPriceTrendSeries {
   count_data?: number[];
 }
 
-export interface BrandPriceTrendData {
-  meta?: AnalysisMeta;
-  manufacturers: string[];
-  time_axis: { ring_no: string; open_time: string }[];
-  series: BrandPriceTrendSeries[];
-}
-
 export interface BrandPerfTrendSeries {
   manufacturer: string;
   data: (number | null)[];
@@ -222,13 +218,18 @@ export interface BrandPerfTrendSeries {
   abnormal_count_data?: number[];
 }
 
-export interface BrandPerformanceTrendData {
+/** 厂家对比一次取齐：综合对照表、安装均价趋势（series）和旧刀表现趋势 */
+export interface BrandComparisonData {
   meta?: AnalysisMeta;
+  items: BrandCostItem[];
   manufacturers: string[];
   time_axis: { ring_no: string; open_time: string }[];
+  series: BrandPriceTrendSeries[];
   abnormal_rate_series: BrandPerfTrendSeries[];
   normal_rate_series: BrandPerfTrendSeries[];
   lifespan_series: BrandPerfTrendSeries[];
+  unknown_manufacturer_count?: number;
+  unknown_manufacturer_amount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -304,4 +305,127 @@ export interface CustomChartData {
   series: CustomLineSeries[] | CustomMatrixSeries[];
   rows?: Record<string, any>[];
   record_count: number;
+}
+
+// 寿命与厂家（life_mileage）：不少于 5 段给中位数和四分位，否则 values 列出各段的值
+export interface MileageSpread {
+  count: number;
+  median?: number;
+  q1?: number;
+  q3?: number;
+  values?: number[];
+}
+
+export interface MileageSummary {
+  removed_count: number;
+  life_km: MileageSpread | null;
+  abnormal_count: number;
+  classified_count: number;
+  unclassified_count: number;
+  wear_per_100km: MileageSpread | null;
+  priced_count: number;
+  cost_per_km: number | null;
+  in_service_count: number;
+  in_service_km: MileageSpread | null;
+}
+
+export interface MileageCell extends MileageSummary {
+  manufacturer: string;
+}
+
+export interface MileageTrajectory {
+  radius_mm: number;
+  positions: string[];
+  summary: MileageSummary;
+  cells: MileageCell[];
+}
+
+export interface MileageBand {
+  radius_min: number;
+  radius_max: number;
+  trajectory_count: number;
+  summary: MileageSummary;
+  cells: MileageCell[];
+  trajectories: MileageTrajectory[];
+}
+
+export interface MileageGroup {
+  tool_parent_type: string;
+  label: string;
+  manufacturers: string[];
+  summary: MileageSummary;
+  bands: MileageBand[];
+}
+
+/** 圈数来源：开仓读数差、掘进计数器、掘进积分推算、参考值估算 */
+export type RevolutionSource = 'reading' | 'counter' | 'integrated' | 'reference';
+
+/** 一段（或在役刀具）的圈数及来源；实测部分与积分推算都有时给出对照 */
+export interface MileageRevolutions {
+  revolutions: number;
+  revolution_sources: Record<RevolutionSource, number>;
+  estimated_share: number | null;
+  integrated_check: { measured: number; integrated: number } | null;
+}
+
+export interface MileageSegment extends MileageRevolutions {
+  detail_id: number;
+  installation_detail_id: number;
+  cutter_position_no: string;
+  tool_parent_type: string;
+  radius_mm: number;
+  manufacturer: string;
+  installation_ring_no: string;
+  ring_no: string;
+  service_rings: number;
+  km: number;
+  wear_state: 'NORMAL' | 'ABNORMAL' | null;
+  blade_wear_amount: number | null;
+  wear_per_100km: number | null;
+  price: number | null;
+}
+
+export interface MileageInService extends MileageRevolutions {
+  detail_id: number;
+  cutter_position_no: string;
+  tool_parent_type: string;
+  radius_mm: number;
+  manufacturer: string;
+  installation_ring_no: string;
+  through_ring_no: string;
+  km: number;
+}
+
+export interface MileagePosition {
+  tool_parent_type: string;
+  cutter_position_no: string;
+  radius_mm: number;
+  removed_count: number;
+  removed_km: number;
+  in_service_km: number | null;
+  covered_km: number;
+}
+
+export interface LifeMileageData {
+  meta?: AnalysisMeta;
+  groups: MileageGroup[];
+  segments: MileageSegment[];
+  in_service: MileageInService[];
+  positions: MileagePosition[];
+  excluded: { reason: string; count: number }[];
+  excluded_rows: {
+    detail_id: number; opening_id: number; warehouse_id: string; ring_no: string; cutter_position_no: string;
+    tool_parent_type: string; old_tool_number: string; manufacturer: string; reason: string;
+  }[];
+  revolution_basis: {
+    ring_width_mm: number;
+    reference_penetration_mm: number;
+    reference_revolutions_per_ring: number;
+    reference_penetration_range_mm: number[];
+    reading_opening_count: number;
+    tunneling_ring_count: number;
+    source_share: Record<RevolutionSource, number | null>;
+    estimated_share: number | null;
+  };
+  basis: Record<string, string>;
 }

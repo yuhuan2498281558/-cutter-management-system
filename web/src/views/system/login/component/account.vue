@@ -27,11 +27,10 @@
 						<el-icon class="el-input__icon"><ele-Position /></el-icon>
 					</template>
 				</el-input>
-				<el-button class="login-content-captcha" native-type="button" title="刷新验证码" aria-label="刷新验证码" @click="refreshCaptcha">
-					<el-image :src="ruleForm.captchaImgBase" fit="fill" />
-				</el-button>
+				<button type="button" class="login-content-captcha" title="刷新验证码" aria-label="刷新验证码" @click="refreshCaptcha">
+					<img v-if="ruleForm.captchaImgBase" :src="ruleForm.captchaImgBase" alt="验证码" />
+				</button>
 			</div>
-			<span class="login-captcha-help">点击图片刷新验证码</span>
 		</el-form-item>
 		<div class="login-options login-animation4">
 			<el-checkbox v-model="state.rememberUsername">记住账号</el-checkbox>
@@ -272,19 +271,9 @@ export default defineComponent({
 
 	.login-captcha-row {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) 118px;
+		grid-template-columns: minmax(0, 1fr) auto;
 		gap: 12px;
 		width: 100%;
-	}
-
-	.login-captcha-help {
-		display: block;
-		width: 118px;
-		margin: 6px 0 0 auto;
-		text-align: center;
-		font-size: 11px;
-		line-height: 1.4;
-		color: #87949d;
 	}
 
 	.login-content-password {
@@ -297,26 +286,33 @@ export default defineComponent({
 		}
 	}
 
+	// 只显示验证码图片本身：不加边框和底色，高度与输入框一致，宽度按图片比例（后端出图 160×46）
 	.login-content-captcha {
-		width: 100%;
-		height: 46px;
+		display: block;
+		height: var(--login-control-height, 46px);
+		aspect-ratio: 160 / 46;
 		padding: 0;
-		border: 1px solid #53616a;
+		border: 0;
 		border-radius: 8px;
-		background: #293137;
+		background: none;
 		overflow: hidden;
-		font-weight: bold;
-		letter-spacing: 5px;
+		cursor: pointer;
+		transition: opacity 0.18s ease;
 
-		:deep(.el-image) {
+		img {
+			display: block;
 			width: 100%;
 			height: 100%;
+			object-fit: contain;
 		}
 
-		&:hover,
+		&:hover {
+			opacity: 0.86;
+		}
+
 		&:focus-visible {
-			border-color: #8a999f;
-			background: #30393f;
+			outline: 2px solid #d5332f;
+			outline-offset: 2px;
 		}
 	}
 
@@ -453,12 +449,7 @@ export default defineComponent({
 @media (max-width: 420px) {
 	.login-content-form {
 		.login-captcha-row {
-			grid-template-columns: minmax(0, 1fr) 104px;
 			gap: 8px;
-		}
-
-		.login-captcha-help {
-			width: 104px;
 		}
 	}
 }

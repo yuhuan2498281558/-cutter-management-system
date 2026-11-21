@@ -54,12 +54,15 @@ function mountMessage(content, streaming = true) {
 const header = '## 刀位与地层\n\n| 刀位 | 地层标签关联次数 | 各地层关联次数 |\n| --- | --- | --- |\n';
 const row = '| 17 | 9 | 黏土夹砂地层 4次、上软下硬地层 3次、全断面弱风化花岗岩 1次、孤石 1次 |\n';
 
-test('streaming from the first character commits the separator once and never remounts a valid table', async () => {
+const textOf = node => node.text + (node.props.innerHTML || '') + node.children.map(textOf).join('');
+
+test('streaming from the first character shows the table once the separator starts, never the raw header, and never remounts it', async () => {
   const h = mountMessage('');
   try {
     let table;
     for (const char of header + row) {
       await h.append(char);
+      assert.doesNotMatch(h.find('p').map(textOf).join(''), /\|/, `raw table source shown after ${JSON.stringify(h.props.content)}`);
       const current = h.find('table')[0];
       if (table) assert.equal(current, table, 'table must remain mounted while delimiter and body arrive');
       else if (current) table = current;
@@ -69,7 +72,19 @@ test('streaming from the first character commits the separator once and never re
   } finally { h.unmount(); }
 });
 
-test('every streamed character preserves the table, header and completed cells; only complete rows append', async () => {
+test('an answer that opens with a table never shows its header as plain text', async () => {
+  const h = mountMessage('');
+  try {
+    for (const char of '| 刀位 | 次数 |\n| --- | --- |\n| 17 | 9 |\n') {
+      await h.append(char);
+      const outside = h.find('div').filter(div => !h.find('table', div).length).map(textOf).join('');
+      assert.doesNotMatch(outside, /\|/, `raw table source shown after ${JSON.stringify(h.props.content)}`);
+    }
+    assert.equal(h.find('td').length, 2);
+  } finally { h.unmount(); }
+});
+
+test('every streamed character preserves the table, header and completed cells; the row being typed fills in cell by cell', async () => {
   const h = mountMessage(header + row);
   try {
     const table = h.find('table')[0], head = h.find('thead')[0], body = h.find('tbody')[0];
@@ -77,16 +92,23 @@ test('every streamed character preserves the table, header and completed cells; 
     const originalCells = h.find('td');
     const originalValues = originalCells.map(cell => cell.props.innerHTML);
     const remaining = row.replace('| 17 |', '| 19 |') + row.replace('| 17 |', '| S19R |');
-    let completeRows = 1;
+    let completeRows = 1, typingRow = null;
     for (const char of remaining) {
       const mutationStart = h.mutations.length;
       await h.append(char);
       if (char === '\n') completeRows += 1;
+      const typing = h.props.content.split('\n').pop().includes('|');
       assert.equal(h.find('table')[0], table, `table replaced after ${JSON.stringify(char)}`);
       assert.equal(h.find('thead')[0], head);
       assert.equal(h.find('tbody')[0], body);
       assert.equal(h.find('tr', body)[0], firstRow);
-      assert.equal(h.find('td').length, completeRows * 3);
+      assert.equal(h.find('td').length, (completeRows + (typing ? 1 : 0)) * 3);
+      // 正在输入的行收完后还是同一个元素，不会先删再建
+      if (typing && !typingRow) typingRow = h.find('tr', body)[completeRows];
+      if (char === '\n' && typingRow) {
+        assert.equal(h.find('tr', body)[completeRows - 1], typingRow);
+        typingRow = null;
+      }
       originalCells.forEach((cell, index) => {
         assert.equal(h.find('td')[index], cell);
         assert.equal(cell.props.innerHTML, originalValues[index]);
@@ -102,12 +124,12 @@ test('every streamed character preserves the table, header and completed cells; 
   } finally { h.unmount(); }
 });
 
-test('a final row without newline flushes on completion without replacing the table', async () => {
+test('a final row without newline shows while streaming and stays on completion without replacing the table', async () => {
   const h = mountMessage(header + row);
   try {
     const table = h.find('table')[0];
     await h.append('| S19R | 0 | A\\|B地层、暂无 |');
-    assert.equal(h.find('td').length, 3);
+    assert.equal(h.find('td').length, 6);
     h.props.streaming = false;
     await vue.nextTick();
     assert.equal(h.find('table')[0], table);
@@ -123,14 +145,15 @@ test('borderless rows and CRLF streams stay inside the same table while their ne
       await h.append(char);
       assert.equal(h.find('table')[0], table);
       assert.equal(h.find('p').length, 0);
-      assert.equal(h.find('td').length, 2);
+      // 无边框表格的行在出现第一个 | 之前看不出是表格行，先不显示
+      assert.equal(h.find('td').length, h.props.content.split('\n').pop().includes('|') ? 4 : 2);
     }
     await h.append('\r\n');
     assert.equal(h.find('td').length, 4);
   } finally { h.unmount(); }
 });
 
-test('long later values do not change header-based column sizing', async () => {
+test('long later text values and short numbers do not change column sizing', async () => {
   const h = mountMessage(header + row);
   try {
     const table = h.find('table')[0];
@@ -167,5 +190,20 @@ test('replacing an answer discards its old table and partial tail', async () => 
     assert.equal(h.find('p')[0].props.innerHTML, '<strong>结论</strong>');
     assert.equal(h.find('li').length, 2);
     assert.equal(h.find('li')[1].props.innerHTML, '查看 <code>S1L</code>');
+  } finally { h.unmount(); }
+});
+
+test('stopping mid-row keeps the mounted table and shows the cut-off row as source without a warning', async () => {
+  const h = mountMessage(header + row);
+  try {
+    const table = h.find('table')[0];
+    await h.append('| S19R | 0');
+    h.props.streaming = false;
+    h.props.truncated = true;
+    await vue.nextTick();
+    assert.equal(h.find('table')[0], table);
+    assert.equal(h.find('td').length, 3);
+    assert.equal(h.find('pre')[0].text, '| S19R | 0');
+    assert.equal(h.find('p').length, 0, 'no format warning for a cut-off row');
   } finally { h.unmount(); }
 });

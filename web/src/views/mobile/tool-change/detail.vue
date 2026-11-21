@@ -24,6 +24,11 @@
           <span v-if="task.opening_info.last_tool_change_ring_no">上次换刀环号：{{ task.opening_info.last_tool_change_ring_no }}</span>
           <span v-if="task.opening_info.usage_distance !== null && task.opening_info.usage_distance !== undefined">本次使用距离：{{ task.opening_info.usage_distance }} m</span>
         </div>
+        <button type="button" class="readings-entry" @click="openReadings">
+          <span>刀盘累计读数</span>
+          <span class="readings-value">{{ readingsText }}</span>
+          <van-icon name="arrow" size="13" />
+        </button>
       </div>
       <van-progress :percentage="progressPercent" stroke-width="6" />
       <div class="summary-meta">已保存 {{ savedCount }}/{{ details.length }}，换刀 {{ replacedCount }}，缺照片 {{ missingPhotoCount }}</div>
@@ -167,6 +172,16 @@
       <van-picker title="选择磨损描述" :columns="wearPickerColumns" @confirm="onWearConfirm" @cancel="wearPickerVisible = false" />
     </van-popup>
 
+    <!-- 保存期间锁住输入和关闭，迟到的响应才不会覆盖重新打开后的编辑 -->
+    <van-popup v-model:show="readingsVisible" position="bottom" round :close-on-click-overlay="!savingReadings">
+      <div class="readings-editor">
+        <div class="editor-title">刀盘累计读数（圈）</div>
+        <van-field v-model="readings.right" type="number" label="右转累计" placeholder="设备上的读数" clearable :disabled="readonly || savingReadings" />
+        <van-field v-model="readings.left" type="number" label="左转累计" placeholder="设备上的读数" clearable :disabled="readonly || savingReadings" />
+        <van-button block type="primary" :loading="savingReadings" :disabled="readonly" @click="saveReadings">保存读数</van-button>
+      </div>
+    </van-popup>
+
     <van-popup v-model:show="scannerVisible" position="bottom" round :style="{ height: '70vh' }">
       <div class="scanner">
         <div class="editor-title">扫码识别</div>
@@ -185,7 +200,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRaw } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
-import { getMobileTask, saveMobileDetail, submitMobileTask } from '../api';
+import { getMobileTask, saveMobileDetail, saveMobileReadings, submitMobileTask } from '../api';
 
 const route = useRoute();
 const router = useRouter();
@@ -608,6 +623,40 @@ async function saveCurrent(): Promise<boolean> {
 async function saveAndClose() {
   if (await saveCurrent()) closeEditor();
 }
+
+// 开仓时抄下的刀盘累计读数，与同机上一次开仓相减得到期间圈数
+const readingsVisible = ref(false);
+const savingReadings = ref(false);
+const readings = reactive({ right: '', left: '' });
+const readingText = (value: any) => (value === null || value === undefined ? '—' : String(value));
+const readingsText = computed(() => {
+  const info = task.value?.opening_info || {};
+  if (info.right_revolution_reading == null && info.left_revolution_reading == null) return '未录入';
+  return `右转 ${readingText(info.right_revolution_reading)} · 左转 ${readingText(info.left_revolution_reading)}`;
+});
+function openReadings() {
+  if (savingReadings.value) return;
+  const info = task.value?.opening_info || {};
+  readings.right = info.right_revolution_reading == null ? '' : String(info.right_revolution_reading);
+  readings.left = info.left_revolution_reading == null ? '' : String(info.left_revolution_reading);
+  readingsVisible.value = true;
+}
+async function saveReadings() {
+  if (readonly.value || savingReadings.value) return;
+  savingReadings.value = true;
+  try {
+    const res: any = await saveMobileReadings(route.params.id as string, {
+      right_revolution_reading: readings.right.trim(), left_revolution_reading: readings.left.trim(),
+    });
+    task.value = res.data;
+    readingsVisible.value = false;
+    showToast('读数已保存');
+  } catch (error: any) {
+    showToast(errorMessage(error));
+  } finally {
+    savingReadings.value = false;
+  }
+}
 function onResultConfirm({ selectedOptions }: any) {
   form.check_result = selectedOptions?.[0]?.text || '未进行换刀';
   showResultPicker.value = false;
@@ -713,6 +762,11 @@ onBeforeUnmount(stopScan);
 .summary-toggle :deep(.van-button__icon) { font-size: 14px; }
 .summary-extra { min-height: 0; }
 .opening-info { display: flex; flex-wrap: wrap; gap: 5px 12px; color: rgba(255, 255, 255, 0.72); font-size: 12px; margin-top: 9px; line-height: 1.5; }
+.readings-entry { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 10px; padding: 8px 10px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 6px; background: rgba(255, 255, 255, 0.06); color: rgba(255, 255, 255, 0.72); font: inherit; font-size: 13px; text-align: left; }
+.readings-value { flex: 1; min-width: 0; color: #fff; font-variant-numeric: tabular-nums; }
+.readings-editor { padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+.readings-editor .editor-title { margin-bottom: 8px; }
+.readings-editor :deep(.van-button) { margin-top: 14px; }
 .summary .van-progress { margin-top: 12px; }
 .summary :deep(.van-progress__pivot) { background: #e49a43; }
 .filters { flex: 0 0 auto; position: relative; z-index: 2; }

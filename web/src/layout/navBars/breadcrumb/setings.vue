@@ -9,6 +9,32 @@
 			@close="onDrawerClose"
 		>
 			<el-scrollbar class="layout-breadcrumb-seting-bar">
+				<!-- 主题配色：点了立即切换并保存 -->
+				<el-divider content-position="left">主题配色</el-divider>
+				<div class="layout-scheme-list">
+					<button
+						v-for="scheme in COLOR_SCHEMES"
+						:key="scheme.value"
+						type="button"
+						class="layout-scheme-item"
+						:class="{ 'is-active': currentColorScheme === scheme.value }"
+						:aria-pressed="currentColorScheme === scheme.value"
+						@click="onColorSchemeChange(scheme.value)"
+					>
+						<!-- 缩略图：侧栏（选中项带主题色竖线）和主内容区里的一个主按钮 -->
+						<span class="layout-scheme-preview" :style="{ backgroundColor: scheme.colors.topBar }">
+							<span class="layout-scheme-preview-side" :style="{ backgroundColor: scheme.colors.menuBar }">
+								<span
+									class="layout-scheme-preview-item"
+									:style="{ backgroundColor: scheme.colors.menuBarActiveColor, borderLeftColor: scheme.colors.primary }"
+								></span>
+							</span>
+							<span class="layout-scheme-preview-button" :style="{ backgroundColor: scheme.colors.primary }"></span>
+						</span>
+						<span class="layout-scheme-name">{{ scheme.label }}</span>
+					</button>
+				</div>
+
 				<!-- 全局主题 -->
 				<el-divider content-position="left">{{ $t('message.layout.oneTitle') }}</el-divider>
 				<div class="layout-breadcrumb-seting-bar-flex">
@@ -442,6 +468,8 @@ import Watermark from '/@/utils/wartermark';
 import commonFunction from '/@/utils/commonFunction';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
+import { COLOR_SCHEMES, colorSchemeColors, normalizeColorScheme } from '/@/theme/colorSchemes';
+import type { ColorScheme } from '/@/theme/colorSchemes';
 
 // 定义变量内容
 const { locale } = useI18n();
@@ -457,6 +485,16 @@ const state = reactive({
 const getThemeConfig = computed(() => {
 	return themeConfig.value;
 });
+// 当前配色（旧版本缓存里没有这一项时按暖白）
+const currentColorScheme = computed(() => normalizeColorScheme(getThemeConfig.value.colorScheme));
+// 0、主题配色：主题色、顶栏和菜单颜色跟着配色一起换。这些颜色已经写成 html 的内联变量（盖过样式表），
+// 只换 data-scheme（App.vue 跟着 colorScheme 改）不够，要按新颜色重新生成内联变量，再连同配置一起存下
+const onColorSchemeChange = (scheme: ColorScheme) => {
+	if (currentColorScheme.value === scheme) return;
+	Object.assign(getThemeConfig.value, { colorScheme: scheme, ...colorSchemeColors(scheme) });
+	onColorPickerChange();
+	initLayoutChangeFun();
+};
 // 1、全局主题
 const onColorPickerChange = () => {
 	if (!getThemeConfig.value.primary) return ElMessage.warning('全局主题 primary 颜色值不能为空');
@@ -689,6 +727,66 @@ defineExpose({
 	padding: 0 15px;
 	:deep(.el-scrollbar__view) {
 		overflow-x: hidden !important;
+	}
+	// 主题配色：两张并排的色卡，选中的一张主题色描边；缩略图里的颜色取自配色本身，不随当前配色变
+	.layout-scheme-list {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 10px;
+		margin-bottom: 5px;
+	}
+	.layout-scheme-item {
+		display: grid;
+		gap: 6px;
+		padding: 6px;
+		border: 1px solid var(--el-border-color);
+		border-radius: var(--dv-radius);
+		background: transparent;
+		color: var(--el-text-color-primary);
+		font: inherit;
+		cursor: pointer;
+		transition: border-color 0.15s, box-shadow 0.15s;
+		&:hover {
+			border-color: var(--dv-border-strong);
+		}
+		&.is-active {
+			border-color: var(--el-color-primary);
+			box-shadow: 0 0 0 1px var(--el-color-primary);
+			.layout-scheme-name {
+				font-weight: 600;
+			}
+		}
+	}
+	.layout-scheme-preview {
+		position: relative;
+		height: 46px;
+		display: flex;
+		overflow: hidden;
+		border-radius: var(--dv-radius-sm);
+		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+		&-side {
+			width: 36%;
+			padding: 9px 4px;
+			box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.08);
+		}
+		&-item {
+			display: block;
+			height: 8px;
+			border-left: 2px solid;
+			border-radius: 2px;
+		}
+		&-button {
+			position: absolute;
+			right: 8px;
+			bottom: 8px;
+			width: 24px;
+			height: 9px;
+			border-radius: 2px;
+		}
+	}
+	.layout-scheme-name {
+		font-size: 12px;
+		text-align: center;
 	}
 	.layout-breadcrumb-seting-bar-flex {
 		display: flex;

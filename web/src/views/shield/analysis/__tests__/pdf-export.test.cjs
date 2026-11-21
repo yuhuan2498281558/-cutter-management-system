@@ -240,6 +240,34 @@ test('metadata, title and section text are escaped while controls are removed an
   h.unchanged();
 });
 
+test('info tips export their full wording as a line under the title, not as an "i" label', () => {
+  const markup = '<section class="page"><div class="el-card"><div class="chart-card-header"><div class="chart-heading"><h3 class="chart-title">费用来源构成</h3><button type="button" class="info-tip" aria-label="三类 &amp; 来源" data-info-tip="三类 &amp; 来源">i</button></div><div><button>更换数量</button></div></div><div class="hero-label">已明确刀具费用<button type="button" data-info-tip="不是财务结算额">i</button></div></div></section>';
+  const h = harness(markup);
+  h.run();
+  const output = h.output;
+  const notes = output.querySelectorAll('.info-tip-note');
+  assert.deepEqual(notes.map(note => note.textContent), ['三类 & 来源', '不是财务结算额']);
+  assert.ok(notes.every(note => note.getAttribute('class').split(' ').includes('chart-description')));
+  assert.equal(output.querySelector('.chart-heading').textContent, '费用来源构成三类 & 来源');
+  assert.equal(output.querySelector('.hero-label').textContent, '已明确刀具费用不是财务结算额');
+  assert.equal(output.querySelectorAll('[data-info-tip], button').length, 0);
+  assert.doesNotMatch(output.querySelector('body').textContent, /更换数量/);
+  assert.match(h.html, /\.info-tip-note\{display:block;/);
+  h.unchanged();
+});
+
+test('a section note prints escaped right under its section title', () => {
+  const h = harness('<section class="page"><p>表格</p></section>');
+  h.run('报告', [{ title: '费用来源明细', selector: '.page', note: '零价保留为 ¥0 & <缺价不补零>' }]);
+  const [title, note, body] = h.output.querySelector('.pdf-section').children;
+  assert.equal(title.tagName, 'h2'); assert.equal(title.textContent, '费用来源明细');
+  assert.equal(note.getAttribute('class'), 'chart-description'); assert.equal(note.textContent, '零价保留为 ¥0 & <缺价不补零>');
+  assert.equal(body.getAttribute('class'), 'page');
+  h.run('报告', [{ title: '无说明', selector: '.page' }]);
+  assert.equal(h.output.querySelectorAll('.chart-description').length, 0);
+  h.unchanged();
+});
+
 test('ECharts complete image replaces each multi-canvas root and records current legend/zoom without mutations', () => {
   const option = { series: [{ name: '厂家A' }, { name: '<厂家B>' }], legend: [{ selected: { '<厂家B>': false } }], dataZoom: [{ start: 20, end: 80 }, { startValue: 0, endValue: 12 }] };
   const beforeOption = JSON.stringify(option);

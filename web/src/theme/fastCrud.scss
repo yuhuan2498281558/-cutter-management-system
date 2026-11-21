@@ -1,5 +1,118 @@
-.fs-page {
-  background-color: rgb(255, 255, 255);
-    border-radius: 10px;
-    height: 88vh !important;
+/* fast-crud 页面容器：主内容区已经是面板色底，CRUD 页本身透明，四周留出与主内容一致的内边距
+ * （宽度 ≤640px 时 16px，见 tokens.scss 的 --dv-content-pad）；表格自己画外框（见 element.scss 的 Table 一节）。
+ * fast-crud 自带样式让 .fs-page 绝对定位铺满内容区（width:100%; top:0; bottom:0），这里只加内边距，
+ * 高度仍随内容区自适应，分页留在底部。
+ * fast-crud 的样式在主题之后加载，所以用 div.fs-page 提高一级优先级。
+------------------------------- */
+div.fs-page {
+	padding: var(--dv-content-pad);
+	// 标题栏分隔线（fast-crud 写死 #ddd）
+	div.fs-page-header {
+		border-bottom-color: var(--el-border-color);
+	}
+}
+/* CRUD 页头：搜索区、操作栏（左）、工具栏（右）
+ * - 按钮之间一律 8px：搜索区的查询/重置/展开、操作栏的新增和页面自加的按钮/下拉、工具栏的圆形图标按钮
+ * - 表单项里的内容不换行，查询/重置等按钮始终排成一行；按钮那一列按内容宽度占位，放不下就整列换到下一行
+ * - 操作栏和工具栏放得下时同一行、工具栏靠右；放不下时工具栏换到下一行、靠左，不会压到操作栏上，
+ *   操作栏自己的按钮也会换行；没有任何按钮的操作栏不占位置，工具栏靠左
+ * - 竖向：搜索区最后一行到操作栏，和搜索区行与行之间一样宽（去掉 fast-crud 在搜索区底下垫的 5px）；
+ *   操作栏、工具栏下方各留 8px（页头底部内边距相应减掉），换行后两行按钮之间也是 8px
+------------------------------- */
+div.fs-page .fs-crud-header {
+	padding-bottom: 2px;
+	.fs-crud-search {
+		padding-bottom: 0;
+	}
+	.fs-search .el-form-item__content {
+		flex-wrap: nowrap;
+		gap: 8px;
+		> .el-button {
+			margin: 0;
+		}
+	}
+	.fs-search-buttons-group {
+		flex: none;
+		max-width: none;
+	}
+	.fs-crud-actionbar {
+		flex: 1 1 auto;
+		flex-wrap: wrap;
+		gap: 8px;
+		min-width: 0;
+		margin-bottom: 8px;
+		.el-button {
+			margin: 0;
+		}
+		// 只剩一个空的 .fs-actionbar（没有新增权限、页面也没加按钮）
+		&:not(:has(> :not(.fs-actionbar))):not(:has(.fs-actionbar *)) {
+			display: none;
+		}
+	}
+	.fs-actionbar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		&:not(:has(*)) {
+			display: none;
+		}
+	}
+	.fs-crud-toolbar {
+		flex: none;
+		margin-bottom: 8px;
+	}
+	.fs-toolbar {
+		gap: 8px;
+		.fs-button {
+			margin: 0;
+		}
+	}
+}
+// 搜索项：fast-crud 默认每项占一行的 1/6（el-col-4），标签占去一大半，1366 宽时输入框只剩 76px；每项在 1/6 的基础上加宽 100px
+.fs-search .el-col-4.fs-search-col:not(.fs-search-buttons-group) {
+	flex: 0 0 calc(100% / 6 + 100px);
+	max-width: calc(100% / 6 + 100px);
+}
+// fast-crud 按钮的图标外面套了一层 el-icon，里层又带左右各 2px 外边距，在 1em 宽的外层里放不下、整体偏 1px：去掉
+.fs-button .el-icon > .fs-button-icon {
+	margin: 0;
+}
+// 列设置抽屉：每列右边的"左固定 / 不固定 / 右固定"画成小号分段控件（浅灰底槽，选中项凸起白块），
+// 不再是每行一块陶土色实心按钮
+.fs-table-columns-filter .fs-table-columns-fixed-controller.el-button-group {
+	display: inline-flex;
+	gap: 2px;
+	padding: 2px;
+	border-radius: var(--dv-radius-seg);
+	background-color: var(--dv-fill);
+	> .el-button {
+		--el-button-bg-color: transparent;
+		--el-button-border-color: transparent;
+		--el-button-text-color: var(--dv-text-muted);
+		--el-button-hover-bg-color: transparent;
+		--el-button-hover-border-color: transparent;
+		--el-button-hover-text-color: var(--dv-text);
+		--el-button-active-bg-color: transparent;
+		--el-button-active-border-color: transparent;
+		width: 24px;
+		height: 22px;
+		margin: 0;
+		padding: 0 !important;
+		border-radius: var(--dv-radius-seg-sm);
+		box-shadow: none;
+		i.el-icon {
+			font-size: 12px !important;
+		}
+	}
+	> .el-button--primary {
+		--el-button-bg-color: var(--dv-surface);
+		--el-button-text-color: var(--dv-text);
+		--el-button-hover-bg-color: var(--dv-surface);
+		--el-button-active-bg-color: var(--dv-surface);
+		box-shadow: var(--dv-shadow-1);
+	}
+}
+// 当前行（fast-crud 写死浅蓝底）：与表格当前行一致；fast-crud 的样式后加载，用 tr 提高一级优先级
+.fs-crud-table tr.fs-current-row {
+	background-color: var(--el-table-current-row-bg-color);
 }

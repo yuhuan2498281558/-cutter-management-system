@@ -6,22 +6,37 @@
 	box-sizing: border-box;
 	outline: none !important;
 }
+// 键盘焦点：2px 陶土色外框（上面去掉了浏览器默认焦点框）。
+// 输入框靠边框变色和光晕表示聚焦，不再加外框；tabindex=-1 的弹窗、气泡容器是脚本聚焦，也不加
+:focus-visible:not(input, textarea, [tabindex='-1']) {
+	outline: 2px solid var(--dv-accent) !important;
+	outline-offset: 2px;
+}
 
 :root {
-	--next-color-white: #ffffff;
-	--next-bg-main-color: #f8f8f8;
-	--next-bg-color: #f5f5ff;
-	--next-border-color-light: #f1f2f3;
-	--next-color-primary-lighter: #ecf5ff;
-	--next-color-success-lighter: #f0f9eb;
-	--next-color-warning-lighter: #fdf6ec;
-	--next-color-danger-lighter: #fef0f0;
-	--next-color-dark-hover: #0000001a;
-	--next-color-menu-hover: rgba(0, 0, 0, 0.2);
-	--next-color-user-hover: rgba(0, 0, 0, 0.04);
-	--next-color-seting-main: #e9eef3;
-	--next-color-seting-aside: #d3dce6;
-	--next-color-seting-header: #b3c0d1;
+	--next-color-white: var(--dv-surface);
+	--next-bg-main-color: var(--dv-bg);
+	--next-bg-color: var(--dv-surface-muted);
+	--next-border-color-light: var(--dv-border);
+	--next-color-primary-lighter: var(--dv-selected);
+	--next-color-success-lighter: var(--dv-success-bg);
+	--next-color-warning-lighter: var(--dv-warning-bg);
+	--next-color-danger-lighter: var(--dv-danger-bg);
+	--next-color-dark-hover: var(--dv-hover);
+	--next-color-menu-hover: var(--dv-selected);
+	--next-color-user-hover: var(--dv-hover);
+	--next-color-seting-main: var(--dv-surface-muted);
+	--next-color-seting-aside: var(--dv-selected);
+	--next-color-seting-header: var(--dv-border-strong);
+	// 顶栏、菜单、分栏的默认色。设置抽屉只在首次访问或切换布局时把这些写成 html 内联样式，
+	// 清掉主题缓存后由这里兜底，取值与 stores/themeConfig.ts 的默认值一致
+	--next-bg-topBar: var(--dv-surface);
+	--next-bg-topBarColor: var(--dv-text-secondary);
+	--next-bg-menuBar: var(--dv-side-bg);
+	--next-bg-menuBarColor: var(--dv-text-nav);
+	--next-bg-menuBarActiveColor: var(--dv-selected);
+	--next-bg-columnsMenuBar: var(--dv-side-bg);
+	--next-bg-columnsMenuBarColor: var(--dv-text-nav);
 }
 
 html,
@@ -31,12 +46,13 @@ body,
 	padding: 0;
 	width: 100%;
 	height: 100%;
-	font-family: Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Microsoft YaHei, SimSun, sans-serif;
+	font-family: var(--dv-font-sans);
 	font-weight: 400;
 	-webkit-font-smoothing: antialiased;
 	-webkit-tap-highlight-color: transparent;
 	background-color: var(--next-bg-main-color);
-	font-size: 14px;
+	font-size: var(--dv-font-size);
+	line-height: var(--dv-line-height);
 	overflow: hidden;
 	position: relative;
 }
@@ -56,7 +72,7 @@ body,
 	}
 	.layout-aside {
 		background: var(--next-bg-menuBar);
-		box-shadow: 2px 0 6px rgb(0 21 41 / 1%);
+		border-right: 1px solid var(--next-border-color-light);
 		height: inherit;
 		position: relative;
 		z-index: 1;
@@ -129,20 +145,20 @@ body,
 	.layout-el-aside-br-color {
 		border-right: 1px solid var(--el-border-color-light, #ebeef5);
 	}
-	// pc端左侧导航样式
+	// pc端左侧导航样式：展开/收起的宽度动画 0.15s，和窄屏抽屉一样快
 	.layout-aside-pc-220 {
 		width: 220px !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
 	.layout-aside-pc-64 {
 		width: 64px !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
 	.layout-aside-pc-1 {
 		width: 1px !important;
-		transition: width 0.3s ease;
+		transition: width 0.15s ease;
 	}
-	// 手机端左侧导航样式
+	// 手机端左侧导航样式：抽屉滑出/收回和遮罩淡入淡出都是 0.15s（关闭时遮罩的淡出和移除时间见 aside.vue）
 	.layout-aside-mobile {
 		position: fixed;
 		top: 0;
@@ -152,11 +168,11 @@ body,
 	}
 	.layout-aside-mobile-close {
 		left: -220px;
-		transition: all 0.3s cubic-bezier(0.39, 0.58, 0.57, 1);
+		transition: all 0.15s cubic-bezier(0.39, 0.58, 0.57, 1);
 	}
 	.layout-aside-mobile-open {
 		left: 0;
-		transition: all 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+		transition: all 0.15s cubic-bezier(0.22, 0.61, 0.36, 1);
 	}
 	.layout-aside-mobile-mode {
 		position: fixed;
@@ -165,9 +181,9 @@ body,
 		bottom: 0;
 		left: 0;
 		height: 100%;
-		background-color: rgba(0, 0, 0, 0.5);
+		background-color: var(--dv-scrim);
 		z-index: 9999998;
-		animation: error-img 0.3s;
+		animation: error-img 0.15s;
 	}
 	.layout-mian-height-50 {
 		height: calc(100vh - 50px);
@@ -179,6 +195,104 @@ body,
 	}
 	.layout-hide {
 		display: none;
+	}
+}
+
+/* 侧边栏布局（defaults）外壳：侧栏贴左边、主内容区贴右边，都满高、无圆角，中间只有一条 1px 分割线
+ * 结构见 layout/main/defaults.vue、layout/component/aside.vue；宽度 ≤1000px 时侧栏变成从左边滑出的抽屉、主内容区铺满
+------------------------------- */
+.layout-container.layout-shell {
+	// 侧栏：纯色底，右边一条分割线；左右各留 8px，菜单项、搜索框、用户区都在这 8px 以内（见 aside.vue）
+	// 分割线画成内阴影、不占宽度：收起成 64px 时内容区正好 48px，图标中线落在 32px（边框会把中线往左挤半像素）。
+	// 菜单栏是白色时 aside.vue 会加 .layout-el-aside-br-color 画右边框，这里一并去掉
+	.layout-aside.layout-aside-panel {
+		padding: 12px 8px 8px;
+		border-right: none;
+		box-shadow: inset -1px 0 0 var(--dv-divider);
+		background: var(--dv-side-bg);
+		// 不建层叠上下文：侧栏里的菜单搜索弹窗（没有挂到 body）要盖住主内容区的顶栏
+		z-index: auto;
+	}
+	.layout-aside-pc-256 {
+		width: var(--dv-aside-width) !important;
+		transition: width 0.15s ease;
+	}
+	// 主内容区：面板色底，内部滚动
+	// isolation：页面里的 z-index 只在主内容区内部比较，不会盖到窄屏的侧栏抽屉上
+	.layout-container-view {
+		position: relative;
+		isolation: isolate;
+		min-width: 0;
+		overflow: hidden;
+		background-color: var(--dv-surface);
+		// 顶栏浮在主内容区顶部，内容从它下面滚过
+		> .layout-header {
+			position: absolute;
+			top: 0;
+			right: 0;
+			left: 0;
+			z-index: 10;
+		}
+		.layout-main {
+			background-color: transparent;
+			--dv-main-height: calc(100vh - var(--dv-topbar-height) - var(--dv-footer-height));
+			&.layout-main-under-topbar {
+				padding-top: var(--dv-topbar-height) !important;
+			}
+			// 当前页全屏（标签栏右键菜单）时顶栏隐藏
+			&:not(.layout-main-under-topbar) {
+				--dv-topbar-height: 0px;
+			}
+		}
+	}
+	// 窄屏：侧栏是从左边贴边滑出的满高抽屉，右侧投影，后面一层遮罩
+	// 抽屉和遮罩的层级要低于 Element Plus 的浮层（从 2000 起）：抽屉里的用户菜单、搜索建议、退出确认框都挂在 body 上
+	.layout-aside-panel.layout-aside-mobile {
+		top: 0;
+		bottom: 0;
+		left: calc(-1 * var(--dv-aside-mobile-width));
+		width: var(--dv-aside-mobile-width);
+		height: auto;
+		z-index: 1001;
+		// 投影只在打开时加：收起时抽屉正好藏在窗口左边外，投影会漏进来
+		&.layout-aside-mobile-open {
+			left: 0;
+			box-shadow: var(--dv-shadow-drawer);
+		}
+	}
+	.layout-aside-mobile-mode {
+		z-index: 1000;
+	}
+}
+
+/* 路由页面区（layout/routerView/parent.vue 的 .layout-parent）：限宽居中，四周留内边距
+ * 页面自己的内边距叠在里面。下面几类铺满主内容区，不套：
+ * CRUD 页（根元素 .fs-page 绝对定位铺满，自己留内边距，见 fastCrud.scss）、首页大屏（.layout-parent-full）、智能助手（整页高的对话界面）
+------------------------------- */
+.layout-container {
+	.layout-parent {
+		width: 100%;
+		max-width: var(--dv-content-max);
+		margin: 0 auto;
+		padding: var(--dv-content-pad-top) var(--dv-content-pad) var(--dv-content-pad-bottom);
+		&.layout-parent-full,
+		.layout-parent {
+			max-width: none;
+			padding: 0;
+		}
+		// :has 单独一条：不认识 :has 的浏览器只丢掉这一条，不连累上面的首页
+		&:has(> .fs-page, > .ai-assistant-container) {
+			max-width: none;
+			padding: 0;
+		}
+	}
+	// 路由页面能用的高度（顶栏、标签栏、页脚以外），整页铺满的页面（智能助手）用它定高度。
+	// 这里是经典、横向、分栏布局的值（顶栏 50px + 标签栏 35px）；侧边栏布局的值见上面 .layout-shell
+	.layout-main {
+		--dv-main-height: calc(100vh - 85px - var(--dv-footer-height));
+		&.layout-main-no-footer {
+			--dv-footer-height: 0px;
+		}
 	}
 }
 
@@ -266,6 +380,20 @@ body,
 }
 .min100vh {
 	min-height: 100vh !important;
+}
+
+/* 标题：标题字体（暖白衬线、灰白蓝无衬线），给页面标题和分区标题用
+------------------------------- */
+.dv-page-title {
+	font-family: var(--dv-font-title);
+	font-size: 24px;
+	font-weight: 600;
+	line-height: 1.25;
+}
+.dv-section-title {
+	font-family: var(--dv-font-title);
+	font-size: 19px;
+	font-weight: 600;
 }
 
 /* 颜色值

@@ -1,18 +1,33 @@
 <template>
   <div ref="pageRef" class="wear-page">
-    <div class="analysis-export-bar">
-      <el-button plain :disabled="loading" @click="loadData">刷新数据</el-button>
-      <el-button type="primary" plain :disabled="!ready" @click="exportPdf">导出磨损分析 PDF</el-button>
-    </div>
+    <AnalysisActions :target="actionsTarget" :generated-at="wearDist?.meta?.generated_at" :refresh="loadData" :refreshing="loading"
+      :exports="[{ label: '导出磨损分析 PDF', disabled: !ready, run: exportPdf }]" />
 
-    <ScopeSummary :meta="wearDist?.meta" />
-    <div v-if="wearDist" class="analysis-metrics">
-      <div class="analysis-metric"><span>有效现场观察明细</span><strong>{{ formatNumber(wearDist.checked_count) }}</strong><small>来自明确检查 / 更换等证据，非整仓人工汇总数</small></div>
-      <div class="analysis-metric"><span>已分类磨损样本</span><strong>{{ formatNumber(wearDist.wear_recorded_count) }}</strong><small>正常 {{ formatNumber(wearDist.normal_count) }} · 非正常 {{ formatNumber(wearDist.abnormal_count) }}</small></div>
-      <div class="analysis-metric"><span>磨损未分类</span><strong>{{ formatNumber(wearDist.unrecorded_count) }}</strong><small>含未记录或未识别，不计入比例分母</small></div>
-      <div class="analysis-metric"><span>已分类样本的非正常比例</span><strong>{{ formatPercent(overallRate) }}</strong><small>非正常样本数 ÷ 已分类磨损样本数</small></div>
-    </div>
-    <p class="analysis-note">当前页面展示现场磨损观察。“轻微磨损”“无异常”归正常，“中度磨损”“异常磨损”归非正常，比例不等于设备故障率。100% 表示当前已分类样本全部归为非正常；未记录或未识别的描述不参与分母，原始描述保留。厂家检查结果仍在旧刀返修记录；筛选厂家时按已确认旧刀配对归属原安装厂家。</p>
+    <section class="wear-summary-section">
+      <ScopeSummary :meta="wearDist?.meta">
+        <p>当前页面展示现场磨损观察。“轻微磨损”“无异常”归正常，“中度磨损”“异常磨损”归非正常，比例不等于设备故障率。100% 表示当前已分类样本全部归为非正常；未记录或未识别的描述不参与分母，原始描述保留。厂家检查结果仍在旧刀返修记录；筛选厂家时按已确认旧刀配对归属原安装厂家。</p>
+      </ScopeSummary>
+      <div v-if="wearDist" class="analysis-hero">
+        <section class="hero-card analysis-card">
+          <div class="hero-label">已分类样本的非正常比例<InfoTip content="非正常样本数 ÷ 已分类磨损样本数" /></div>
+          <strong class="hero-value">{{ formatPercent(overallRate) }}</strong>
+          <div class="hero-sub">非正常 {{ formatNumber(wearDist.abnormal_count) }} / 已分类 {{ formatNumber(wearDist.wear_recorded_count) }}<InfoTip :content="`正常 ${formatNumber(wearDist.normal_count)} · 非正常 ${formatNumber(wearDist.abnormal_count)}`" /></div>
+        </section>
+        <div class="hero-side">
+          <section class="hero-card hero-stat analysis-card">
+            <span class="hero-label">有效观察明细<InfoTip content="来自明确检查 / 更换等证据，非整仓人工汇总数" /></span>
+            <strong class="hero-stat-value">{{ formatNumber(wearDist.checked_count) }}</strong>
+          </section>
+          <section class="hero-card hero-stat analysis-card">
+            <span class="hero-label">磨损未分类<InfoTip content="含未记录或未识别，不计入比例分母" /></span>
+            <span class="hero-stat-main">
+              <strong class="hero-stat-value">{{ formatNumber(wearDist.unrecorded_count) }}</strong>
+              <small v-if="Number(wearDist.unrecorded_count)" class="hero-stat-sub">不计入比例分母</small>
+            </span>
+          </section>
+        </div>
+      </div>
+    </section>
     <section class="analysis-grid wear-charts-section">
       <ChartCard title="磨损记录的样本构成" description="正常、非正常、未分类相加为有效观察明细数；比例分母仅包含前两类。" :loading="loading" :error="error" chart-height="320px" :is-empty="!wearDist?.total" @retry="loadData">
         <div ref="distributionRef" class="wear-chart" style="height:320px" />
@@ -21,33 +36,42 @@
         <div ref="trendChartRef" class="wear-chart" style="height:320px" />
       </ChartCard>
     </section>
-    <section class="wear-opening-section">
-      <ChartCard title="逐仓磨损、消耗与地层对照" description="地层是同次开仓的工程背景，关联不等于原因；一仓可能跨多个地层，不能将各地层组重复加总。" :loading="loading" :error="error" chart-height="auto" :is-empty="!trendRows.length" @retry="loadData">
-        <el-table :data="trendRows" border size="small" :max-height="480" class="wear-table">
-          <el-table-column label="开仓环号" width="100" fixed><template #default="{ row }"><el-button v-if="row.opening_id || row.id" link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环</el-button><span v-else>{{ row.ring_no }} 环</span></template></el-table-column>
-          <el-table-column prop="open_time" label="开仓日期" width="110" />
-          <el-table-column label="有效观察明细" width="115" align="right"><template #default="{ row }">{{ formatNumber(row.checked_count) }}</template></el-table-column>
-          <el-table-column label="实际更换数" width="105" align="right"><template #default="{ row }">{{ formatNumber(row.replacement_count) }}</template></el-table-column>
-          <el-table-column prop="total" label="已分类磨损数" width="115" align="right" />
-          <el-table-column label="未分类数" width="95" align="right"><template #default="{ row }">{{ formatNumber(row.unrecorded_count) }}</template></el-table-column>
-          <el-table-column prop="abnormal" label="非正常数" width="95" align="right" />
-          <el-table-column label="非正常比例" width="130" align="right"><template #default="{ row }">{{ formatPercent(row.abnormal_rate) }}</template></el-table-column>
-          <el-table-column label="地层类型" min-width="180"><template #default="{ row }">{{ row.stratum_types || '未记录' }}</template></el-table-column>
-          <el-table-column label="地质情况" min-width="200"><template #default="{ row }">{{ row.geological_conditions || '未记录' }}</template></el-table-column>
-        </el-table>
-        <p class="analysis-note">共 {{ trendRows.length }} 次开仓，保留当前范围全部返回记录。点击环号进入既有只读开仓明细。</p>
-      </ChartCard>
-    </section>
-    <section class="wear-description-section">
-      <ChartCard title="现场磨损描述明细" description="保留原始描述及系统归类；占比以全部有效观察明细为分母，与上方非正常比例不同。" :loading="loading" :error="error" chart-height="auto" :is-empty="!wearDist?.items.length" @retry="loadData">
-        <el-table :data="wearDist?.items ?? []" border size="small" :max-height="340" class="wear-table">
-          <el-table-column prop="wear_condition" label="现场描述" min-width="220" />
-          <el-table-column label="系统归类" min-width="120"><template #default="{ row }">{{ stateLabel(row.state) }}</template></el-table-column>
-          <el-table-column prop="count" label="记录数" min-width="100" align="right" />
-          <el-table-column label="占全部观察明细" min-width="160" align="right"><template #default="{ row }">{{ formatPercent(wearDist?.total ? row.count / wearDist.total : null) }}</template></el-table-column>
-        </el-table>
-      </ChartCard>
-    </section>
+    <ChartCard class="analysis-detail-card" chart-height="auto" :loading="loading" :error="error" :is-empty="detailTab === 'openings' ? !trendRows.length : !wearDist?.items.length" @retry="loadData">
+      <template #heading>
+        <el-tabs v-model="detailTab" class="detail-tabs">
+          <el-tab-pane :label="ready ? `逐仓对照 · ${formatNumber(trendRows.length)} 次开仓` : '逐仓对照'" name="openings" />
+          <el-tab-pane label="现场磨损描述" name="descriptions" />
+        </el-tabs>
+        <InfoTip :content="detailTab === 'openings' ? OPENING_TABLE_BASIS : DESCRIPTION_TABLE_BASIS" />
+      </template>
+      <!-- 外层 v-show 切换页签；导出选择器指向内层，未显示的页签也能导出 -->
+      <div v-show="detailTab === 'openings'">
+        <div class="wear-opening-section">
+          <el-table :data="trendRows" border size="small" :max-height="480" class="wear-table">
+            <el-table-column label="开仓环号" width="100" fixed><template #default="{ row }"><el-button v-if="row.opening_id || row.id" link type="primary" @click="openOpening(row)">{{ row.ring_no }} 环</el-button><span v-else>{{ row.ring_no }} 环</span></template></el-table-column>
+            <el-table-column prop="open_time" label="开仓日期" width="110" />
+            <el-table-column label="有效观察明细" width="115" align="right"><template #default="{ row }">{{ formatNumber(row.checked_count) }}</template></el-table-column>
+            <el-table-column label="实际更换数" width="105" align="right"><template #default="{ row }">{{ formatNumber(row.replacement_count) }}</template></el-table-column>
+            <el-table-column prop="total" label="已分类磨损数" width="115" align="right" />
+            <el-table-column label="未分类数" width="95" align="right"><template #default="{ row }">{{ formatNumber(row.unrecorded_count) }}</template></el-table-column>
+            <el-table-column prop="abnormal" label="非正常数" width="95" align="right" />
+            <el-table-column label="非正常比例" width="130" align="right"><template #default="{ row }">{{ formatPercent(row.abnormal_rate) }}</template></el-table-column>
+            <el-table-column label="地层类型" min-width="180"><template #default="{ row }">{{ row.stratum_types || '未记录' }}</template></el-table-column>
+            <el-table-column label="地质情况" min-width="200"><template #default="{ row }">{{ row.geological_conditions || '未记录' }}</template></el-table-column>
+          </el-table>
+        </div>
+      </div>
+      <div v-show="detailTab === 'descriptions'">
+        <div class="wear-description-section">
+          <el-table :data="wearDist?.items ?? []" border size="small" :max-height="340" class="wear-table">
+            <el-table-column prop="wear_condition" label="现场描述" min-width="220" />
+            <el-table-column label="系统归类" min-width="120"><template #default="{ row }">{{ stateLabel(row.state) }}</template></el-table-column>
+            <el-table-column prop="count" label="记录数" min-width="100" align="right" />
+            <el-table-column label="占全部观察明细" min-width="160" align="right"><template #default="{ row }">{{ formatPercent(wearDist?.total ? row.count / wearDist.total : null) }}</template></el-table-column>
+          </el-table>
+        </div>
+      </div>
+    </ChartCard>
   </div>
 </template>
 
@@ -55,16 +79,18 @@
 import { ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import * as echarts from 'echarts';
+import InfoTip from '/@/components/InfoTip.vue';
+import AnalysisActions from '../components/AnalysisActions.vue';
 import ChartCard from '../components/ChartCard.vue';
 import ScopeSummary from '../components/ScopeSummary.vue';
 import { getWearDistribution, getWearTrend } from '../api';
-import { TOOLTIP_STYLE, DEFAULT_GRID } from '../utils/chartTheme';
+import { buildWearDistributionOption, buildWearTrendOption } from '../utils/wearChartOptions';
 import type { AnalysisFilter, AnalysisMeta, WearDistributionItem, WearTrendItem } from '../types';
-import { analysisExportMeta, escapeHtml, formatNumber, formatPercent, requireAnalysisV2 } from '../utils/presentation';
+import { analysisExportMeta, formatNumber, formatPercent, requireAnalysisV2 } from '../utils/presentation';
 import { useAnalysisQuery } from '../utils/useAnalysisQuery';
 import { exportAnalysisPdf } from '../utils/pdfExport';
 
-const props = defineProps<{ filter: AnalysisFilter }>();
+const props = defineProps<{ filter: AnalysisFilter; actionsTarget?: HTMLElement | null }>();
 
 interface DistributionData {
   meta?: AnalysisMeta; items: (WearDistributionItem & { state: string | null })[]; total: number;
@@ -89,9 +115,20 @@ function openOpening(row: TrendRow) {
   if (opening) router.push({ path: '/shield/toolChangeDetail', query: { warehouse_id: String(opening), mode: 'view' } });
 }
 
+// 两张明细表的口径：页面上在明细卡的 ⓘ 里，PDF 里写在各表标题下
+const OPENING_TABLE_BASIS = '地层是同次开仓的工程背景，关联不等于原因；一仓可能跨多个地层，不能将各地层组重复加总。';
+const DESCRIPTION_TABLE_BASIS = '保留原始描述及系统归类；占比以全部有效观察明细为分母，与上方非正常比例不同。';
+const detailTab = ref('openings');
+
 function exportPdf() {
   if (!ready.value) return;
-  exportAnalysisPdf('数据分析-现场磨损与刀具消耗', '.wear-page', analysisExportMeta(wearDist.value?.meta));
+  // 明细表在页签里，按区块导出，未显示的页签也照常导出
+  exportAnalysisPdf('数据分析-现场磨损与刀具消耗', [
+    { title: '', selector: '.wear-summary-section' },
+    { title: '', selector: '.wear-charts-section' },
+    { title: '逐仓磨损、消耗与地层对照', selector: '.wear-opening-section', note: OPENING_TABLE_BASIS },
+    { title: '现场磨损描述明细', selector: '.wear-description-section', note: DESCRIPTION_TABLE_BASIS },
+  ], analysisExportMeta(wearDist.value?.meta));
 }
 
 const distributionRef = ref<HTMLElement | null>(null);
@@ -102,65 +139,44 @@ let trendChart: echarts.ECharts | null = null;
 
 function ensureChart(instance: echarts.ECharts | null, element: HTMLElement) {
   if (instance && instance.getDom() !== element) { instance.dispose(); instance = null; }
-  return instance || echarts.init(element);
+  return instance || echarts.init(element, 'dv');
 }
 function renderCharts() {
   if (!ready.value || !wearDist.value) return;
   if (distributionRef.value) {
     distributionChart = ensureChart(distributionChart, distributionRef.value);
-    distributionChart.setOption({
-      tooltip: { ...TOOLTIP_STYLE, trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { ...DEFAULT_GRID, left: 28, right: 46, bottom: 35 },
-      xAxis: { type: 'value', name: '记录数', minInterval: 1 },
-      yAxis: { type: 'category', data: ['正常', '非正常', '未分类'], inverse: true },
-      series: [{ name: '观察明细', type: 'bar', barMaxWidth: 34, label: { show: true, position: 'right' },
-        data: [{ value: wearDist.value.normal_count, itemStyle: { color: '#6f9483' } },
-          { value: wearDist.value.abnormal_count, itemStyle: { color: '#b76558' } },
-          { value: wearDist.value.unrecorded_count, itemStyle: { color: '#9ba5b1' } }] }],
-    }, true);
+    distributionChart.setOption(buildWearDistributionOption(wearDist.value), true);
     distributionChart.resize();
   }
   if (!trendChartRef.value) return;
   trendChart = ensureChart(trendChart, trendChartRef.value);
-  const items = trendRows.value;
-  trendChart.setOption({
-    tooltip: {
-      ...TOOLTIP_STYLE,
-      trigger: 'axis',
-      formatter: (params: any[]) => {
-        const item = items[params[0]?.dataIndex];
-        if (!item) return '';
-        return `${escapeHtml(item.ring_no)} 环 · ${escapeHtml(item.open_time)}<br/>有效观察：${formatNumber(item.checked_count)}<br/>实际更换：${formatNumber(item.replacement_count)}<br/>非正常 / 已分类磨损：${formatNumber(item.abnormal)} / ${formatNumber(item.total)}<br/>非正常比例：${formatPercent(item.abnormal_rate)}<br/>未分类磨损：${formatNumber(item.unrecorded_count)}<br/>地层：${escapeHtml(item.stratum_types || '未记录')}<br/>地质：${escapeHtml(item.geological_conditions || '未记录')}`;
-      },
-    },
-    grid: { ...DEFAULT_GRID, left: 28, right: 44, bottom: 65 },
-    legend: { bottom: 0, type: 'scroll' },
-    xAxis: { type: 'category', data: items.map(item => `${item.ring_no}环`), axisLabel: { hideOverlap: true } },
-    yAxis: [{ type: 'value', name: '记录 / 更换数', minInterval: 1 }, { type: 'value', name: '非正常比例', min: 0, max: 1, axisLabel: { formatter: (value: number) => `${Math.round(value * 100)}%` } }],
-    dataZoom: items.length > 14 ? [{ type: 'inside' }] : [],
-    series: [
-      { name: '已分类磨损数', type: 'bar', color: '#9ba5b1', barMaxWidth: 22, data: items.map(item => item.total) },
-      { name: '实际更换数', type: 'bar', color: '#35689b', barMaxWidth: 22, data: items.map(item => item.replacement_count ?? null) },
-      { name: '非正常比例', type: 'line', yAxisIndex: 1, color: '#b76558', smooth: false, connectNulls: false, symbolSize: 6, data: items.map(item => item.abnormal_rate) },
-    ],
-  }, true);
+  trendChart.setOption(buildWearTrendOption(trendRows.value), true);
   trendChart.resize();
 }
-let activeCharts = true, resizeFrame: number | undefined;
+let activeCharts = true, resizeFrame: number | undefined, renderFrame: number | undefined;
 function scheduleRender() {
   nextTick(() => {
     if (!activeCharts) return;
-    if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
-    resizeFrame = requestAnimationFrame(() => { resizeFrame = undefined; if (activeCharts) renderCharts(); });
+    if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
+    renderFrame = requestAnimationFrame(() => { renderFrame = undefined; if (activeCharts) renderCharts(); });
   });
 }
+function scheduleResize() {
+  if (!activeCharts || resizeFrame !== undefined) return;
+  resizeFrame = requestAnimationFrame(() => { resizeFrame = undefined; if (activeCharts) [distributionChart, trendChart].forEach(chart => chart?.resize()); });
+}
+function cancelChartFrames() {
+  if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+  if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
+  resizeFrame = undefined; renderFrame = undefined;
+}
 let resizeObserver: ResizeObserver | undefined;
-onMounted(() => { resizeObserver = new ResizeObserver(scheduleRender); if (pageRef.value) resizeObserver.observe(pageRef.value); scheduleRender(); });
+onMounted(() => { resizeObserver = new ResizeObserver(scheduleResize); if (pageRef.value) resizeObserver.observe(pageRef.value); scheduleRender(); });
 watch([ready, distributionRef, trendChartRef], scheduleRender, { flush: 'post' });
-onDeactivated(() => { activeCharts = false; if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame); });
+onDeactivated(() => { activeCharts = false; cancelChartFrames(); });
 onActivated(() => { activeCharts = true; scheduleRender(); });
 onBeforeUnmount(() => {
-  activeCharts = false; if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+  activeCharts = false; cancelChartFrames();
   resizeObserver?.disconnect(); [distributionChart, trendChart].forEach(chart => chart?.dispose());
 });
 </script>

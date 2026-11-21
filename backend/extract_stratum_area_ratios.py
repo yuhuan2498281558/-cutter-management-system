@@ -22,6 +22,33 @@ def circular_area_integral(y, center, radius):
     return z*math.sqrt(max(0,radius*radius-z*z))+radius*radius*math.asin(z/radius)
 
 
+def hatch_candidate_area(vertices):
+    """Preserve lobes and holes of invalid hatches as *candidate* areas.
+
+    buffer(0) drops one lobe of self-crossing outlines (including source hatch
+    CA694 at ring 2199). Linework repair preserves both lobes. Dangling lines
+    are not area evidence. The PDF still decides the visible geological class;
+    repaired DXF faces alone must never be imported as geological percentages.
+    """
+    from shapely import make_valid
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    polygon = Polygon(vertices)
+    if polygon.is_valid:
+        return polygon
+
+    def area_parts(geometry):
+        if geometry.geom_type == 'Polygon':
+            if geometry.area > 0:
+                yield geometry
+        elif hasattr(geometry, 'geoms'):
+            for part in geometry.geoms:
+                yield from area_parts(part)
+
+    return unary_union(list(area_parts(make_valid(polygon))))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dxf', required=True)
@@ -38,7 +65,7 @@ def main():
     sys.path.insert(0, args.dependencies)
     import ezdxf
     from ezdxf.path import from_hatch_boundary_path
-    from shapely.geometry import Polygon, Point, LineString
+    from shapely.geometry import Point, LineString
     doc = ezdxf.readfile(args.dxf)
     model = doc.modelspace()
     polygons = []
@@ -53,10 +80,9 @@ def main():
         for path in paths:
             vertices = [(p.x, p.y) for p in path.flattening(.0001)]
             if len(vertices) >= 3:
-                polygon = Polygon(vertices)
-                if not polygon.is_valid:
-                    polygon = polygon.buffer(0)
-                parts.append(polygon)
+                polygon = hatch_candidate_area(vertices)
+                if not polygon.is_empty:
+                    parts.append(polygon)
         if not parts:
             continue
         geom = parts[0]
@@ -136,6 +162,7 @@ def main():
         details[str(ring)]={'x':x,'bottom':bottom,'top':top,'unresolved_percent':unknown}
     # Save geometry independently of final classification for review.
     geometry = {'source_sha256': hashlib.sha256(Path(args.dxf).read_bytes()).hexdigest(),
+                'candidate_geometry_method': 'make_valid_linework_polygon_faces_v2',
                 'colors': {str(k):dict(v) for k,v in votes.items()},
                 'polygons': [{'color': key, 'geometry': geom.__geo_interface__} for key,geom in polygons],
                 'measurement_kind':'cross_section_area_percent',

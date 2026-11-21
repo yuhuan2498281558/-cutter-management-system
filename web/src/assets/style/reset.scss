@@ -1,9 +1,9 @@
 .fs-crud-container {
 	.el-table thead {
-		color: #606266;
+		color: var(--el-table-header-text-color);
 	}
 	.el-input__inner::placeholder {
-		color: #dcdfe6;
+		color: var(--el-text-color-placeholder);
 		font-size: 12px;
 	}
 }

@@ -86,7 +86,7 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 						},
 						valueChange: ({ value, form }: any) => {
 							if (value === 'NEW_TOOL') {
-								form.repair_parts = undefined;
+								form.repair_parts = [];
 							}
 						},
 						order: 0,

@@ -31,6 +31,13 @@ const props = defineProps<{
 
 const resolvedCrudBinding = computed(() => unref(props.crudBinding));
 
+// 与表格里的字典显示一致：只用字典已加载的数据换成文字，找不到就保留原值。
+function dictLabel(dict: any, value: any) {
+  if (value === null || value === undefined || value === '') return value;
+  const node = dict.getNodeByValue(value);
+  return node ? dict.getLabel(node) ?? value : value;
+}
+
 const exportRows = computed(() => {
   if (props.rows) return props.rows;
   return resolvedCrudBinding.value?.data || [];
@@ -49,7 +56,12 @@ const exportColumns = computed<ExportColumn[]>(() => {
         if (typeof formatter === 'function') {
           return formatter({ row, index, value: row?.[key] });
         }
-        return row?.[key];
+        const dict = config?.component?.dict;
+        const value = row?.[key];
+        if (typeof dict?.getNodeByValue === 'function') {
+          return Array.isArray(value) ? value.map((item: any) => dictLabel(dict, item)).join('、') : dictLabel(dict, value);
+        }
+        return value;
       },
     }));
 });

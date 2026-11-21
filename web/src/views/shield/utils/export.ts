@@ -1,3 +1,5 @@
+import { ElMessage } from 'element-plus';
+
 export type ExportFormat = 'excel' | 'csv' | 'pdf';
 
 export interface ExportColumn {
@@ -184,7 +186,10 @@ function exportCsv(options: ExportOptions) {
 
 function exportPdf(options: ExportOptions) {
   const win = window.open('', '_blank');
-  if (!win) return;
+  if (!win) {
+    ElMessage.warning('打印窗口被浏览器拦截，请允许弹出窗口后重试');
+    return;
+  }
   win.document.write(buildHtmlTable(options));
   win.document.close();
   win.focus();

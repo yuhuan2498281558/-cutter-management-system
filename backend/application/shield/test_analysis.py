@@ -8,6 +8,7 @@ from .analysis_views import AnalysisViewSet
 from .models import (
     NewToolRecord, OldToolRecord, ProjectInfo, ShieldMachineBasicInfo,
     ToolChangeDetail, ToolInstance, WarehouseOpeningBasicInfo,
+    StratumBasicInfo,
 )
 
 
@@ -46,6 +47,47 @@ class AnalysisContractTests(TestCase):
         NewToolRecord.objects.create(tool_change_detail=detail, tool_instance=instance)
         return instance
 
+    def test_stratum_options_include_dictionary_categories_without_openings(self):
+        from django.core.cache import cache
+        from dvadmin.system.models import Dictionary
+
+        cache.delete('stratum_label_map')
+        self.addCleanup(cache.delete, 'stratum_label_map')
+        parent = Dictionary.objects.create(value='stratum_type', label='地层类型')
+        categories = [
+            ('CLAY_SAND', '黏土夹砂地层'), ('SOFT_HARD', '上软下硬地层'),
+            ('WEAK_GRANITE', '全断面弱风化花岗岩'), ('BEDROCK_PROTRUSION', '基岩凸起地层'),
+            ('SOFT_SOIL', '软土地基'), ('BOULDER', '孤石'),
+        ]
+        for index, (code, label) in reversed(list(enumerate(categories))):
+            Dictionary.objects.create(parent=parent, value=code, label=label, sort=index, status=True)
+        Dictionary.objects.create(parent=parent, value='DISABLED', label='停用项', status=False)
+        expected = [{'value': code, 'label': label} for code, label in categories]
+        self.assertEqual(self.query('filter_options')['stratum_types'], expected)
+
+        self.detail(self.opening(100, stratum_info_between={'CLAY_SAND': 100}),
+                    is_replaced=True, manufacturer='黏土厂家', price=10)
+        # A narrow or empty scope must not remove the other configured options.
+        self.assertEqual(self.query('filter_options', end_ring=100)['stratum_types'], expected)
+        for code in ('SOFT_SOIL', 'BOULDER'):
+            self.assertEqual(self.query('filter_options', stratum_type=code)['stratum_types'], expected)
+            self.assertEqual(self.query('filter_options', stratum_type=code)['manufacturers'], [])
+            self.assertEqual(self.query('overview', stratum_type=code)['kpi']['total_replacements'], 0)
+
+        self.detail(self.opening(200, stratum_info_between={'SOFT_SOIL': 80}),
+                    is_replaced=True, manufacturer='软土厂家', price=20)
+        self.detail(self.opening(300, stratum_info_between={'BOULDER': 20}),
+                    is_replaced=True, manufacturer='孤石厂家', price=30)
+        for code, manufacturer, cost in (('SOFT_SOIL', '软土厂家', 20), ('BOULDER', '孤石厂家', 30)):
+            self.assertEqual(self.query('filter_options', stratum_type=code)['manufacturers'], [manufacturer])
+            data = self.query('overview', stratum_type=code)['kpi']
+            self.assertEqual(data['total_replacements'], 1)
+            self.assertEqual(data['total_cost'], cost)
+
+        self.opening(400, stratum_info_between={'HISTORICAL': 10})
+        self.assertEqual(self.query('filter_options')['stratum_types'],
+                         expected + [{'value': 'HISTORICAL', 'label': 'HISTORICAL'}])
+
     def test_confirmed_default_active_observed_and_summary_gap(self):
         opening = self.opening(100, checked_tool_count=6, replaced_tool_count=3)
         self.detail(opening, is_checked=True, is_replaced=True, price=100)
@@ -61,6 +103,82 @@ class AnalysisContractTests(TestCase):
         self.assertEqual(data['meta']['unobserved_count'], 1)
         self.assertEqual(data['meta']['schema_version'], 2)
         self.assertEqual(self.query('overview', summary_status='ALL')['kpi']['total_replacements'], 2)
+
+    def test_current_area_classes_drive_all_analysis_queries_not_stale_snapshots(self):
+        soft = self.opening(106, last_ring_no='67', stratum_info_between={'WEAK_GRANITE': 39})
+        boulder = self.opening(400, last_ring_no='369', stratum_info_between={'CLAY_SAND': 31})
+        for opening, vendor, price in ((soft, '软土厂家', 100), (boulder, '孤石厂家', 200)):
+            self.install(self.detail(opening, is_replaced=True, is_checked=True,
+                                     manufacturer=vendor, price=price, wear_condition='NORMAL'))
+        StratumBasicInfo.objects.create(project=self.project, ring_no='81',
+            stratum_type_codes='WEAK_GRANITE', longitudinal_type_ratios={'AREA_SOFT_SOIL': 100})
+        StratumBasicInfo.objects.create(project=self.project, ring_no='389',
+            stratum_type_codes='CLAY_SAND', longitudinal_type_ratios={'AREA_BOULDER': 5, 'AREA_SOFT_HARD': 95})
+        for code, vendor, cost, ring in (('SOFT_SOIL', '软土厂家', 100, '106'), ('BOULDER', '孤石厂家', 200, '400')):
+            with self.subTest(code=code):
+                scope = {'stratum_type': code}
+                overview = self.query('overview', **scope)
+                self.assertEqual(overview['kpi']['total_replacements'], 1)
+                self.assertEqual(overview['kpi']['total_cost'], cost)
+                self.assertEqual(self.query('filter_options', **scope)['manufacturers'], [vendor])
+                self.assertEqual(self.query('cost_overview', **scope)['cost_sources']['total'], cost)
+                self.assertEqual(self.query('cost_trend', **scope)['items'][0]['total_cost'], cost)
+                self.assertEqual(self.query('brand_cost', **scope)['items'][0]['manufacturer'], vendor)
+                self.assertEqual(self.query('brand_price_trend', **scope)['series'][0]['data'], [cost])
+                self.assertEqual(self.query('brand_performance_trend', **scope)['time_axis'][0]['ring_no'], ring)
+                self.assertEqual(self.query('wear_distribution', **scope)['normal_count'], 1)
+                wear = self.query('wear_trend', **scope)['items'][0]
+                self.assertEqual(wear['ring_no'], ring)
+                self.assertIn(code, wear['stratum_types'])
+                custom = self.query('custom_chart', x_field='stratum_types', metrics='total_cost', **scope)
+                self.assertEqual(custom['record_count'], 1)
+                self.assertNotIn('WEAK_GRANITE', custom['categories'])
+                self.assertIn(code, custom['categories'])
+        self.assertEqual(self.query('overview', stratum_type='WEAK_GRANITE')['kpi']['total_replacements'], 0)
+        self.assertEqual(self.query('overview', stratum_types='SOFT_SOIL,BOULDER')['kpi']['total_replacements'], 2)
+
+    def test_stratum_interval_bounds_project_machine_and_first_opening(self):
+        from .analysis_strata import opening_strata
+        first = self.opening(10, stratum_info_between={'STALE': 10})
+        self.opening(20, summary_status='DRAFT')
+        second = self.opening(30, stratum_info_between={'STALE': 10})
+        other_machine = ShieldMachineBasicInfo.objects.create(shield_model_id='OTHER', shield_model='另机')
+        self.opening(25, shield_model=other_machine)
+        other_project = ProjectInfo.objects.create(project_id='OTHER', project_name='另项目')
+        StratumBasicInfo.objects.create(project=other_project, ring_no='29', longitudinal_type_ratios={'AREA_BOULDER': 100})
+        for ring, ratios in ((1, {'AREA_SOFT_SOIL': 100}), (20, {'AREA_BOULDER': 100}),
+                             (23, {'AREA_SOFT_HARD': 100}), (30, {'AREA_CLAY_SAND': 100}),
+                             (31, {'AREA_BOULDER': 100})):
+            StratumBasicInfo.objects.create(project=self.project, ring_no=str(ring), longitudinal_type_ratios=ratios)
+        result = opening_strata([first, second])
+        self.assertEqual(result[first.pk], {'SOFT_SOIL': 1})
+        self.assertEqual(result[second.pk], {'SOFT_HARD': 1, 'CLAY_SAND': 1})
+        # Status/ring filters must not move the preceding interval boundary.
+        self.detail(second, is_replaced=True)
+        self.assertEqual(self.query('overview', start_ring=30, stratum_type='BOULDER')['kpi']['total_replacements'], 0)
+        self.assertEqual(self.query('overview', start_ring=30, stratum_type='SOFT_HARD')['kpi']['total_replacements'], 1)
+
+    def test_stratum_edits_are_visible_next_request_and_zero_or_unknown_do_not_match(self):
+        from dvadmin.system.models import Users
+        user = Users.objects.create(username='stratum-refresh-admin', is_superuser=True)
+        self.detail(self.opening(100, stratum_info_between={'BOULDER': 100}), is_replaced=True)
+        row = StratumBasicInfo.objects.create(project=self.project, ring_no='81',
+            stratum_type_codes='BOULDER', longitudinal_type_ratios={'AREA_SOFT_SOIL': 100, 'AREA_BOULDER': 0})
+        view = AnalysisViewSet.as_view({'get': 'overview'})
+        def query():
+            request = APIRequestFactory().get('/api/shield/analysis/overview/', {'stratum_type': 'SOFT_SOIL'})
+            force_authenticate(request, user=user)
+            response = view(request)
+            self.assertEqual(response.data['code'], 2000)
+            return response.data['data']['kpi']['total_replacements']
+        self.assertEqual(query(), 1)
+        self.assertEqual(self.query('overview', stratum_type='BOULDER')['kpi']['total_replacements'], 0)
+        StratumBasicInfo.objects.filter(pk=row.pk).update(longitudinal_type_ratios={'UNRESOLVED': 100})
+        self.assertEqual(query(), 0)
+        self.assertEqual(self.query('overview', stratum_type='BOULDER')['kpi']['total_replacements'], 0)
+        # With no area dataset, explicitly entered per-ring tags still work.
+        StratumBasicInfo.objects.filter(pk=row.pk).update(longitudinal_type_ratios={})
+        self.assertEqual(self.query('overview', stratum_type='BOULDER')['kpi']['total_replacements'], 1)
 
     def test_untyped_replacements_are_in_monthly_total(self):
         self.detail(self.opening(100), is_replaced=True, price=100)
@@ -98,7 +216,7 @@ class AnalysisContractTests(TestCase):
 
     def test_track_invalid_bounds_are_rejected_by_every_action(self):
         actions = ('filter_options', 'custom_fields', 'custom_chart', 'overview', 'cost_overview', 'cost_trend',
-                   'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'wear_distribution', 'wear_trend')
+                   'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'brand_comparison', 'life_mileage', 'wear_distribution', 'wear_trend')
         for action in actions:
             view = AnalysisViewSet.as_view({'get': action}, authentication_classes=[], permission_classes=[])
             for params in ({'blade_track_min': '-1'}, {'blade_track_max': 'NaN'}, {'blade_track_max': 'Infinity'},
@@ -363,7 +481,7 @@ class AnalysisContractTests(TestCase):
         user = Users.objects.create(username='analysis-reader', name='分析读取', is_superuser=False)
         user.role.add(role)
         menu = Menu.objects.create(name='分析测试', web_path='/shield/analysis')
-        actions = ('filter_options', 'custom_fields', 'custom_chart', 'overview', 'cost_overview', 'cost_trend', 'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'wear_distribution', 'wear_trend')
+        actions = ('filter_options', 'custom_fields', 'custom_chart', 'overview', 'cost_overview', 'cost_trend', 'brand_cost', 'brand_price_trend', 'brand_performance_trend', 'brand_comparison', 'life_mileage', 'wear_distribution', 'wear_trend')
         for action in actions:
             path = f'/api/shield/analysis/{action}/'
             view = AnalysisViewSet.as_view({'get': action})
@@ -502,6 +620,55 @@ class AnalysisContractTests(TestCase):
         self.assertEqual(result['data']['items'][0]['installation_count'], 0)
         self.assertIsNone(result['data']['items'][0]['avg_cost'])
 
+    def test_roles_granted_the_old_brand_endpoints_keep_access_to_brand_comparison(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from dvadmin.system.models import Dept, Menu, MenuButton, Role, RoleMenuButtonPermission, Users
+        migration = importlib.import_module('application.shield.migrations.0044_brand_comparison_permission')
+        dept = Dept.objects.create(name='厂家只读部门', key='analysis-brand-dept')
+        role = Role.objects.create(name='厂家只读', key='analysis-brand-reader')
+        other = Role.objects.create(name='无厂家权限', key='analysis-brand-none')
+        user = Users.objects.create(username='analysis-brand-reader', dept=dept, is_superuser=False)
+        user.role.add(role)
+        menu = Menu.objects.create(name='厂家分析', web_path='/shield/analysis')
+        cost = MenuButton.objects.create(menu=menu, name='brand_cost', value='OldBrandCost', api='/api/shield/analysis/brand_cost/', method=0)
+        trend = MenuButton.objects.create(menu=menu, name='brand_price_trend', value='OldPriceTrend', api='/api/shield/analysis/brand_price_trend/', method=0)
+        # 同一角色在对照表接口上两条授权（自定部门 + 仅本人），合并后只看本人；趋势接口上的"全部"不带过去
+        RoleMenuButtonPermission.objects.create(role=role, menu_button=cost, data_range=4).dept.add(dept)
+        RoleMenuButtonPermission.objects.create(role=role, menu_button=cost, data_range=0)
+        RoleMenuButtonPermission.objects.create(role=role, menu_button=trend, data_range=3)
+        # 大小写不同的旧按钮：数据权限过滤找不到它，旧接口上本来就取不到数据，不复制
+        shouting = Role.objects.create(name='大写路径', key='analysis-brand-upper')
+        upper = MenuButton.objects.create(menu=menu, name='upper', value='OldUpper', api='/API/SHIELD/ANALYSIS/BRAND_COST/', method=0)
+        RoleMenuButtonPermission.objects.create(role=shouting, menu_button=upper, data_range=3)
+        # 管理员已在另一个菜单给过新接口"仅本人"的角色不动
+        configured = Role.objects.create(name='已配置', key='analysis-brand-configured')
+        RoleMenuButtonPermission.objects.create(role=configured, menu_button=cost, data_range=3)
+        other_menu = Menu.objects.create(name='另一个菜单', web_path='/shield/other')
+        existing = MenuButton.objects.create(menu=other_menu, name='brand_comparison', value='ShieldAnalysisBrandComparison', api='/api/shield/analysis/brand_comparison/', method=0)
+        RoleMenuButtonPermission.objects.create(role=configured, menu_button=existing, data_range=0)
+        # 默认权限值和第一个备用值都被占用
+        MenuButton.objects.create(menu=other_menu, name='占用', value='ShieldAnalysisBrandComparison2', api='/api/other/', method=0)
+        path = '/api/shield/analysis/brand_comparison/'
+        view = AnalysisViewSet.as_view({'get': 'brand_comparison'})
+
+        def code():
+            request = APIRequestFactory().get(path)
+            force_authenticate(request, user=user)
+            return view(request).data['code']
+
+        self.assertEqual(code(), 4000)
+        migration.grant_brand_comparison(django_apps, None)
+        migration.grant_brand_comparison(django_apps, None)
+        self.assertEqual(code(), 2000)
+        [button] = MenuButton.objects.filter(menu=menu, api=path)
+        self.assertEqual(button.value, 'ShieldAnalysisBrandComparison3')
+        copies = RoleMenuButtonPermission.objects.filter(menu_button=button)
+        self.assertEqual(sorted((item.role_id, item.data_range, tuple(item.dept.values_list('id', flat=True))) for item in copies),
+                         [(role.id, 0, ()), (role.id, 4, (dept.id,))])
+        self.assertEqual(list(RoleMenuButtonPermission.objects.filter(role=configured, menu_button__api=path).values_list('data_range', flat=True)), [0])
+        self.assertFalse(RoleMenuButtonPermission.objects.filter(role__in=[other, shouting], menu_button__api=path).exists())
+
     def test_brand_query_cost_does_not_grow_per_supplier_and_pairs_once(self):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
@@ -543,6 +710,28 @@ class AnalysisContractTests(TestCase):
             self.assertEqual(full, slim)
             self.assertIn('source_rows', self.query(action, include_details='true'))
         self.assertIn('source_rows', self.query('brand_cost', include_details='false'))
+
+    def test_brand_comparison_pairs_once_and_matches_the_three_brand_endpoints(self):
+        from unittest.mock import patch
+        from . import analysis_views as views
+        installed = self.detail(self.opening(100), is_replaced=True, manufacturer='A', price=100)
+        instance = self.install(installed)
+        removed = self.detail(self.opening(200), is_replaced=True, manufacturer='B', price=200, wear_condition='偏磨')
+        self.install(removed)
+        OldToolRecord.objects.create(tool_change_detail=removed, confirmed_tool_instance=instance,
+                                    inspection_status='CONFIRMED', repair_price=30)
+        self.install(self.detail(self.opening(300), is_replaced=True, manufacturer='', price=40))
+        with patch.object(views, 'confirmed_service_segments', wraps=views.confirmed_service_segments) as paired:
+            combined = self.query('brand_comparison')
+        self.assertEqual(paired.call_count, 1)
+        self.assertNotIn('service_rows', combined); self.assertNotIn('source_rows', combined)
+        self.assertEqual(combined['meta']['service_sample_count'], 1)
+        self.assertEqual((combined['unknown_manufacturer_count'], combined['unknown_manufacturer_amount']), (1, 40))
+        cost, price, performance = (self.query(action) for action in ('brand_cost', 'brand_price_trend', 'brand_performance_trend'))
+        self.assertEqual(combined['items'], cost['items'])
+        self.assertEqual(combined['series'], price['series'])
+        for key in ('manufacturers', 'time_axis', 'abnormal_rate_series', 'normal_rate_series', 'lifespan_series'):
+            self.assertEqual(combined[key], performance[key], key)
 
     def test_suggested_pairing_sources_do_not_trigger_per_row_deferred_queries(self):
         from django.db import connection

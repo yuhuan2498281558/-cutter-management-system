@@ -1,5 +1,5 @@
 <template>
-	<div class="layout-parent">
+	<div class="layout-parent" :class="{ 'layout-parent-full': isFullPage }">
 		<router-view v-slot="{ Component }">
 			<transition :name="setTransitionName" mode="out-in">
 				<keep-alive :include="getKeepAliveNames" v-if="showView">
@@ -67,6 +67,10 @@ const getKeepAliveNames = computed(() => {
 // 设置 iframe 显示/隐藏
 const isIframePage = computed(() => {
 	return route.meta.isIframe;
+});
+// 首页是整屏的刀盘/BIM 大屏，铺满主内容区，不套页面的限宽和内边距（见 theme/app.scss 的 .layout-parent）
+const isFullPage = computed(() => {
+	return route.name === 'home';
 });
 // 获取 iframe 组件列表(未进行渲染)
 const getIframeListRoutes = async () => {

@@ -9,64 +9,30 @@ const ts = require('typescript');
 const vue = require('vue');
 
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
-function setup() {
-  const history = deferred(), reset = deferred(), streams = [], notices = [], frames = new Map();
+function setup(supportsFocusSources = true) {
+  const history = deferred(), reset = deferred(), compact = deferred(), streams = [], notices = [], frames = new Map();
   let mounted, unmounted, nextFrame = 0, clock = 0;
-  const api = { history: () => history.promise, reset: () => reset.promise, chatStream: (data, callbacks, signal) => { streams.push({ data, callbacks, signal }); return Promise.resolve(); } };
+  const api = { history: () => history.promise, reset: () => reset.promise, compact: () => compact.promise, chatStream: (data, callbacks, signal) => { streams.push({ data, callbacks, signal }); return Promise.resolve(); } };
   const context = { exports: {}, AbortController, window: { requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; }, cancelAnimationFrame(id) { frames.delete(id); } } };
   context.require = name => {
     if (name === 'vue') return { ...vue, onMounted: callback => { mounted = callback; }, onUnmounted: callback => { unmounted = callback; } };
     if (name === 'element-plus') return { ElMessage: { success: value => notices.push(['success', value]), error: value => notices.push(['error', value]), info: value => notices.push(['info', value]) } };
     if (name === '/@/api/ai-assistant') return { useAiAssistantApi: () => api };
+    if (name === './backendCapabilities') return { supportsFocusSources };
     if (name.endsWith('.vue') || name === '@element-plus/icons-vue') return {};
     throw new Error(`Unexpected import: ${name}`);
   };
-  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, setContextMode, toggleClearSlot };';
+  const source = fs.readFileSync(path.resolve(__dirname, '../index.vue'), 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1] + '\nexports.page = { loadHistory, sendQuery, handleRegenerate, handleReset, handleAbort, messages, memoryInfo, loading, resetting, historyLoading, hasMoreHistory, nextHistoryCursor, chatListRef, contextMode, pendingClears, routeMode, focusSources, handleCompact, compacting, contextInfo };';
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, context);
-  return { ...context.exports.page, api, history, reset, streams, notices, frames, mount: () => mounted(), unmount: () => unmounted(), frame() { const callbacks = [...frames.values()]; frames.clear(); clock += 16; callbacks.forEach(callback => callback(clock)); } };
+  return { ...context.exports.page, api, history, reset, compact, streams, notices, frames, mount: () => mounted(), unmount: () => unmounted(), frame() { const callbacks = [...frames.values()]; frames.clear(); clock += 16; callbacks.forEach(callback => callback(clock)); } };
 }
 const historyResponse = { data: { messages: [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }], memory: { message_count: 2, slot_names: ['ring_range'] } } };
-
-test('individual clears are queued, sent once and retain other confirmed values until response', () => {
-  const h = setup();
-  h.memoryInfo.value = { activeSlots: { ring_range: [100, 300], tool_type: 'DISC' } };
-  h.toggleClearSlot('tool_type');
-  assert.equal(h.contextMode.value, 'continue');
-  assert.equal(h.memoryInfo.value.activeSlots.tool_type, 'DISC');
-  h.sendQuery('同样范围换刀统计');
-  assert.deepEqual(JSON.parse(JSON.stringify(h.streams[0].data)), { query: '同样范围换刀统计', route_mode: 'rule', context_mode: 'continue', clear_slots: ['tool_type'] });
-  h.toggleClearSlot('ring_range'); h.setContextMode('new');
-  assert.equal(h.contextMode.value, 'continue');
-  assert.deepEqual(Array.from(h.pendingClears.value), ['tool_type']);
-  h.streams[0].callbacks.onMemory({ activeSlots: { ring_range: [100, 300] }, contextMode: 'continue' });
-  h.streams[0].callbacks.onDone();
-  assert.equal(h.memoryInfo.value.activeSlots.tool_type, undefined);
-  assert.equal(h.pendingClears.value.length, 0);
-  assert.equal(h.contextMode.value, 'auto');
-});
-
-test('failed requests preserve pending controls for retry, while new query keeps history', () => {
-  const h = setup(); h.toggleClearSlot('tool_type'); h.sendQuery('换刀统计');
-  h.streams[0].callbacks.onError('失败');
-  assert.deepEqual(Array.from(h.pendingClears.value), ['tool_type']);
-  h.setContextMode('new');
-  assert.equal(h.pendingClears.value.length, 0);
-  assert.equal(h.messages.value.length, 2);
-  h.sendQuery('开仓记录');
-  assert.equal(h.streams[1].data.context_mode, 'new');
-  h.streams[1].callbacks.onMemory({ activeSlots: {} }); h.streams[1].callbacks.onDone();
-  assert.deepEqual(Object.keys(h.memoryInfo.value.activeSlots), []);
-  assert.equal(h.messages.value.length, 4);
-});
 
 test('history loads actual values and successful reset clears controls', async () => {
   const h = setup(), loaded = h.mount();
   h.history.resolve({ data: { ...historyResponse.data, memory: { active_slots: { tool_type: 'DISC' }, message_count: 2 } } });
   await loaded;
   assert.equal(h.memoryInfo.value.activeSlots.tool_type, 'DISC');
-  h.toggleClearSlot('tool_type'); h.toggleClearSlot('tool_type');
-  assert.equal(h.pendingClears.value.length, 0);
-  h.toggleClearSlot('tool_type');
   const reset = h.handleReset(); h.reset.resolve({ data: {} }); await reset;
   assert.equal(h.pendingClears.value.length, 0);
   assert.equal(h.contextMode.value, 'auto');
@@ -196,3 +162,82 @@ for (const action of ['send', 'reset']) {
     else assert.equal(h.loading.value, true);
   });
 }
+
+test('data types are sent as focus_sources only on the model path and only when some are selected', () => {
+  const h = setup();
+  h.focusSources.value = ['opening', 'inspection'];
+  h.sendQuery('规则问题'); h.streams[0].callbacks.onDone();
+  assert.equal('focus_sources' in h.streams[0].data, false);
+  h.routeMode.value = 'agent';
+  h.sendQuery('模型问题'); h.streams[1].callbacks.onDone();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.streams[1].data)), { query: '模型问题', route_mode: 'agent', context_mode: 'auto', clear_slots: [], focus_sources: ['opening', 'inspection'] });
+  h.focusSources.value = [];
+  h.sendQuery('不限定数据类型'); h.streams[2].callbacks.onDone();
+  assert.equal('focus_sources' in h.streams[2].data, false);
+});
+
+test('legacy backend receives the generated question without unsupported focus_sources', () => {
+  const h = setup(false);
+  h.routeMode.value = 'agent';
+  h.focusSources.value = ['opening'];
+  h.sendQuery('统计开仓记录');
+  assert.equal(h.streams[0].data.query, '统计开仓记录');
+  assert.equal('focus_sources' in h.streams[0].data, false);
+});
+
+test('query traces are kept only on model-analysis answers', () => {
+  const traces = [{ sourceLabel: '换刀与磨损', scope: { ring_range: [388, 487] } }];
+  for (const [route, expected] of [['llm', traces], ['rule', undefined], [undefined, undefined]]) {
+    const h = setup(); h.sendQuery('问题'); const callbacks = h.streams[0].callbacks;
+    if (route) callbacks.onMeta({ route });
+    callbacks.onChunk('回答'); callbacks.onQueryTraces(traces); callbacks.onDone();
+    for (let i = 0; i < 100 && h.frames.size; i++) h.frame();
+    assert.deepEqual(h.messages.value[1].queryTraces, expected, String(route));
+    assert.equal(h.loading.value, false);
+  }
+});
+
+test('late meta or traces from a stopped stream do not touch the next answer', () => {
+  const h = setup(); h.sendQuery('问题1'); const old = h.streams[0].callbacks;
+  h.handleAbort(); h.sendQuery('问题2');
+  old.onMeta({ route: 'llm' }); old.onQueryTraces([{ sourceLabel: '地层', scope: null }]);
+  assert.equal(h.messages.value[1].queryTraces, undefined);
+  assert.equal(h.messages.value[3].queryTraces, undefined);
+});
+
+test('saved sequences come from history and, for a new turn, from the memory event', async () => {
+  const h = setup(), loaded = h.mount();
+  h.history.resolve({ data: { messages: [{ role: 'user', content: '旧问题', sequence: 7 }, { role: 'assistant', content: '旧回答', sequence: 8 }] } });
+  await loaded;
+  h.sendQuery('新问题');
+  h.streams[0].callbacks.onMemory({ message_count: 4, turnSequences: [9, 10] });
+  assert.deepEqual(Array.from(h.messages.value, message => message.sequence), [7, 8, 9, 10]);
+  assert.equal(h.memoryInfo.value.turnSequences, undefined);
+});
+
+test('compacting and revising statuses show while generating and clear on the next status', () => {
+  const h = setup(); h.sendQuery('问题'); const callbacks = h.streams[0].callbacks;
+  for (const stage of ['compacting', 'revising']) {
+    callbacks.onStatus(stage);
+    assert.equal(h.messages.value[1].status, stage);
+    callbacks.onStatus('done');
+    assert.equal(h.messages.value[1].status, undefined);
+  }
+});
+
+test('manual compaction updates the meter, blocks sending meanwhile and reports failure', async () => {
+  const h = setup();
+  const running = h.handleCompact();
+  assert.equal(h.compacting.value, true);
+  h.sendQuery('整理中的问题');
+  assert.equal(h.streams.length, 0);
+  h.compact.resolve({ data: { context: { kind: 'baseline', used: 12000 } } });
+  await running;
+  assert.equal(h.contextInfo.value.used, 12000);
+  assert.equal(h.compacting.value, false);
+  assert.deepEqual(h.notices, [['success', '已整理早前对话']]);
+  const failing = setup(), failed = failing.handleCompact();
+  failing.compact.reject(new Error('没有可整理的早前对话'));
+  await failed;
+  assert.deepEqual(failing.notices, [['error', '整理失败：没有可整理的早前对话']]);
+});

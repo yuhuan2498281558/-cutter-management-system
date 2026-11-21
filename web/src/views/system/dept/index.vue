@@ -1,20 +1,18 @@
 <template>
 	<fs-page>
 		<el-row class="dept-el-row">
-			<el-col :span="6">
-				<div class="dept-box dept-left">
-					<DeptTreeCom
-						ref="deptTreeRef"
-						:treeData="deptTreeData"
-						@treeClick="handleTreeClick"
-						@updateDept="handleUpdateMenu"
-						@deleteDept="handleDeleteMenu"
-					/>
-				</div>
+			<el-col :xs="24" :sm="8" :md="7" :lg="6" :xl="5" class="dept-side">
+				<DeptTreeCom
+					ref="deptTreeRef"
+					:treeData="deptTreeData"
+					@treeClick="handleTreeClick"
+					@updateDept="handleUpdateMenu"
+					@deleteDept="handleDeleteMenu"
+				/>
 			</el-col>
 
-			<el-col :span="18">
-				<div class="dept-box dept-table">
+			<el-col :xs="24" :sm="16" :md="17" :lg="18" :xl="19">
+				<div class="dept-box">
 					<DeptUserCom ref="deptUserRef" />
 				</div>
 			</el-col>
@@ -130,16 +128,17 @@ onMounted(() => {
 	height: 100%;
 	position: relative;
 	box-sizing: border-box;
-}
-
-.dept-left {
-	background-color: #fff;
-	border-radius: 0 8px 8px 0;
-	padding: 10px;
-}
-
-.dept-table {
-	margin-left: 10px;
 	padding-bottom: 10px;
+}
+
+// 窄屏时部门树在上、表格在下：树按内容撑开，表格仍占满一屏，整体滚动
+@media (max-width: 767px) {
+	.dept-el-row {
+		overflow-y: auto;
+
+		.dept-side {
+			height: auto;
+		}
+	}
 }
 </style>

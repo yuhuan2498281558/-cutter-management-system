@@ -42,10 +42,6 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
     return await api.AddObj(form);
   };
 
-  const exportRequest = async (query: UserPageQuery) => {
-    return await api.exportData(query);
-  };
-
   return {
     crudOptions: {
       request: {
@@ -56,19 +52,10 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
       },
       actionbar: {
         buttons: {
-          add: {
-            show: true,
-            text: '新增',
-            type: 'primary',
-          },
-          export: {
-            show: true,
-            text: '导出',
-            title: '导出数据',
-            click() {
-              return exportRequest(crudExpose.getSearchFormData());
-            }
-          },
+          // 地层由图纸提取，页面只做查看、订正和导出，不在这里新增
+          add: { show: false },
+          // 全局配置里有一个没有点击动作的"导出"按钮，这里隐藏；导出用页面上的导出下拉
+          export: { show: false },
         },
       },
       rowHandle: {
@@ -109,21 +96,37 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
           column: { width: 80 },
         },
         project: {
-          title: '项目编号',
+          title: '所属项目',
           type: 'dict-select',
           column: { show: false },
           dict: dict({
             url: '/api/shield/project/',
-            label: 'project_id',
+            label: 'project_name',
             value: 'id',
           }),
+          search: { show: true, order: 0, component: { placeholder: '全部项目', filterable: true, clearable: true } },
           form: {
-            rules: [{ required: true, message: '请选择项目编号' }],
+            rules: [{ required: true, message: '请选择所属项目' }],
             component: {
-              placeholder: '请选择项目编号',
+              placeholder: '请选择所属项目',
               filterable: true,
             },
           },
+        },
+        // 环号范围只用于查询，后端按数值比较（ring_start / ring_end）
+        ring_start: {
+          title: '起始环号',
+          type: 'text',
+          column: { show: false },
+          form: { show: false },
+          search: { show: true, order: 1, component: { placeholder: '如 100', clearable: true } },
+        },
+        ring_end: {
+          title: '结束环号',
+          type: 'text',
+          column: { show: false },
+          form: { show: false },
+          search: { show: true, order: 2, component: { placeholder: '如 300', clearable: true } },
         },
         project_name: {
           title: '项目名称',

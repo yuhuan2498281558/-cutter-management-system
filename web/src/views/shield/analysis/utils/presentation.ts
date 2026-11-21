@@ -52,7 +52,7 @@ export function analysisExportMeta(meta?: AnalysisMeta) {
     { label: '排除记录', value: `无效刀位 ${meta.excluded_inactive_count ?? 0} 条，未观察 ${meta.unobserved_count ?? 0} 条，环号不可用 ${meta.excluded_invalid_ring_opening_count ?? 0} 次开仓` },
     { label: '范围说明', value: (meta.warnings || []).join('；') },
     { label: '磨损口径', value: meta.wear_basis || '有现场磨损记录的样本' },
-    { label: '磨损归类', value: '轻微/中度磨损计入非正常描述；比例只评价有记录样本，不是故障率。' },
+    { label: '磨损归类', value: '轻微磨损归正常，中度磨损、偏磨等计入非正常描述；比例只评价有记录样本，不是故障率。' },
     ...(meta.scope?.blade_track_min || meta.scope?.blade_track_max ? [{ label: '轨迹口径', value: meta.blade_track_basis || '当前刀位中心轨迹半径，单位 mm，含上下限。' }] : []),
     { label: '金额口径', value: '新装登记 + 已确认返修 + 历史登记；待核对金额不计入明确合计，非财务结算额。' },
   ];

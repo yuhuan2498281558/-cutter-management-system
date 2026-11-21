@@ -341,6 +341,7 @@ def extract(source, output, samples=8192, dxf_geometry=None):
             'verified_dxf_boundary_tolerance_pdf_pt': .18 if geometry else None,
             'dxf_candidate_vertical_margin': .07 if geometry else None,
             'dxf_geometry_sha256': hashlib.sha256(dxf_geometry.read_bytes()).hexdigest() if geometry else None,
+            'candidate_geometry_method': geometry.get('candidate_geometry_method', 'legacy_buffer_zero') if geometry else None,
             'rounding_note': '存储小数用于合计一致，不代表测量精度；原PDF栅格约0.18pt/像素，圆心附近单边界1像素约0.62个百分点'},
         'quality': {'complete_rings': sum('UNRESOLVED' not in v for v in rings.values()),
             'incomplete_rings': sum('UNRESOLVED' in v for v in rings.values()),

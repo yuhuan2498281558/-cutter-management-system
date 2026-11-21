@@ -33,7 +33,7 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				project: {
 					title: '所属项目',
 					type: 'dict-select',
-					dict: dict({ url: '/api/shield/project/', value: 'id', label: 'project_name' }),
+					dict: dict({ url: '/api/shield/project/', params: { limit: 999 }, value: 'id', label: 'project_name' }),
 					search: { show: true },
 					column: { minWidth: 160, formatter: ({ row }: any) => row.project_name || row.project },
 					form: { rules: [{ required: true, message: '请选择所属项目' }] },
@@ -41,22 +41,27 @@ export const createCrudOptions = function ({ crudExpose }: CreateCrudOptionsProp
 				shield_machine: {
 					title: '盾构机',
 					type: 'dict-select',
-					dict: dict({ url: '/api/shield/shield_machine_basic_info/', value: 'id', label: 'shield_model' }),
+					dict: dict({ url: '/api/shield/shield_machine_basic_info/', params: { limit: 999 }, value: 'id', label: 'shield_model' }),
 					search: { show: true },
 					column: { minWidth: 160, formatter: ({ row }: any) => row.shield_machine_name || row.shield_machine },
 					form: { rules: [{ required: true, message: '请选择盾构机' }] },
 				},
 				ring_no: {
 					title: '所属环号',
-					type: 'input',
-					search: { show: true },
+					// 'input' 不是 fast-crud 的字段类型，查询栏会渲染成空白，必须用 'text'
+					type: 'text',
+					search: { show: true, component: { clearable: true } },
 					column: { minWidth: 100 },
 					form: { rules: [{ required: true, message: '请输入所属环号' }] },
 				},
 				thrust: { title: '推力', type: 'number', column: { minWidth: 100 } },
 				torque: { title: '扭矩', type: 'number', column: { minWidth: 100 } },
 				cutterhead_speed: { title: '刀盘转速', type: 'number', column: { minWidth: 120 } },
-				penetration: { title: '贯入力', type: 'number', column: { minWidth: 100 } },
+				penetration: { title: '贯入度（mm/r）', type: 'number', column: { minWidth: 120 } },
+				advance_speed: { title: '推进速度（mm/min）', type: 'number', column: { minWidth: 140 } },
+				// 导入时按本段采样点算出，用于刀具里程，不手填
+				counter_revolutions: { title: '刀盘圈数（计数器）', type: 'number', column: { minWidth: 140 }, form: { show: false } },
+				integrated_revolutions: { title: '刀盘圈数（积分推算）', type: 'number', column: { minWidth: 150 }, form: { show: false } },
 				point_count: {
 					title: '采样点数',
 					type: 'number',

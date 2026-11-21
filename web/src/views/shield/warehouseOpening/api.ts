@@ -1,5 +1,5 @@
 import { request } from '/@/utils/service';
-import { UserPageQuery, AddReq, EditReq, InfoReq } from '@fast-crud/fast-crud';
+import { UserPageQuery, AddReq, EditReq } from '@fast-crud/fast-crud';
 
 export const apiPrefix = '/api/shield/warehouse_opening/';
 
@@ -35,16 +35,6 @@ export function GetList(query: UserPageQuery) {
 }
 
 /**
- * 获取项目基本信息详情
- */
-export function GetObj(id: InfoReq) {
-	return request({
-		url: apiPrefix + id + '/',
-		method: 'get',
-	});
-}
-
-/**
  * 新增项目基本信息
  */
 export function AddObj(obj: AddReq) {
@@ -73,17 +63,6 @@ export function DelObj(id: string) {
 	return request({
 		url: apiPrefix + id + '/',
 		method: 'delete'
-	});
-}
-
-/**
- * 批量删除换刀基本信息
- */
-export function BatchDel(ids: string[]) {
-	return request({
-		url: apiPrefix + 'multiple_delete/',
-		method: 'delete',
-		data: { ids }
 	});
 }
 

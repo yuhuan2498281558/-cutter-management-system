@@ -9,7 +9,6 @@ fingerprint abc123..."，返修时能证明前后跑的是同一份数据。
 的正则抓不到自己 gt 的字段名。这些都是跑正式实验前必须清零的。
 
 用法：
-    python manage.py verify_ground_truth
     python manage.py verify_ground_truth --output ground_truth_snapshot.json
 """
 
@@ -20,6 +19,7 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
+from application.ai_assistant.evaluation.current_data_suite import readonly_database
 
 FINGERPRINT_TABLES = [
     "shield_project_info",
@@ -41,7 +41,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--bank", default="")
-        parser.add_argument("--output", default="ground_truth_snapshot.json")
+        parser.add_argument("--output", required=True)
         parser.add_argument("--project", default=os.environ.get("DEMO_PROJECT_ID", "demo-project"))
 
     def handle(self, *args, **options):
@@ -75,7 +75,7 @@ class Command(BaseCommand):
                 no_gt.append(unit_id)
                 continue
             try:
-                with connection.cursor() as cursor:
+                with readonly_database(), connection.cursor() as cursor:
                     cursor.execute(sql)
                     columns = [c[0] for c in cursor.description]
                     rows = [dict(zip(columns, r)) for r in cursor.fetchall()]

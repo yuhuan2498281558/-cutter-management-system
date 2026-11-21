@@ -17,6 +17,7 @@ function compile(content, requireModule = require) {
   return context.exports;
 }
 const helpers = compile(fs.readFileSync(path.resolve(__dirname, '../tablePresentation.ts'), 'utf8'));
+const presentation = compile(fs.readFileSync(path.resolve(__dirname, '../detailPresentation.ts'), 'utf8'));
 const script = compileScript(parse(source).descriptor, { id: 'detail-load-test' });
 function deferred() {
   let resolve, reject;
@@ -35,6 +36,7 @@ function setup(t, respond = async config => fixture(config)) {
     if (name === 'vue') return { ...vue, ...Object.fromEntries(['onMounted', 'onActivated', 'onDeactivated', 'onUnmounted'].map(key => [key, fn => { hooks[key] = fn; }])) };
     if (name === 'vue-router') return { useRoute: () => route, useRouter: () => ({ back() {}, replace: async target => { route.query = target.query; } }) };
     if (name === './tablePresentation') return helpers;
+    if (name === './detailPresentation') return presentation;
     if (name === '/@/utils/service') return { request: async config => { assert.equal(config.method, 'get'); calls.push(config); return respond(config); } };
     if (name === 'element-plus') return { ElMessage: Object.fromEntries(['success', 'warning', 'error'].map(key => [key, message => notices.push([key, message])])) };
     if (name.endsWith('.vue')) return {};
@@ -143,6 +145,111 @@ test('route change before deactivation cannot downgrade the new route or continu
   assert.equal(calls.length, 1);
   assert.equal(notices.length, 0);
   assert.equal(s.warehouseInfo.value, null);
+});
+
+const openingByUrl = config => {
+  const response = fixture(config);
+  if (config.url.includes('warehouse_opening')) response.data.ring_no = config.url.includes('/2/') ? '200' : '100';
+  return response;
+};
+
+// Mounts the page like layout/routerView/parent.vue: KeepAlive keyed by decodeURI(route.fullPath),
+// so each detail URL gets its own cached instance. Real vue-router, in-memory renderer, mocked GETs.
+async function mountWithLayoutKey(t, respond = async config => openingByUrl(config)) {
+  const VueRouter = require('vue-router');
+  const calls = [], instances = [];
+  const component = compile(script.content, name => {
+    if (name === 'vue' || name === 'vue-router') return require(name);
+    if (name === './tablePresentation') return helpers;
+    if (name === './detailPresentation') return presentation;
+    if (name === '/@/utils/service') return { request: async config => { calls.push(config.url); return respond(config); } };
+    if (name === 'element-plus') return { ElMessage: { success() {}, warning() {}, error() {} } };
+    if (name.endsWith('.vue')) return {};
+    throw new Error(`Unexpected import: ${name}`);
+  }).default;
+  const Detail = {
+    name: 'ToolChangeDetail',
+    setup(props, ctx) { const state = component.setup(props, ctx); instances.push(state); return state; },
+    render: () => vue.h('div'),
+  };
+  const Layout = {
+    setup() {
+      const route = VueRouter.useRoute();
+      const key = vue.ref('');
+      vue.watch(() => route.fullPath, () => { key.value = decodeURI(route.fullPath); }, { immediate: true });
+      return () => vue.h(VueRouter.RouterView, null, {
+        default: ({ Component }) => vue.h(vue.KeepAlive, null, { default: () => (Component ? vue.h(Component, { key: key.value }) : null) }),
+      });
+    },
+  };
+  const remove = node => { if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1); node.parent = null; };
+  const element = type => ({ type, children: [], parent: null, text: '' });
+  const { createApp } = vue.createRenderer({
+    createElement: element, createText: text => ({ ...element('#text'), text }), createComment: text => ({ ...element('#comment'), text }),
+    setText(node, text) { node.text = text; }, setElementText(node, text) { node.text = text; node.children = []; },
+    insert(node, parent, anchor) {
+      remove(node);
+      const index = anchor ? parent.children.indexOf(anchor) : -1;
+      if (index < 0) parent.children.push(node); else parent.children.splice(index, 0, node);
+      node.parent = parent;
+    },
+    remove, parentNode: node => node.parent,
+    nextSibling: node => (node.parent ? node.parent.children[node.parent.children.indexOf(node) + 1] || null : null),
+    patchProp() {},
+  });
+  const router = VueRouter.createRouter({ history: VueRouter.createMemoryHistory(), routes: [{ path: '/shield/toolChangeDetail', component: Detail }] });
+  const app = createApp(Layout);
+  app.use(router);
+  await router.push('/shield/toolChangeDetail?warehouse_id=1&mode=supplement');
+  await router.isReady();
+  app.mount(element('root'));
+  t.after(() => app.unmount());
+  const openings = () => calls.filter(url => url.includes('warehouse_opening')).map(url => url.match(/\/(\d+)\/$/)[1]);
+  return { router, calls, instances, openings };
+}
+
+test('with the layout fullPath key, switching detail tabs requests the new opening only once', async t => {
+  const { router, calls, instances, openings } = await mountWithLayoutKey(t);
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 3);
+  await router.push('/shield/toolChangeDetail?warehouse_id=2&mode=view');
+  await new Promise(setImmediate);
+  assert.equal(instances.length, 2);
+  assert.deepEqual(openings(), ['1', '2']);
+  assert.equal(calls.length, 6);
+  const [first, second] = instances;
+  assert.equal(first.pageActive.value, false);
+  assert.equal(second.warehouseInfo.value.ring_no, '200');
+  assert.equal(second.isEditable.value, false);
+  await router.push('/shield/toolChangeDetail?warehouse_id=1&mode=supplement');
+  await new Promise(setImmediate);
+  assert.equal(instances.length, 2);
+  assert.deepEqual(openings(), ['1', '2', '1']);
+  assert.equal(first.warehouseInfo.value.ring_no, '100');
+  assert.equal(first.isEditable.value, true);
+  assert.equal(second.pageActive.value, false);
+});
+
+test('with the layout fullPath key, switching tabs during loading never leaves a tab stuck loading', async t => {
+  const slow = deferred(); let count = 0;
+  const { router, instances, openings } = await mountWithLayoutKey(t, config => (
+    config.url.includes('warehouse_opening') && ++count === 1 ? slow.promise : openingByUrl(config)
+  ));
+  const [first] = instances;
+  assert.equal(first.loading.value, true);
+  await router.push('/shield/toolChangeDetail?warehouse_id=2&mode=view');
+  await new Promise(setImmediate);
+  const second = instances[1];
+  assert.equal(second.loading.value, false);
+  assert.equal(second.warehouseInfo.value.ring_no, '200');
+  await router.push('/shield/toolChangeDetail?warehouse_id=1&mode=supplement');
+  await new Promise(setImmediate);
+  slow.resolve(openingByUrl({ url: '/api/shield/warehouse_opening/1/' }));
+  await new Promise(setImmediate);
+  assert.deepEqual(openings(), ['1', '2', '1']);
+  assert.equal(first.loading.value, false);
+  assert.equal(first.dataLoaded.value, true);
+  assert.equal(first.warehouseInfo.value.ring_no, '100');
 });
 
 test('activation refreshes cached readiness but initial activation does not double-load', async t => {

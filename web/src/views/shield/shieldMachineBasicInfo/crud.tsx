@@ -12,7 +12,7 @@ export const createCrudOptions = function ({ crudExpose }: { crudExpose: any }) 
 
   const getLastRecord = async () => {
     try {
-      const res = await api.GetList({ page: 1, limit: 1, sort: [{ prop: 'id', order: 'descending' }] });
+      const res = await api.GetList({ page: 1, limit: 1, ordering: '-id' });
       if (res.data && res.data.length > 0) {
         const lastRecord = res.data[0];
         lastInputValues.shield_model_id = lastRecord.shield_model_id || '';
